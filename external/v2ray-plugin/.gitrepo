@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = https://github.com/shadowsocks/v2ray-plugin.git
+	branch = v1.3.2
+	commit = ddd7ab46b4aeee0ca8b272efed9d7da3e3a6e52c
+	parent = b226bcd26dabc4165f1fc01c29badc56683c1ae6
+	method = merge
+	cmdver = 0.4.9

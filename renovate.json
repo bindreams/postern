@@ -1,0 +1,20 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["external/.*/\\.gitrepo$"],
+      "matchStrings": [
+        "remote = https://github.com/(?<depName>[^\\n]+?)(\\.git)?\\n[\\s\\S]*?branch = (?<currentValue>v[\\d.]+)"
+      ],
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "hostRules": [
+    {
+      "matchHost": "dhi.io",
+      "hostType": "docker"
+    }
+  ]
+}

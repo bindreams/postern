@@ -1,0 +1,53 @@
+name: Complete subrepo pull for Renovate PRs
+
+on:
+  pull_request:
+    paths:
+      - "external/**/.gitrepo"
+
+permissions:
+  contents: write
+
+jobs:
+  subrepo-pull:
+    # Only run on Renovate PRs that touched .gitrepo files
+    if: startsWith(github.head_ref, 'renovate/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+          # Needs a token that can push back to the PR branch
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install git-subrepo
+        run: |
+          git clone --depth 1 https://github.com/ingydotnet/git-subrepo /tmp/git-subrepo
+          echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
+          echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
+
+      - name: Detect changed subrepos and pull
+        run: |
+          # Find which .gitrepo files were changed in this PR
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- 'external/*/.gitrepo')
+
+          for gitrepo_file in $changed; do
+            subrepo_dir=$(dirname "$gitrepo_file")
+            # Extract the target branch/tag from the .gitrepo file
+            target_branch=$(grep '^\s*branch = ' "$gitrepo_file" | sed 's/.*branch = //')
+
+            echo "::group::Pulling $subrepo_dir at $target_branch"
+
+            # Reset .gitrepo to base so git-subrepo can do a clean pull
+            git checkout "${{ github.event.pull_request.base.sha }}" -- "$gitrepo_file"
+            git commit -m "Reset $gitrepo_file for subrepo pull"
+
+            # Pull the new version
+            git subrepo pull "$subrepo_dir" -b "$target_branch"
+
+            echo "::endgroup::"
+          done
+
+      - name: Push updated source to PR branch
+        run: git push

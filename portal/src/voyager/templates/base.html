@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Voyager VPN{% endblock %}</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; display: flex; justify-content: center; align-items: center; }
+        .card { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 420px; width: 100%; margin: 1rem; }
+        h1 { font-size: 1.5rem; margin-bottom: 1.5rem; color: #f8fafc; }
+        label { display: block; font-size: 0.875rem; color: #94a3b8; margin-bottom: 0.5rem; }
+        input[type="email"], input[type="text"] { width: 100%; padding: 0.75rem; border: 1px solid #334155; border-radius: 8px; background: #0f172a; color: #f8fafc; font-size: 1rem; margin-bottom: 1rem; }
+        input:focus { outline: none; border-color: #3b82f6; }
+        button, .btn { display: inline-block; padding: 0.75rem 1.5rem; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; text-decoration: none; text-align: center; }
+        button:hover, .btn:hover { background: #2563eb; }
+        .btn-secondary { background: #475569; }
+        .btn-secondary:hover { background: #64748b; }
+        .message { padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.875rem; }
+        .message-info { background: #1e3a5f; color: #93c5fd; }
+        .message-error { background: #3b1c1c; color: #fca5a5; }
+        .message-warn { background: #3b2f1c; color: #fcd34d; }
+        .connections { list-style: none; }
+        .connections li { padding: 1rem; background: #0f172a; border-radius: 8px; margin-bottom: 0.75rem; display: flex; justify-content: space-between; align-items: center; }
+        .conn-info { flex: 1; }
+        .conn-label { font-weight: 600; color: #f8fafc; }
+        .conn-meta { font-size: 0.75rem; color: #64748b; margin-top: 0.25rem; }
+        .conn-disabled { opacity: 0.5; }
+        .badge { font-size: 0.7rem; padding: 0.2rem 0.5rem; border-radius: 4px; margin-left: 0.5rem; }
+        .badge-disabled { background: #7f1d1d; color: #fecaca; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+        .header h1 { margin-bottom: 0; }
+    </style>
+</head>
+<body>
+    {% block body %}{% endblock %}
+</body>
+</html>

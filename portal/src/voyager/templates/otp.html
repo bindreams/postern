@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Verify — Voyager VPN{% endblock %}
+{% block body %}
+<div class="card">
+    <h1>Enter code</h1>
+    <p style="color: #94a3b8; margin-bottom: 1.5rem; font-size: 0.875rem;">
+        If this email is registered, you will receive a one-time code.
+    </p>
+    {% if error %}
+    <div class="message message-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login/verify">
+        <label for="code">6-digit code</label>
+        <input type="text" id="code" name="code" required autofocus
+               pattern="[0-9]{6}" maxlength="6" inputmode="numeric"
+               autocomplete="one-time-code" placeholder="000000">
+        <button type="submit">Verify</button>
+    </form>
+</div>
+{% endblock %}

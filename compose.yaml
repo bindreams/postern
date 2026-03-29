@@ -1,0 +1,77 @@
+services:
+  nginx:
+    build: ./nginx
+    image: local/nginx
+    container_name: nginx
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+    volumes:
+      - type: bind
+        read_only: true
+        source: ./nginx/etc
+        target: /etc/nginx
+      - type: bind
+        read_only: true
+        source: /etc/localtime
+        target: /etc/localtime
+      - type: bind
+        source: /etc/letsencrypt
+        target: /etc/letsencrypt
+      - type: bind
+        source: ./nginx/log
+        target: /var/log/nginx
+    networks: [default, shadowsocks]
+    restart: unless-stopped
+
+  portal:
+    build: ./portal
+    image: local/voyager-portal
+    container_name: portal
+    env_file: .env
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+    volumes:
+      - voyager-data:/data
+    networks: [default]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: docker-proxy
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      POST: 1
+    volumes:
+      - type: bind
+        read_only: true
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+networks:
+  shadowsocks:
+    name: shadowsocks
+    driver: bridge
+
+volumes:
+  voyager-data:
+    name: voyager-data

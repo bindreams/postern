@@ -1,5 +1,4 @@
 data/
-_old/
 .env
 nginx/log/
 __pycache__/

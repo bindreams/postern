@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Voyager VPN{% endblock %}
+{% block body %}
+<div class="card" style="max-width: 560px;">
+    <div class="header">
+        <h1>{{ user.name }}</h1>
+        <form method="post" action="/logout" style="display:inline;">
+            <button type="submit" class="btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Logout</button>
+        </form>
+    </div>
+
+    {% if not connections %}
+    <p style="color: #94a3b8;">No connections configured. Contact your administrator.</p>
+    {% else %}
+    <ul class="connections">
+        {% for conn in connections %}
+        <li class="{% if not conn.enabled %}conn-disabled{% endif %}">
+            <div class="conn-info">
+                <span class="conn-label">{{ conn.label }}</span>
+                {% if not conn.enabled %}<span class="badge badge-disabled">disabled</span>{% endif %}
+                <div class="conn-meta">
+                    Created {{ conn.created_at.strftime('%Y-%m-%d') if conn.created_at else "unknown" }}
+                </div>
+            </div>
+            {% if conn.enabled %}
+            <a href="/connection/{{ conn.id }}/config" class="btn" style="padding: 0.5rem 1rem; font-size: 0.8rem;">
+                Download
+            </a>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
+
+</div>
+{% endblock %}

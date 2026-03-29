@@ -1,0 +1,12 @@
+; DO NOT EDIT (unless you know what you are doing)
+;
+; This subdirectory is a git "subrepo", and this file is maintained by the
+; git-subrepo command. See https://github.com/ingydotnet/git-subrepo#readme
+;
+[subrepo]
+	remote = https://github.com/shadowsocks/shadowsocks-rust.git
+	branch = v1.24.0
+	commit = 7ee1aa9223ed8f4d34734aac919036c8ad4502c2
+	parent = 550b1952aaa94e02954adf35977e6662b91fa319
+	method = merge
+	cmdver = 0.4.9

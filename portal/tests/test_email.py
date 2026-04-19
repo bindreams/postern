@@ -19,7 +19,7 @@ def _make_settings(**overrides):
     return Settings(**defaults)
 
 
-# Email sending =====
+# Email sending ========================================================================================================
 @patch("voyager.email.aiosmtplib.send", new_callable=AsyncMock)
 async def test_send_otp_email_success(mock_send):
     settings = _make_settings()

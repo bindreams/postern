@@ -17,7 +17,7 @@ def cli_env(tmp_path, monkeypatch):
     return db_path
 
 
-# User commands =====
+# User commands ========================================================================================================
 def test_user_add(cli_env):
     result = runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     assert result.exit_code == 0
@@ -70,7 +70,7 @@ def test_user_delete_not_found(cli_env):
     assert result.exit_code == 1
 
 
-# Connection commands =====
+# Connection commands ==================================================================================================
 def test_connection_add(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "iPhone"])

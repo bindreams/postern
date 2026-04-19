@@ -22,7 +22,7 @@ def _make_connection(*, path_token="abcdef123456789012345678"):
     )
 
 
-# Password generation =====
+# Password generation ==================================================================================================
 def test_generate_password_is_base64():
     pw = generate_password()
     decoded = base64.b64decode(pw)
@@ -34,7 +34,7 @@ def test_generate_password_is_unique():
     assert len(passwords) == 50
 
 
-# Server config =====
+# Server config ========================================================================================================
 def test_server_config():
     conn = _make_connection()
     cfg = server_config(conn, DOMAIN)
@@ -52,7 +52,7 @@ def test_server_config():
     assert cfg["log"]["level"] == 0
 
 
-# Client config =====
+# Client config ========================================================================================================
 def test_client_config():
     conn = _make_connection()
     cfg = client_config(conn, DOMAIN)
@@ -66,7 +66,7 @@ def test_client_config():
     assert cfg["local_port"] == 1080
 
 
-# Serialization =====
+# Serialization ========================================================================================================
 def test_server_config_json_is_valid_json():
     conn = _make_connection()
     raw = server_config_json(conn, DOMAIN)

@@ -23,15 +23,13 @@ async def lifespan(app: FastAPI):
     await db.migrate(database)
     app.state.db = database
 
-    # Start reconciliation loop -----
-    reconciler_task = asyncio.create_task(
-        reconciliation_loop(settings.database_path, settings)
-    )
+    # Start reconciliation loop ----------------------------------------------------------------------------------------
+    reconciler_task = asyncio.create_task(reconciliation_loop(settings.database_path, settings))
     logger.info("Reconciliation loop started")
 
     yield
 
-    # Shutdown -----
+    # Shutdown ---------------------------------------------------------------------------------------------------------
     reconciler_task.cancel()
     try:
         await reconciler_task
@@ -50,13 +48,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     application.state.settings = settings
 
-    # Middleware: inject DB connection into request state -----
+    # Middleware: inject DB connection into request state --------------------------------------------------------------
     @application.middleware("http")
     async def inject_db(request: Request, call_next):
         request.state.db = application.state.db
         return await call_next(request)
 
-    # Include routers -----
+    # Include routers --------------------------------------------------------------------------------------------------
     application.include_router(login.router)
     application.include_router(dashboard.router)
 

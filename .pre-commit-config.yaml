@@ -13,7 +13,10 @@ repos:
 
       - id: ty
         name: ty check
-        entry: uvx ty check
+        # The Python project lives in portal/, and ty resolves third-party
+        # imports via that project's .venv (configured in portal/pyproject.toml
+        # under [tool.ty]).
+        entry: bash -c 'cd portal && exec uvx ty check'
         language: system
         types: [python]
         pass_filenames: false

@@ -23,21 +23,19 @@ def server_config(conn: Connection, domain: str) -> dict:
     plugin_opts = f"server;fast-open;path=/t/{conn.path_token};host={domain}"
 
     return {
-        "servers": [
-            {
-                "password": conn.password,
-                "server": "::",
-                "server_port": SERVER_PORT,
-                "method": CIPHER,
-                "mode": "tcp_and_udp",
-                "fast_open": True,
-                "no_delay": True,
-                "keep_alive": 30,
-                "plugin": "v2ray-plugin",
-                "plugin_opts": plugin_opts,
-                "plugin_mode": "tcp_and_udp",
-            }
-        ],
+        "servers": [{
+            "password": conn.password,
+            "server": "::",
+            "server_port": SERVER_PORT,
+            "method": CIPHER,
+            "mode": "tcp_and_udp",
+            "fast_open": True,
+            "no_delay": True,
+            "keep_alive": 30,
+            "plugin": "v2ray-plugin",
+            "plugin_opts": plugin_opts,
+            "plugin_mode": "tcp_and_udp",
+        }],
         "log": {"level": 0},
     }
 
@@ -47,16 +45,14 @@ def client_config(conn: Connection, domain: str) -> dict:
     plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
 
     return {
-        "servers": [
-            {
-                "address": domain,
-                "port": 443,
-                "password": conn.password,
-                "method": CIPHER,
-                "plugin": "v2ray-plugin",
-                "plugin_opts": plugin_opts,
-            }
-        ],
+        "servers": [{
+            "address": domain,
+            "port": 443,
+            "password": conn.password,
+            "method": CIPHER,
+            "plugin": "v2ray-plugin",
+            "plugin_opts": plugin_opts,
+        }],
         "local_port": 1080,
         "local_address": "127.0.0.1",
     }

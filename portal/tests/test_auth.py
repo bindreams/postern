@@ -53,9 +53,7 @@ async def test_verify_otp_creates_session(test_db, settings):
     code = await request_otp(test_db, "alice@example.com", settings)
     assert code is not None
 
-    session = await verify_otp_and_create_session(
-        test_db, "alice@example.com", code, settings
-    )
+    session = await verify_otp_and_create_session(test_db, "alice@example.com", code, settings)
     assert session is not None
     assert session.user_id == user.id
     assert len(session.token) > 20
@@ -67,9 +65,7 @@ async def test_verify_wrong_otp_returns_none(test_db, settings):
 
     await request_otp(test_db, "alice@example.com", settings)
 
-    session = await verify_otp_and_create_session(
-        test_db, "alice@example.com", "000000", settings
-    )
+    session = await verify_otp_and_create_session(test_db, "alice@example.com", "000000", settings)
     assert session is None
 
 

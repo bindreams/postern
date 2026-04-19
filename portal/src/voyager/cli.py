@@ -33,7 +33,7 @@ def run(coro):
     return asyncio.run(coro)
 
 
-# User commands =====
+# User commands ========================================================================================================
 @user_app.command("add")
 def user_add(name: str, email: str) -> None:
     """Create a new user."""
@@ -120,7 +120,7 @@ def user_delete(email: str) -> None:
     _trigger_reconcile(settings)
 
 
-# Connection commands =====
+# Connection commands ==================================================================================================
 @connection_app.command("add")
 def connection_add(user_email: str, label: str) -> None:
     """Create a new connection for a user."""

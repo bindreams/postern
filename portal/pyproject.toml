@@ -22,6 +22,9 @@ dev = [
     "httpx>=0.28",
 ]
 
+[project.scripts]
+voyager = "voyager.cli:app"
+
 [tool.uv]
 package = true
 
@@ -37,3 +40,14 @@ packages = ["src/voyager"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ty.environment]
+python = ".venv"
+
+[tool.ty.rules]
+# pydantic-settings loads fields from env at runtime; ty can't see that.
+missing-argument = "ignore"
+# aiosqlite.Row's subscript returns `Any | tuple[...]`, which propagates through
+# `User(**dict(row))` and test fixture dicts. The DB layer validates values; the
+# rule as it fires here is library-typing noise, not a real bug surface.
+invalid-argument-type = "ignore"

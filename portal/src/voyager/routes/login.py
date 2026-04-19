@@ -22,9 +22,7 @@ async def login_page(request: Request):
         if session:
             return RedirectResponse("/", status_code=303)
 
-    return templates.TemplateResponse(
-        request, "login.html", {"message": None}
-    )
+    return templates.TemplateResponse(request, "login.html", {"message": None})
 
 
 @router.post("/login")
@@ -46,9 +44,7 @@ async def login_submit(request: Request, email_addr: str = Form(alias="email")):
 @router.get("/login/verify", response_class=HTMLResponse)
 async def verify_page(request: Request):
     email_addr = request.cookies.get("otp_email", "")
-    return templates.TemplateResponse(
-        request, "otp.html", {"email": email_addr, "error": None}
-    )
+    return templates.TemplateResponse(request, "otp.html", {"email": email_addr, "error": None})
 
 
 @router.post("/login/verify")
@@ -59,13 +55,12 @@ async def verify_submit(
     settings = request.app.state.settings
     email_addr = request.cookies.get("otp_email", "")
 
-    session = await auth.verify_otp_and_create_session(
-        request.state.db, email_addr, code, settings
-    )
+    session = await auth.verify_otp_and_create_session(request.state.db, email_addr, code, settings)
 
     if session is None:
         return templates.TemplateResponse(
-            request, "otp.html",
+            request,
+            "otp.html",
             {"email": email_addr, "error": "Invalid or expired code."},
             status_code=400,
         )

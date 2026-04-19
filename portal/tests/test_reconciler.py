@@ -37,13 +37,13 @@ def _make_mock_container(name, status="running", image_id="img1"):
     return container
 
 
-# Container naming =====
+# Container naming =====================================================================================================
 def test_container_name():
     conn = _make_connection(path_token="abcdef123456789012345678")
     assert _container_name(conn) == "ss-abcdef123456789012345678"
 
 
-# Reconciliation logic =====
+# Reconciliation logic =================================================================================================
 def test_creates_missing_container():
     conn = _make_connection()
     settings = _make_settings()
@@ -109,9 +109,7 @@ def test_recreates_container_on_image_change():
     conn = _make_connection()
     settings = _make_settings()
 
-    old_container = _make_mock_container(
-        "ss-abcdef123456789012345678", image_id="old_img"
-    )
+    old_container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img")
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
@@ -123,7 +121,7 @@ def test_recreates_container_on_image_change():
     client.containers.run.assert_called_once()
 
 
-# Async functions =====
+# Async functions ======================================================================================================
 @patch("voyager.reconciler._get_docker_client")
 async def test_cleanup_all_containers(mock_get_client):
     c1 = _make_mock_container("ss-aaa111bbb222ccc333ddd444")

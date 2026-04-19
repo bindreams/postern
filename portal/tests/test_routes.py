@@ -43,8 +43,7 @@ async def client(test_app, app_settings):
     await database.close()
 
 
-
-# Login page =====
+# Login page ===========================================================================================================
 async def test_login_page_renders(client):
     response = await client.get("/login")
     assert response.status_code == 200
@@ -79,14 +78,14 @@ async def test_login_nonexistent_email_still_redirects(client):
     assert response.headers["location"] == "/login/verify"
 
 
-# OTP verification =====
+# OTP verification =====================================================================================================
 async def test_verify_page_renders(client):
     response = await client.get("/login/verify")
     assert response.status_code == 200
     assert "6-digit code" in response.text
 
 
-# Dashboard =====
+# Dashboard ============================================================================================================
 async def test_dashboard_requires_auth(client):
     response = await client.get("/", follow_redirects=False)
     assert response.status_code == 303
@@ -102,14 +101,12 @@ async def test_dashboard_with_valid_session(client, app_settings):
     await db.create_session(database, session)
     await database.close()
 
-    response = await client.get(
-        "/", cookies={"session": "test-session-token"}
-    )
+    response = await client.get("/", cookies={"session": "test-session-token"})
     assert response.status_code == 200
     assert "Alice" in response.text
 
 
-# Config download =====
+# Config download ======================================================================================================
 async def test_config_download_requires_auth(client):
     response = await client.get("/connection/fake-id/config", follow_redirects=False)
     assert response.status_code == 303
@@ -151,7 +148,9 @@ async def test_config_download_for_other_user_returns_404(client, app_settings):
     await db.create_user(database, bob)
 
     conn = Connection(
-        user_id=bob.id, label="X", password="k",
+        user_id=bob.id,
+        label="X",
+        password="k",
         path_token="abcdef123456789012345678",
     )
     await db.create_connection(database, conn)
@@ -167,14 +166,14 @@ async def test_config_download_for_other_user_returns_404(client, app_settings):
     assert response.status_code == 404
 
 
-# Health check =====
+# Health check =========================================================================================================
 async def test_healthz(client):
     response = await client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-# Logout =====
+# Logout ===============================================================================================================
 async def test_logout(client, app_settings):
     database = await db.get_connection(app_settings.database_path)
     user = User(name="Alice", email="alice@example.com")
@@ -193,7 +192,7 @@ async def test_logout(client, app_settings):
     assert response.headers["location"] == "/login"
 
 
-# Edge cases =====
+# Edge cases ===========================================================================================================
 async def test_login_page_redirects_when_logged_in(client, app_settings):
     database = await db.get_connection(app_settings.database_path)
     user = User(name="Alice", email="alice@example.com")

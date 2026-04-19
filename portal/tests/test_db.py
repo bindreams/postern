@@ -7,7 +7,7 @@ from voyager import db
 from voyager.models import Connection, Session, User
 
 
-# User CRUD =====
+# User CRUD ============================================================================================================
 async def test_create_and_get_user(test_db):
     user = User(name="Alice", email="alice@example.com")
     created = await db.create_user(test_db, user)
@@ -34,9 +34,7 @@ async def test_list_users(test_db):
 async def test_delete_user_cascades_connections(test_db):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)
-    conn = Connection(
-        user_id=user.id, path_token="aabb112233445566aabb1122", label="Phone", password="key123"
-    )
+    conn = Connection(user_id=user.id, path_token="aabb112233445566aabb1122", label="Phone", password="key123")
     await db.create_connection(test_db, conn)
 
     await db.delete_user(test_db, user.id)
@@ -45,7 +43,7 @@ async def test_delete_user_cascades_connections(test_db):
     assert connections == []
 
 
-# Connection CRUD =====
+# Connection CRUD ======================================================================================================
 async def test_create_connection(test_db):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)
@@ -69,9 +67,7 @@ async def test_list_connections_enabled_only(test_db):
     await db.create_user(test_db, user)
 
     c1 = Connection(user_id=user.id, path_token="aa11bb22cc33dd44ee55ff66", label="A", password="k")
-    c2 = Connection(
-        user_id=user.id, path_token="ff66ee55dd44cc33bb22aa11", label="B", password="k", enabled=False
-    )
+    c2 = Connection(user_id=user.id, path_token="ff66ee55dd44cc33bb22aa11", label="B", password="k", enabled=False)
     await db.create_connection(test_db, c1)
     await db.create_connection(test_db, c2)
 
@@ -100,7 +96,7 @@ async def test_disable_and_enable_connection(test_db):
     assert fetched.enabled is True
 
 
-# OTP =====
+# OTP ==================================================================================================================
 async def test_create_and_verify_otp(test_db):
     expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
     code_hash = hashlib.sha256(b"123456").hexdigest()
@@ -137,15 +133,13 @@ async def test_otp_rate_limit(test_db):
     expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
 
     for i in range(3):
-        await db.create_otp(
-            test_db, "alice@example.com", f"hash{i}", expires
-        )
+        await db.create_otp(test_db, "alice@example.com", f"hash{i}", expires)
 
     with pytest.raises(ValueError, match="Rate limit"):
         await db.create_otp(test_db, "alice@example.com", "hash3", expires)
 
 
-# Session =====
+# Session ==============================================================================================================
 async def test_create_and_get_session(test_db):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)
@@ -182,7 +176,7 @@ async def test_delete_session(test_db):
     assert await db.get_valid_session(test_db, "tok123") is None
 
 
-# Cleanup =====
+# Cleanup ==============================================================================================================
 async def test_cleanup_expired(test_db):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)
@@ -209,7 +203,7 @@ async def test_cleanup_expired(test_db):
     assert await db.get_valid_session(test_db, "current") is not None
 
 
-# Edge cases =====
+# Edge cases ===========================================================================================================
 async def test_delete_connections_for_user(test_db):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)
@@ -242,7 +236,7 @@ async def test_delete_nonexistent_session(test_db):
     assert not await db.delete_session(test_db, "nonexistent-token")
 
 
-# Migration =====
+# Migration ============================================================================================================
 async def test_migrate_is_idempotent(test_db):
     # test_db fixture already migrated; calling again should be a no-op
     await db.migrate(test_db)

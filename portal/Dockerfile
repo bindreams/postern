@@ -3,9 +3,10 @@ FROM dhi.io/python:3.13-alpine3.21-dev
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /bin/uv
 WORKDIR /app
+ENV PATH="/app/.venv/bin:$PATH"
 
 RUN addgroup -S user && adduser -S -G user -u 1000 user \
-    && mkdir -p /data && chown user:user /data
+	&& mkdir -p /data && chown user:user /data
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev

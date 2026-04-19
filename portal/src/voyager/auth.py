@@ -25,9 +25,7 @@ def generate_session_token() -> str:
     return secrets.token_urlsafe(32)
 
 
-async def request_otp(
-    database: aiosqlite.Connection, email: str, settings: Settings
-) -> str | None:
+async def request_otp(database: aiosqlite.Connection, email: str, settings: Settings) -> str | None:
     """Generate an OTP for the given email.
 
     Returns the plaintext code if the email exists (caller should send it via email),
@@ -36,10 +34,8 @@ async def request_otp(
     """
     code = generate_otp_code()
     code_hash = hash_otp(code)
-    expires_at = (
-        datetime.now(timezone.utc)
-        + timedelta(seconds=settings.otp_expiry_seconds)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    expires_at = (datetime.now(timezone.utc) +
+                  timedelta(seconds=settings.otp_expiry_seconds)).strftime("%Y-%m-%d %H:%M:%S")
 
     user = await db.get_user_by_email(database, email)
 
@@ -72,9 +68,7 @@ async def verify_otp_and_create_session(
     if user is None:
         return None
 
-    expires = (
-        datetime.now(timezone.utc) + timedelta(days=settings.session_expiry_days)
-    ).strftime("%Y-%m-%d %H:%M:%S")
+    expires = (datetime.now(timezone.utc) + timedelta(days=settings.session_expiry_days)).strftime("%Y-%m-%d %H:%M:%S")
     session = Session(
         token=generate_session_token(),
         user_id=user.id,

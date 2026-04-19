@@ -1,20 +1,21 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
     """Application configuration, loaded from environment variables."""
 
-    # Database =====
+    # Database =========================================================================================================
     database_path: str = "/data/voyager.db"
 
-    # SMTP =====
+    # SMTP =============================================================================================================
     smtp_host: str = "localhost"
     smtp_port: int = 465
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from: str = "noreply@example.com"
 
-    # Auth =====
+    # Auth =============================================================================================================
     secret_key: str  # Required, no default -- app fails to start without it
     otp_expiry_seconds: int = 600  # 10 minutes
     otp_max_attempts: int = 5
@@ -22,10 +23,20 @@ class Settings(BaseSettings):
     otp_rate_window_seconds: int = 900  # 15 minutes
     session_expiry_days: int = 7
 
-    # Reconciler =====
+    # Reconciler =======================================================================================================
     reconcile_interval_seconds: int = 60
     shadowsocks_image: str = "local/shadowsocks-server"
     shadowsocks_network: str = "shadowsocks"
 
-    # Domain =====
+    # Domain ===========================================================================================================
     domain: str = "voyager.binarydreams.me"
+
+    @field_validator("secret_key")
+    @classmethod
+    def _reject_placeholder(cls, v: str) -> str:
+        if v == "REPLACE_WITH_HEX_STRING":
+            raise ValueError(
+                "SECRET_KEY is still the .env.example placeholder; "
+                "generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
+            )
+        return v

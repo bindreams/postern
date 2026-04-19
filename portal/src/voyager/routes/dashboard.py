@@ -36,7 +36,8 @@ async def dashboard(request: Request):
     connections = await db.list_connections(request.state.db, user_id=user.id)
 
     return templates.TemplateResponse(
-        request, "dashboard.html",
+        request,
+        "dashboard.html",
         {"user": user, "connections": connections},
     )
 

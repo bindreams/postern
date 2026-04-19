@@ -14,6 +14,7 @@ from pathlib import Path
 import docker
 import docker.errors
 import docker.types
+from docker.models.containers import Container
 
 from voyager import db
 from voyager.models import Connection
@@ -34,11 +35,9 @@ def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
 
-def _list_managed_containers(client: docker.DockerClient) -> dict[str, object]:
+def _list_managed_containers(client: docker.DockerClient) -> dict[str, Container]:
     """Return a dict of container_name -> container for all managed containers."""
-    containers = client.containers.list(
-        all=True, filters={"label": f"{MANAGED_LABEL}={MANAGED_VALUE}"}
-    )
+    containers = client.containers.list(all=True, filters={"label": f"{MANAGED_LABEL}={MANAGED_VALUE}"})
     return {c.name: c for c in containers}
 
 
@@ -50,9 +49,7 @@ def _image_exists(client: docker.DockerClient, image_name: str) -> bool:
         return False
 
 
-def _create_container(
-    client: docker.DockerClient, conn: Connection, settings: Settings
-) -> None:
+def _create_container(client: docker.DockerClient, conn: Connection, settings: Settings) -> None:
     """Create and start an SS container for the given connection."""
     name = _container_name(conn)
     config_b64 = server_config_b64(conn, settings.domain)
@@ -72,7 +69,7 @@ def _create_container(
     )
 
 
-def _remove_container(container: object) -> None:
+def _remove_container(container: Container) -> None:
     """Stop and remove a container."""
     logger.info("Removing container %s", container.name)
     try:
@@ -94,7 +91,7 @@ def _reconcile_once(
     managed = _list_managed_containers(client)
     desired_names = {_container_name(c) for c in connections}
 
-    # Create missing containers -----
+    # Create missing containers ----------------------------------------------------------------------------------------
     for conn in connections:
         name = _container_name(conn)
         if name not in managed:
@@ -103,12 +100,12 @@ def _reconcile_once(
             except Exception:
                 logger.exception("Failed to create container %s", name)
 
-    # Remove orphan containers -----
+    # Remove orphan containers -----------------------------------------------------------------------------------------
     for name, container in managed.items():
         if name not in desired_names:
             _remove_container(container)
 
-    # Restart exited containers -----
+    # Restart exited containers ----------------------------------------------------------------------------------------
     # Re-fetch after creates/removes
     managed = _list_managed_containers(client)
     for name, container in managed.items():
@@ -119,17 +116,13 @@ def _reconcile_once(
             except Exception:
                 logger.exception("Failed to restart container %s", name)
 
-    # Check for image updates -----
+    # Check for image updates ------------------------------------------------------------------------------------------
     try:
         current_image = client.images.get(settings.shadowsocks_image)
         for name, container in managed.items():
             if name in desired_names and container.image.id != current_image.id:
-                logger.info(
-                    "Image changed for %s, recreating", name
-                )
-                conn = next(
-                    c for c in connections if _container_name(c) == name
-                )
+                logger.info("Image changed for %s, recreating", name)
+                conn = next(c for c in connections if _container_name(c) == name)
                 _remove_container(container)
                 try:
                     _create_container(client, conn, settings)
@@ -145,8 +138,8 @@ async def reconcile(database_path: str, settings: Settings) -> None:
 
     if not _image_exists(client, settings.shadowsocks_image):
         logger.error(
-            "Image '%s' not found. Build it with: "
-            "docker build -t %s ./shadowsocks/",
+            "Image '%s' not found. Build it from the repo root with: "
+            "docker build -f shadowsocks/Dockerfile -t %s .",
             settings.shadowsocks_image,
             settings.shadowsocks_image,
         )

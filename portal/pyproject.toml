@@ -15,11 +15,13 @@ dependencies = [
     "typer>=0.15",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
     "httpx>=0.28",
+    "ty>=0.0.29",
+    "yapf>=0.43",
 ]
 
 [project.scripts]
@@ -40,9 +42,6 @@ packages = ["src/voyager"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-
-[tool.ty.environment]
-python = ".venv"
 
 [tool.ty.rules]
 # pydantic-settings loads fields from env at runtime; ty can't see that.

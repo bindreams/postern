@@ -7,7 +7,7 @@ Voyager is a small codebase and is easy to develop on locally. Read [README.md](
 - [`uv`](https://docs.astral.sh/uv/) (manages Python and virtualenvs)
 - Python 3.13 (uv will install it for you)
 - Docker Engine + Docker Compose v2 — only if you want to run the full stack locally
-- [`pre-commit`](https://pre-commit.com) (for hooks)
+- [`prek`](https://prek.j178.dev) (for hooks; a drop-in, faster replacement for `pre-commit`)
 
 The deployment-side prerequisites (Let's Encrypt certs, SMTP, Chainguard registry) are only needed when running the full stack end-to-end. They are not required to write and test Python changes.
 
@@ -17,7 +17,7 @@ The deployment-side prerequisites (Let's Encrypt certs, SMTP, Chainguard registr
 cd portal
 uv sync --all-extras         # installs runtime + dev deps into portal/.venv
 cd ..
-pre-commit install           # installs pre-commit and commit-msg hook types (default_install_hook_types)
+prek install                 # installs pre-commit and commit-msg hook types (default_install_hook_types)
 ```
 
 ## Running tests
@@ -65,7 +65,7 @@ The admin CLI works regardless: `docker compose exec portal voyager user list`.
 
 ## Code style
 
-Pre-commit enforces everything; just run `pre-commit install` once and let the hooks do the work. In detail:
+Prek (a Rust-based drop-in replacement for `pre-commit`) enforces everything; just run `prek install` once and let the hooks do the work. In detail:
 
 - **yapf** — formatter.
 - **ty** — type checker (Astral's pyright-compatible checker), run as `uvx ty check`.
@@ -76,7 +76,7 @@ Pre-commit enforces everything; just run `pre-commit install` once and let the h
 To run every hook on the whole tree:
 
 ```bash
-pre-commit run --all-files
+prek run --all-files
 ```
 
 ## Commit messages
@@ -99,7 +99,7 @@ git subrepo push external/<name>
 
 These directories are:
 
-- Excluded from pre-commit (`exclude: "^external/"`)
+- Excluded from prek (`exclude = "^external/"` in [prek.toml](prek.toml))
 - Marked `linguist-vendored` in [.gitattributes](.gitattributes) (so they don't skew GitHub language stats)
 - Excluded from most project tooling
 
@@ -112,7 +112,7 @@ These directories are:
 Before pushing:
 
 1. `cd portal && uv run pytest` — all tests pass.
-1. `pre-commit run --all-files` — clean.
+1. `prek run --all-files` — clean.
 1. `external/` unchanged, unless the PR is intentionally pulling a new upstream ref.
 1. Commit messages are single-line and describe the change, not the process.
 

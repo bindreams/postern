@@ -61,7 +61,7 @@ portal/src/voyager/
 
 [external/](external/) is managed with [git-subrepo](https://github.com/ingydotnet/git-subrepo), not submodules. `external/shadowsocks-rust` and `external/v2ray-plugin` are pinned upstream copies.
 
-- Pre-commit excludes `^external/` ([.pre-commit-config.yaml](.pre-commit-config.yaml)).
+- Prek excludes `^external/` ([prek.toml](prek.toml)).
 - `.gitattributes` marks them `linguist-vendored`.
 - [.github/workflows/subrepo-pull.yml](.github/workflows/subrepo-pull.yml) automates `git subrepo pull` when Renovate bumps the pinned refs.
 
@@ -90,7 +90,7 @@ Global convention: Python is yapf-formatted, type-hinted, and section-comment-an
 
 That script is ALSO a pytest module (the tests live in the same file). If you find yourself "cleaning up dead code" there, stop — you are looking at its test suite.
 
-Type checking is `ty` (invoked via `uvx ty check` in pre-commit). Commit messages are single-line; trailers like `Approved-By:` go after a blank line and are reserved for tool-generated metadata.
+Type checking is `ty` (invoked via `uvx ty check` in prek). Commit messages are single-line; trailers like `Approved-By:` go after a blank line and are reserved for tool-generated metadata.
 
 ## Do-not list
 
@@ -132,6 +132,6 @@ docker compose logs -f nginx
 # Tests
 cd portal && uv run pytest
 
-# Full pre-commit
-pre-commit run --all-files
+# Full prek run
+prek run --all-files
 ```

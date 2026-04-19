@@ -158,11 +158,11 @@ shadowsocks/                    # Per-connection tunnel image (Go + Rust multi-s
 external/                       # Vendored upstreams, managed as git-subrepos
     shadowsocks-rust/
     v2ray-plugin/
-scripts/                        # Pre-commit helpers
+scripts/                        # Prek (pre-commit) helpers
 .github/workflows/              # subrepo-pull.yml: Renovate-driven subrepo updates
 ```
 
 ## See also
 
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, pre-commit, subrepo workflow
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, prek, subrepo workflow
 - [CLAUDE.md](CLAUDE.md) — guide for AI coding agents working on this repo

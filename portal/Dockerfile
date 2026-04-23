@@ -9,13 +9,12 @@ RUN addgroup -S user && adduser -S -G user -u 1000 user \
 	&& mkdir -p /data && chown user:user /data
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
-
 COPY src/ src/
+RUN uv sync --frozen --no-dev
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER user
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uv", "run", "uvicorn", "voyager.app:app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]
+CMD ["uvicorn", "voyager.app:app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]

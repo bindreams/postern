@@ -119,17 +119,21 @@ def _reconcile_once(
     # Check for image updates ------------------------------------------------------------------------------------------
     try:
         current_image = client.images.get(settings.shadowsocks_image)
-        for name, container in managed.items():
-            if name in desired_names and container.image.id != current_image.id:
-                logger.info("Image changed for %s, recreating", name)
-                conn = next(c for c in connections if _container_name(c) == name)
-                _remove_container(container)
-                try:
-                    _create_container(client, conn, settings)
-                except Exception:
-                    logger.exception("Failed to recreate container %s", name)
     except docker.errors.ImageNotFound:
-        pass  # Image not built yet; skip upgrade check
+        return  # Image not built yet; skip upgrade check
+
+    for name, container in managed.items():
+        # container.attrs["Image"] is the image ID stored on the container at create
+        # time. Cheaper than container.image.id (which does an images.get() lookup
+        # and 404s when the old image has been garbage-collected after rebuild).
+        if name in desired_names and container.attrs.get("Image") != current_image.id:
+            logger.info("Image changed for %s, recreating", name)
+            conn = next(c for c in connections if _container_name(c) == name)
+            _remove_container(container)
+            try:
+                _create_container(client, conn, settings)
+            except Exception:
+                logger.exception("Failed to recreate container %s", name)
 
 
 async def reconcile(database_path: str, settings: Settings) -> None:

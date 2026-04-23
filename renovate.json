@@ -3,12 +3,24 @@
   "extends": ["config:recommended"],
   "customManagers": [
     {
+      "_comment": "Tag-pinned git-subrepos (e.g. shadowsocks-rust at v1.24.0). Renovate bumps 'branch = vX.Y.Z' to the newest upstream release; .github/workflows/subrepo-pull.yml completes the pull.",
       "customType": "regex",
       "fileMatch": ["external/.*/\\.gitrepo$"],
       "matchStrings": [
         "remote = https://github.com/(?<depName>[^\\n]+?)(\\.git)?\\n[\\s\\S]*?branch = (?<currentValue>v[\\d.]+)"
       ],
       "datasourceTemplate": "github-releases"
+    },
+    {
+      "_comment": "Branch-pinned git-subrepos (e.g. v2ray-plugin on master; upstream stopped cutting releases in 2022). Renovate bumps 'commit = <sha>' when the branch moves; .github/workflows/subrepo-pull.yml completes the pull.",
+      "customType": "regex",
+      "fileMatch": ["external/.*/\\.gitrepo$"],
+      "matchStrings": [
+        "remote = (?<packageName>https://github.com/[^\\n]+?)(\\.git)?\\n[\\s\\S]*?branch = (?<currentValue>(?!v[\\d.])[^\\s]+)\\s*\\n\\s*commit = (?<currentDigest>[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "loose",
+      "depNameTemplate": "{{packageName}}"
     }
   ],
   "hostRules": [

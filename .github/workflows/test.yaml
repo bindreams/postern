@@ -1,0 +1,53 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --all-extras
+        working-directory: portal
+      - run: uv run pytest -m "not e2e"
+        working-directory: portal
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add voyager.test to /etc/hosts (for the host-side pytest client)
+        run: echo "127.0.0.1 voyager.test" | sudo tee -a /etc/hosts
+
+      - name: Log in to Docker Hardened Images registry
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build the per-connection shadowsocks image (compose does not build it)
+        run: docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+
+      - run: uv sync --group e2e
+        working-directory: portal
+
+      - run: uv run pytest -m e2e -v --timeout=180
+        working-directory: portal
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml logs --no-color
+          docker ps -a --filter label=voyager.managed=true

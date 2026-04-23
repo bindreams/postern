@@ -1,0 +1,134 @@
+## E2E test stack for the Voyager portal.
+##
+## Always run with the dedicated project name so volumes and networks stay
+## isolated from a co-located production stack:
+##
+##   docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --build --wait
+##   docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
+##
+## Network topology (see portal/tests/e2e/PLAN notes):
+##   default            - internal service mesh (portal <-> docker-proxy, mailpit; nginx <-> portal)
+##   e2e-tunnel-entry   - ssclient <-> nginx (nginx aliased as voyager.test here)
+##   e2e-shadowsocks    - nginx <-> reconciler-spawned ss-* <-> go-httpbin
+##
+## ssclient cannot reach go-httpbin directly (no shared network). The only path
+## is through the SOCKS proxy + nginx tunnel + ss-<token> container. That is the
+## byte-round-trip proof.
+
+services:
+  portal:
+    build: ../..
+    image: local/voyager-portal
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      SECRET_KEY: test-e2e-do-not-use-in-production
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: noreply@voyager.test
+      DOMAIN: voyager.test
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks
+      RECONCILE_INTERVAL_SECONDS: "3600"
+    volumes:
+      - voyager-e2e-data:/data
+    networks: [default]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    stop_grace_period: 30s  # gives cleanup_all_containers room to run
+
+  nginx:
+    build: ../../../nginx
+    image: local/nginx
+    ports:
+      - "127.0.0.1:8443:443/tcp"
+    volumes:
+      - type: bind
+        read_only: true
+        source: ./nginx.conf
+        target: /etc/nginx/nginx.conf
+      - type: bind
+        read_only: true
+        source: ./certs
+        target: /etc/letsencrypt/live/voyager.test
+    networks:
+      default:
+      e2e-tunnel-entry:
+        aliases: [voyager.test]
+      e2e-shadowsocks:
+    depends_on:
+      portal:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "--no-check-certificate", "https://localhost/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      IMAGES: 1
+      POST: 1
+    volumes:
+      - type: bind
+        read_only: true
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 6
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    ports:
+      - "127.0.0.1:8025:8025/tcp"  # HTTP API for the test fixtures
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8025/readyz"]
+      interval: 3s
+      timeout: 2s
+      retries: 6
+
+  go-httpbin:
+    image: mccutchen/go-httpbin:v2.15.0
+    networks: [e2e-shadowsocks]
+    # No healthcheck: the image is scratch-based (no shell, no wget). It starts in ms.
+
+  ssclient:
+    build:
+      context: ../../..
+      dockerfile: portal/tests/e2e/ssclient.Dockerfile
+    image: local/voyager-ssclient
+    networks: [e2e-tunnel-entry]
+    command: ["sleep", "infinity"]
+
+networks:
+  default:
+    name: voyager-e2e-default
+  e2e-tunnel-entry:
+    name: e2e-tunnel-entry
+    driver: bridge
+  e2e-shadowsocks:
+    name: e2e-shadowsocks
+    driver: bridge
+
+volumes:
+  voyager-e2e-data:
+    name: voyager-e2e-data

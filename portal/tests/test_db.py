@@ -1,5 +1,7 @@
 import hashlib
+import hmac
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -137,6 +139,29 @@ async def test_otp_rate_limit(test_db):
 
     with pytest.raises(ValueError, match="Rate limit"):
         await db.create_otp(test_db, "alice@example.com", "hash3", expires)
+
+
+async def test_verify_otp_uses_constant_time_comparison(test_db):
+    """Invariant: OTP verification must go through hmac.compare_digest, never ==.
+    Guards against a reviewer simplifying the comparison. See CLAUDE.md.
+
+    Covers BOTH accept and reject paths so compare_digest is pinned as the
+    gatekeeper for the decision, not just called incidentally."""
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    code_hash = hashlib.sha256(b"123456").hexdigest()
+    wrong_hash = hashlib.sha256(b"000000").hexdigest()
+
+    await db.create_otp(test_db, "alice@example.com", code_hash, expires)
+
+    # Reject path: compare called with (stored, provided), returns False.
+    with patch("voyager.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
+        assert not await db.verify_otp(test_db, "alice@example.com", wrong_hash)
+    mock_cmp.assert_called_once_with(code_hash, wrong_hash)
+
+    # Accept path: compare_digest gates acceptance.
+    with patch("voyager.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
+        assert await db.verify_otp(test_db, "alice@example.com", code_hash)
+    mock_cmp.assert_called_once_with(code_hash, code_hash)
 
 
 # Session ==============================================================================================================

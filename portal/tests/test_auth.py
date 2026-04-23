@@ -46,6 +46,18 @@ async def test_request_otp_for_nonexistent_user(test_db, settings):
     assert code is None
 
 
+async def test_request_otp_creates_dummy_row_for_nonexistent_user(test_db, settings):
+    """Invariant: unknown emails must still create an otp_codes row (under a
+    __dummy__ prefix) so timing and rate-limit buckets don't leak existence.
+    See CLAUDE.md "Email-enumeration defence"."""
+    await request_otp(test_db, "ghost@example.com", settings)
+
+    cursor = await test_db.execute("SELECT email FROM otp_codes")
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0]["email"] == "__dummy__ghost@example.com"
+
+
 async def test_verify_otp_creates_session(test_db, settings):
     user = User(name="Alice", email="alice@example.com")
     await db.create_user(test_db, user)

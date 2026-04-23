@@ -63,3 +63,14 @@ async def test_send_otp_email_starttls_port_587(mock_send):
     call_kwargs = mock_send.call_args.kwargs
     assert call_kwargs["use_tls"] is False
     assert call_kwargs["start_tls"] is True
+
+
+@patch("voyager.email.aiosmtplib.send", new_callable=AsyncMock)
+async def test_send_otp_email_other_port_is_plaintext(mock_send):
+    """Invariant: ports other than 465/587 mean plaintext. See CLAUDE.md."""
+    settings = _make_settings(smtp_port=25)
+    await send_otp_email("alice@example.com", "123456", settings)
+
+    call_kwargs = mock_send.call_args.kwargs
+    assert call_kwargs["use_tls"] is False
+    assert call_kwargs["start_tls"] is False

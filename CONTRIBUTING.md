@@ -22,14 +22,51 @@ prek install                 # installs pre-commit and commit-msg hook types (de
 
 ## Running tests
 
+There are two test layers. Unit tests (default) are mock-based and run anywhere. End-to-end tests boot the real compose stack and require Linux + docker.
+
+### Unit tests
+
 ```bash
 cd portal
-uv run pytest                # full suite
+uv run pytest -m "not e2e"                         # full unit suite (default if you skip the marker)
 uv run pytest tests/test_db.py                     # single file
 uv run pytest tests/test_db.py::test_create_user   # single test
 ```
 
 Tests use a temporary SQLite file (`tmp_path` fixture in [tests/conftest.py](portal/tests/conftest.py)) and mock the Docker client where needed, so they do NOT require a running Docker daemon. `asyncio_mode = "auto"` is set in `pyproject.toml`, so `async def test_...` functions need no `@pytest.mark.asyncio` marker.
+
+### End-to-end tests
+
+The e2e suite under [portal/tests/e2e/](portal/tests/e2e/) brings up the real stack (portal + nginx + docker-proxy + mailpit + go-httpbin + ssclient) in an isolated `voyager-e2e` compose project, drives the full OTP login flow against HTTPS, and proves a TCP byte round-trips through a reconciler-spawned `ss-*` container. It is opt-in:
+
+```bash
+cd portal
+uv sync --group e2e
+uv run pytest -m e2e -v
+```
+
+**Prerequisites (all required, all one-time):**
+
+- **Linux + docker.** Same constraint as the production stack. WSL2 works.
+- **`/etc/hosts`** must map `voyager.test` to localhost so the host-side pytest client resolves the test domain to the nginx container's exposed port:
+  ```bash
+  echo "127.0.0.1 voyager.test" | sudo tee -a /etc/hosts
+  ```
+- **DHI auth.** Same prerequisite as building any production image. `docker login dhi.io` with a Docker Hub PAT on an org with the Docker Hardened Images entitlement.
+- **`local/shadowsocks-server` image** must exist before the suite starts. Build it from the repo root:
+  ```bash
+  docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+  ```
+
+The session fixture builds the other images (`local/voyager-portal`, `local/nginx`, `local/voyager-ssclient`) automatically via `docker compose up --build`.
+
+**Test certs.** The e2e stack uses a self-signed CA + leaf for `voyager.test` committed under [portal/tests/e2e/certs/](portal/tests/e2e/certs/). To regenerate (1-year validity):
+
+```bash
+bash portal/tests/e2e/certs/regen.sh
+```
+
+Tests trust the committed CA via `httpx(verify=...)` for the host-side client and via `update-ca-certificates` baked into the ssclient image.
 
 ## Running the stack locally
 

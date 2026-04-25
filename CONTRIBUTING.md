@@ -107,7 +107,7 @@ Prek (a Rust-based drop-in replacement for `pre-commit`) enforces everything; ju
 - **yapf** — formatter.
 - **ty** — type checker (Astral's pyright-compatible checker), run as `uvx ty check`.
 - **format-section-comments** — [scripts/format-section-comments.py](scripts/format-section-comments.py) aligns the project's section-comment convention: `# <name> =====` for primary sections, `# <name> -----` for subsections.
-- **mdformat** — normalizes Markdown; it WILL reflow new .md files. Commit the reflowed output rather than fight the tool.
+- **prettier** — normalizes Markdown; it WILL reflow new .md files. Commit the reflowed output rather than fight the tool.
 - **editorconfig-checker**, **mixed-line-ending**, **check-executables-have-shebangs**, **check-shebang-scripts-are-executable** — file hygiene.
 
 To run every hook on the whole tree:

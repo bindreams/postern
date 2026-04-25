@@ -63,12 +63,12 @@ Environment variables are loaded from `.env` (copied from `.env.example`) into t
 
 | Variable                      | Default                    | Purpose                                                                                                                    |
 | ----------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `SECRET_KEY`                  | *(required)*               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
+| `SECRET_KEY`                  | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
 | `DATABASE_PATH`               | `/data/voyager.db`         | SQLite path inside the portal container. Lives on the `voyager-data` named volume, not `./data/`.                          |
 | `SMTP_HOST`                   | `localhost`                | Outbound SMTP server.                                                                                                      |
 | `SMTP_PORT`                   | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                         |
-| `SMTP_USER`                   | *(empty)*                  | SMTP auth username.                                                                                                        |
-| `SMTP_PASSWORD`               | *(empty)*                  | SMTP auth password.                                                                                                        |
+| `SMTP_USER`                   | _(empty)_                  | SMTP auth username.                                                                                                        |
+| `SMTP_PASSWORD`               | _(empty)_                  | SMTP auth password.                                                                                                        |
 | `SMTP_FROM`                   | `noreply@example.com`      | `From:` header for OTP emails.                                                                                             |
 | `OTP_EXPIRY_SECONDS`          | `600`                      | OTP lifetime (10 min).                                                                                                     |
 | `OTP_MAX_ATTEMPTS`            | `5`                        | Wrong-code attempts before the OTP is invalidated.                                                                         |

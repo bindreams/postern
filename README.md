@@ -166,3 +166,11 @@ scripts/                        # Prek (pre-commit) helpers
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, tests, prek, subrepo workflow
 - [CLAUDE.md](CLAUDE.md) — guide for AI coding agents working on this repo
+
+## License
+
+<img align="right" src="https://www.gnu.org/graphics/agplv3-with-text-162x68.png">
+
+Copyright (C) 2026, Anna Zhukova
+
+This project is licensed under the [GNU AGPL version 3.0](/LICENSE.md), which means it is free for you to use. Some files in this repository are external and are licensed under their own terms, conveyed in an in-file license header.

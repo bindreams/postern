@@ -25,7 +25,9 @@ services:
     restart: unless-stopped
 
   portal:
-    build: ./portal
+    build:
+      context: .
+      dockerfile: portal/Dockerfile
     image: local/voyager-portal
     container_name: portal
     env_file: .env

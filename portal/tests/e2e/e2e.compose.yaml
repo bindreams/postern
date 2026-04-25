@@ -17,7 +17,9 @@
 
 services:
   portal:
-    build: ../..
+    build:
+      context: ../../..
+      dockerfile: portal/Dockerfile
     image: local/voyager-portal
     read_only: true
     tmpfs: [/tmp]

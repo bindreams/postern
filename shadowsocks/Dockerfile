@@ -12,11 +12,15 @@ COPY external/shadowsocks-rust/ .
 RUN cargo build --release --bin ssserver
 
 FROM dhi.io/alpine-base:3.23
+LABEL org.opencontainers.image.licenses="MIT"
 # ssserver links libgcc_s at runtime; non-dev alpine-base doesn't ship it, so
 # copy from the builder (where apk provided it via musl-dev transitive deps).
 COPY --from=build-shadowsocks /usr/lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1
 COPY --from=build-v2ray-plugin /v2ray-plugin /usr/local/bin/v2ray-plugin
 COPY --from=build-shadowsocks /src/target/release/ssserver /usr/local/bin/ssserver
+COPY LICENSE.md /usr/share/licenses/voyager/LICENSE.md
+COPY external/v2ray-plugin/LICENSE /usr/share/licenses/v2ray-plugin/LICENSE
+COPY external/shadowsocks-rust/LICENSE /usr/share/licenses/shadowsocks-rust/LICENSE
 
 # Config is passed as base64-encoded SS_CONFIG env var, decoded to tmpfs at runtime.
 # Inlined into CMD because the non-dev runtime is distroless + nonroot and can't

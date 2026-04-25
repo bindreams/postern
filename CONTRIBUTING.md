@@ -1,6 +1,6 @@
 # Contributing
 
-Voyager is a small codebase and is easy to develop on locally. Read [README.md](README.md) first to understand what the project does and how it deploys; this document covers the contributor workflow only.
+Postern is a small codebase and is easy to develop on locally. Read [README.md](README.md) first to understand what the project does and how it deploys; this document covers the contributor workflow only.
 
 ## Prerequisites
 
@@ -9,7 +9,7 @@ Voyager is a small codebase and is easy to develop on locally. Read [README.md](
 - Docker Engine + Docker Compose v2 — only if you want to run the full stack locally
 - [`prek`](https://prek.j178.dev) (for hooks; a drop-in, faster replacement for `pre-commit`)
 
-The deployment-side prerequisites (Let's Encrypt certs, SMTP, Chainguard registry) are only needed when running the full stack end-to-end. They are not required to write and test Python changes.
+The deployment-side prerequisites (Let's Encrypt certs, SMTP, Docker Hardened Images registry) are only needed when running the full stack end-to-end. They are not required to write and test Python changes.
 
 ## Setup
 
@@ -37,7 +37,7 @@ Tests use a temporary SQLite file (`tmp_path` fixture in [tests/conftest.py](por
 
 ### End-to-end tests
 
-The e2e suite under [portal/tests/e2e/](portal/tests/e2e/) brings up the real stack (portal + nginx + docker-proxy + mailpit + go-httpbin + ssclient) in an isolated `voyager-e2e` compose project, drives the full OTP login flow against HTTPS, and proves a TCP byte round-trips through a reconciler-spawned `ss-*` container. It is opt-in:
+The e2e suite under [portal/tests/e2e/](portal/tests/e2e/) brings up the real stack (portal + nginx + docker-proxy + mailpit + go-httpbin + ssclient) in an isolated `postern-e2e` compose project, drives the full OTP login flow against HTTPS, and proves a TCP byte round-trips through a reconciler-spawned `ss-*` container. It is opt-in:
 
 ```bash
 cd portal
@@ -48,19 +48,19 @@ uv run pytest -m e2e -v
 **Prerequisites (all required, all one-time):**
 
 - **Linux + docker.** Same constraint as the production stack. WSL2 works.
-- **`/etc/hosts`** must map `voyager.test` to localhost so the host-side pytest client resolves the test domain to the nginx container's exposed port:
+- **`/etc/hosts`** must map `postern.test` to localhost so the host-side pytest client resolves the test domain to the nginx container's exposed port:
   ```bash
-  echo "127.0.0.1 voyager.test" | sudo tee -a /etc/hosts
+  echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
   ```
-- **DHI auth.** Same prerequisite as building any production image. `docker login dhi.io` with a Docker Hub PAT on an org with the Docker Hardened Images entitlement.
+- **DHI auth.** Same prerequisite as building any production image. `docker login dhi.io` with a Docker Hub PAT (any free Docker Hub account works; the DHI catalog is free under Apache 2.0).
 - **`local/shadowsocks-server` image** must exist before the suite starts. Build it from the repo root:
   ```bash
   docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
   ```
 
-The session fixture builds the other images (`local/voyager-portal`, `local/nginx`, `local/voyager-ssclient`) automatically via `docker compose up --build`.
+The session fixture builds the other images (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) automatically via `docker compose up --build`.
 
-**Test certs.** The e2e stack uses a self-signed CA + leaf for `voyager.test` committed under [portal/tests/e2e/certs/](portal/tests/e2e/certs/). To regenerate (1-year validity):
+**Test certs.** The e2e stack uses a self-signed CA + leaf for `postern.test` committed under [portal/tests/e2e/certs/](portal/tests/e2e/certs/). To regenerate (1-year validity):
 
 ```bash
 bash portal/tests/e2e/certs/regen.sh
@@ -74,16 +74,16 @@ Tests trust the committed CA via `httpx(verify=...)` for the host-side client an
 docker compose up --build
 ```
 
-**Heads-up: login requires HTTPS.** Session cookies are set with `secure=True` ([portal/src/voyager/routes/login.py](portal/src/voyager/routes/login.py)), so a browser will not send them over plain HTTP and the login flow cannot complete without TLS.
+**Heads-up: login requires HTTPS.** Session cookies are set with `secure=True` ([portal/src/postern/routes/login.py](portal/src/postern/routes/login.py)), so a browser will not send them over plain HTTP and the login flow cannot complete without TLS.
 
 For local testing, you have two realistic options:
 
-- **Use [`mkcert`](https://github.com/FiloSottile/mkcert)** to generate a locally-trusted cert for a hostname you control (e.g. `voyager.localtest.me`). Nginx expects Let's-Encrypt-style layout; put the files where the bind mount picks them up:
+- **Use [`mkcert`](https://github.com/FiloSottile/mkcert)** to generate a locally-trusted cert for a hostname you control (e.g. `postern.localtest.me`). Nginx expects Let's-Encrypt-style layout; put the files where the bind mount picks them up:
 
   ```bash
-  sudo mkdir -p /etc/letsencrypt/live/voyager.localtest.me
-  cd /etc/letsencrypt/live/voyager.localtest.me
-  sudo mkcert -cert-file fullchain.pem -key-file privkey.pem voyager.localtest.me
+  sudo mkdir -p /etc/letsencrypt/live/postern.localtest.me
+  cd /etc/letsencrypt/live/postern.localtest.me
+  sudo mkcert -cert-file fullchain.pem -key-file privkey.pem postern.localtest.me
   sudo cp fullchain.pem chain.pem   # nginx reads chain.pem separately for OCSP
   ```
 
@@ -93,12 +93,12 @@ For local testing, you have two realistic options:
 
   ```bash
   cd portal
-  SECRET_KEY=dev uv run uvicorn voyager.app:app --factory --port 8000
+  SECRET_KEY=dev uv run uvicorn postern.app:app --factory --port 8000
   ```
 
-  `--factory` is required — `voyager.app:app` is a callable factory, not a `FastAPI` instance. You cannot complete the OTP login end-to-end this way (session cookies need HTTPS).
+  `--factory` is required — `postern.app:app` is a callable factory, not a `FastAPI` instance. You cannot complete the OTP login end-to-end this way (session cookies need HTTPS).
 
-The admin CLI works regardless: `docker compose exec portal voyager user list`.
+The admin CLI works regardless: `docker compose exec portal postern user list`.
 
 ## Code style
 
@@ -154,3 +154,7 @@ Before pushing:
 1. Commit messages are single-line and describe the change, not the process.
 
 If your change touches anything under the "architecture invariants" list in [CLAUDE.md](CLAUDE.md), explicitly call out why the invariant still holds (or why you updated all the linked locations together).
+
+### CI behavior on forks
+
+The e2e job needs Docker Hub credentials to pull `dhi.io` base images. For fork PRs, GitHub doesn't expose repo secrets automatically — the e2e job pauses on a maintainer-approval gate (the `e2e-dhi` environment). After a maintainer approves, e2e runs against your PR head with read-only Docker Hub credentials. Unit tests always run unrestricted.

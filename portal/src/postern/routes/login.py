@@ -6,7 +6,7 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from voyager import auth, db, email
+from postern import auth, db, email
 
 router = APIRouter()
 _template_dir = Path(__file__).resolve().parent.parent / "templates"

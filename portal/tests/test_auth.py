@@ -1,13 +1,13 @@
-from voyager import db
-from voyager.auth import (
+from postern import db
+from postern.auth import (
     generate_otp_code,
     generate_session_token,
     hash_otp,
     request_otp,
     verify_otp_and_create_session,
 )
-from voyager.models import User
-from voyager.settings import Settings
+from postern.models import User
+from postern.settings import Settings
 
 
 def test_generate_otp_code_is_6_digits():

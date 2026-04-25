@@ -4,7 +4,7 @@ import hmac
 
 import aiosqlite
 
-from voyager.models import Connection, Session, User
+from postern.models import Connection, Session, User
 
 # Schema versions ======================================================================================================
 MIGRATIONS: dict[int, str] = {

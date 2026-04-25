@@ -8,12 +8,12 @@ from pathlib import Path
 
 import typer
 
-from voyager import db
-from voyager.models import Connection, User
-from voyager.settings import Settings
-from voyager.ss_config import generate_password
+from postern import db
+from postern.models import Connection, User
+from postern.settings import Settings
+from postern.ss_config import generate_password
 
-app = typer.Typer(name="voyager")
+app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
 connection_app = typer.Typer(name="connection", help="Manage connections")
 app.add_typer(user_app)

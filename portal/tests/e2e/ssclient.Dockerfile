@@ -16,7 +16,7 @@ FROM dhi.io/alpine-base:3.23-dev
 RUN apk add --no-cache ca-certificates curl libgcc
 COPY --from=build-v2ray-plugin /v2ray-plugin /usr/local/bin/v2ray-plugin
 COPY --from=build-shadowsocks /src/target/release/sslocal /usr/local/bin/sslocal
-COPY portal/tests/e2e/certs/ca.pem /usr/local/share/ca-certificates/voyager-test-ca.crt
+COPY portal/tests/e2e/certs/ca.pem /usr/local/share/ca-certificates/postern-test-ca.crt
 RUN update-ca-certificates
 
 CMD ["sleep", "infinity"]

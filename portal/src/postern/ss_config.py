@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import json
 
-from voyager.models import Connection
+from postern.models import Connection
 
 CIPHER = "chacha20-ietf-poly1305"
 SERVER_PORT = 80

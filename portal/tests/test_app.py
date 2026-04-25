@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 from asgi_lifespan import LifespanManager
 
-from voyager.app import create_app
-from voyager.settings import Settings
+from postern.app import create_app
+from postern.settings import Settings
 
 
 async def test_lifespan_starts_and_stops_reconciler(tmp_path):
@@ -22,8 +22,8 @@ async def test_lifespan_starts_and_stops_reconciler(tmp_path):
         await asyncio.Event().wait()  # block until cancelled
 
     with (
-        patch("voyager.app.reconciliation_loop", new=fake_loop),
-        patch("voyager.app.cleanup_all_containers", new_callable=AsyncMock) as mock_cleanup,
+        patch("postern.app.reconciliation_loop", new=fake_loop),
+        patch("postern.app.cleanup_all_containers", new_callable=AsyncMock) as mock_cleanup,
     ):
         async with LifespanManager(app):
             # Startup: wait on the event (don't rely on sleep(0) yielding far enough)

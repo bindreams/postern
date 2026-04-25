@@ -6,10 +6,10 @@ import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
-from voyager import db
-from voyager.app import create_app
-from voyager.models import Connection, Session, User
-from voyager.settings import Settings
+from postern import db
+from postern.app import create_app
+from postern.models import Connection, Session, User
+from postern.settings import Settings
 
 from datetime import datetime, timedelta, timezone
 
@@ -47,7 +47,7 @@ async def client(test_app, app_settings):
 async def test_login_page_renders(client):
     response = await client.get("/login")
     assert response.status_code == 200
-    assert "Voyager VPN" in response.text
+    assert "Postern VPN" in response.text
 
 
 async def test_login_redirects_to_verify(client, app_settings):
@@ -56,7 +56,7 @@ async def test_login_redirects_to_verify(client, app_settings):
     await db.create_user(database, User(name="Alice", email="alice@example.com"))
     await database.close()
 
-    with patch("voyager.routes.login.email.send_otp_email", new_callable=AsyncMock, return_value=True):
+    with patch("postern.routes.login.email.send_otp_email", new_callable=AsyncMock, return_value=True):
         response = await client.post(
             "/login",
             data={"email": "alice@example.com"},
@@ -136,7 +136,7 @@ async def test_config_download_for_owned_connection(client, app_settings):
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     data = response.json()
-    assert data["servers"][0]["address"] == "voyager.binarydreams.me"
+    assert data["servers"][0]["address"] == "postern.example.com"
     assert "path=/t/abcdef123456789012345678" in data["servers"][0]["plugin_opts"]
 
 

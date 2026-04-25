@@ -3,9 +3,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
 jobs:
   unit:
+    # On same-repo PRs, both pull_request and pull_request_target fire; run unit
+    # only via pull_request to avoid duplicate runs. Push events are unaffected.
+    if: github.event_name != 'pull_request_target'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,12 +23,29 @@ jobs:
         working-directory: portal
 
   e2e:
+    # Run e2e on:
+    #   - push to main
+    #   - same-repo PRs (via pull_request; pull_request_target also fires but is skipped)
+    #   - fork PRs (via pull_request_target only; pull_request would not have secrets)
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
     runs-on: ubuntu-latest
+    # Pick which environment supplies dhi.io secrets:
+    #   - fork PR  -> e2e-dhi         (gated on maintainer approval)
+    #   - else     -> e2e-dhi-trusted (no reviewers; same secrets)
+    environment:
+      name: ${{ (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository) && 'e2e-dhi' || 'e2e-dhi-trusted' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # pull_request_target defaults to base; explicitly pull the PR head.
+          # Same-repo PRs and pushes use github.sha (the default) via the fallback.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Add voyager.test to /etc/hosts (for the host-side pytest client)
-        run: echo "127.0.0.1 voyager.test" | sudo tee -a /etc/hosts
+      - name: Add postern.test to /etc/hosts (for the host-side pytest client)
+        run: echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
 
       - name: Log in to Docker Hardened Images registry
         uses: docker/login-action@v3
@@ -49,5 +71,5 @@ jobs:
       - name: Dump compose logs on failure
         if: failure()
         run: |
-          docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml logs --no-color
-          docker ps -a --filter label=voyager.managed=true
+          docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml logs --no-color
+          docker ps -a --filter label=postern.managed=true

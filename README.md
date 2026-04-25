@@ -1,6 +1,6 @@
-# Voyager VPN
+# Postern VPN
 
-Voyager VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small FastAPI web portal with an Nginx reverse proxy and a dynamic fleet of Shadowsocks-rust + v2ray-plugin containers (one per connection). Users sign in with an email one-time code, then download a client config for their tunnel. An internal reconciliation loop keeps running containers in sync with the portal database.
+Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small FastAPI web portal with an Nginx reverse proxy and a dynamic fleet of Shadowsocks-rust + v2ray-plugin containers (one per connection). Users sign in with an email one-time code, then download a client config for their tunnel. An internal reconciliation loop keeps running containers in sync with the portal database.
 
 ## Architecture
 
@@ -27,8 +27,8 @@ Voyager VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small Fa
 
 - Docker Engine and Docker Compose v2
 - A public domain you control, with Let's Encrypt certificates at `/etc/letsencrypt/live/<domain>/` (bind-mounted into the Nginx container)
-- SMTP credentials for OTP email delivery (Voyager was developed against [Resend](https://resend.com), but any SMTP server works — TLS mode is derived from the port: 465 → implicit TLS, 587 → STARTTLS)
-- Access to the [Chainguard Docker Images](https://images.chainguard.dev) registry (`dhi.io`). The base images used by Nginx and the portal pull from there — run `docker login dhi.io` with your Chainguard credentials before the first build.
+- SMTP credentials for OTP email delivery (Postern was developed against [Resend](https://resend.com), but any SMTP server works — TLS mode is derived from the port: 465 → implicit TLS, 587 → STARTTLS)
+- A free [Docker Hub](https://hub.docker.com) account with a Personal Access Token. The base images used by Nginx and the portal come from [Docker Hardened Images](https://docs.docker.com/dhi/) (`dhi.io`); the catalog is free under Apache 2.0 but pulls require authentication. Run `docker login dhi.io` with your Docker Hub username + PAT before the first build.
 
 ## Quick start
 
@@ -45,7 +45,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 # 4. Fill in SMTP credentials in .env (SMTP_HOST / PORT / USER / PASSWORD / FROM)
 
-# 5. (If your domain is not voyager.binarydreams.me, see "Re-hosting" below.)
+# 5. (If your domain is not postern.example.com, see "Re-hosting" below.)
 
 # 6. Build the per-connection tunnel image. Compose does not build this one —
 #    the reconciler spawns it at runtime, so it must exist first.
@@ -59,12 +59,12 @@ The portal is served from `https://<your-domain>/`. First login requires that yo
 
 ## Configuration
 
-Environment variables are loaded from `.env` (copied from `.env.example`) into the `portal` container only. All settings are read by [portal/src/voyager/settings.py](portal/src/voyager/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
+Environment variables are loaded from `.env` (copied from `.env.example`) into the `portal` container only. All settings are read by [portal/src/postern/settings.py](portal/src/postern/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
 
 | Variable                      | Default                    | Purpose                                                                                                                    |
 | ----------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | `SECRET_KEY`                  | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
-| `DATABASE_PATH`               | `/data/voyager.db`         | SQLite path inside the portal container. Lives on the `voyager-data` named volume, not `./data/`.                          |
+| `DATABASE_PATH`               | `/data/postern.db`         | SQLite path inside the portal container. Lives on the `postern-data` named volume, not `./data/`.                          |
 | `SMTP_HOST`                   | `localhost`                | Outbound SMTP server.                                                                                                      |
 | `SMTP_PORT`                   | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                         |
 | `SMTP_USER`                   | _(empty)_                  | SMTP auth username.                                                                                                        |
@@ -78,17 +78,17 @@ Environment variables are loaded from `.env` (copied from `.env.example`) into t
 | `RECONCILE_INTERVAL_SECONDS`  | `60`                       | How often the reconciler syncs DB → containers.                                                                            |
 | `SHADOWSOCKS_IMAGE`           | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                |
 | `SHADOWSOCKS_NETWORK`         | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                              |
-| `DOMAIN`                      | `voyager.binarydreams.me`  | Public domain. Used in client configs and server `plugin_opts`.                                                            |
+| `DOMAIN`                      | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                            |
 
 The Nginx container doesn't read `.env`. Its domain and cert paths are baked into the config — see [Re-hosting to a different domain](#re-hosting-to-a-different-domain).
 
 ## Re-hosting to a different domain
 
-The default config is built around `voyager.binarydreams.me`. To deploy under your own domain, edit the following:
+The default config is built around `postern.example.com`. To deploy under your own domain, edit the following:
 
-1. **[nginx/etc/nginx.conf](nginx/etc/nginx.conf)** — replace every occurrence of `voyager.binarydreams.me` (the `server_name` directive and both `include conf.d/certs/...` lines).
-1. **[nginx/etc/conf.d/certs/voyager.binarydreams.me.conf](nginx/etc/conf.d/certs/voyager.binarydreams.me.conf)** — rename the file to match your domain and edit the three `/etc/letsencrypt/live/...` paths inside it. Then update the `include` lines from step 1 to point at the renamed file.
-1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@voyager.binarydreams.me>` to `<noreply@<your-domain>>`, and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`).
+1. **[nginx/etc/nginx.conf](nginx/etc/nginx.conf)** — replace every occurrence of `postern.example.com` (the `server_name` directive and both `include conf.d/certs/...` lines).
+1. **[nginx/etc/conf.d/certs/postern.example.com.conf](nginx/etc/conf.d/certs/postern.example.com.conf)** — rename the file to match your domain and edit the three `/etc/letsencrypt/live/...` paths inside it. Then update the `include` lines from step 1 to point at the renamed file.
+1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@postern.example.com>` to `<noreply@<your-domain>>`, and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`).
 1. **Test fixtures** (optional; only if you plan to run the test suite with your domain). Three test files reference the default:
    - [portal/tests/test_reconciler.py](portal/tests/test_reconciler.py)
    - [portal/tests/test_routes.py](portal/tests/test_routes.py)
@@ -98,24 +98,24 @@ After editing, rebuild Nginx: `docker compose up -d --build nginx`.
 
 ## Admin workflow
 
-Voyager has no self-serve signup. Users and their connections are created by the operator via the `voyager` CLI, which ships inside the portal image:
+Postern has no self-serve signup. Users and their connections are created by the operator via the `postern` CLI, which ships inside the portal image:
 
 ```bash
 # Add a user
-docker compose exec portal voyager user add "Alice" alice@example.com
+docker compose exec portal postern user add "Alice" alice@example.com
 
 # Give them a connection (creates a 24-hex-char path token + random password)
-docker compose exec portal voyager connection add alice@example.com "laptop"
+docker compose exec portal postern connection add alice@example.com "laptop"
 
 # Inspect
-docker compose exec portal voyager user list
-docker compose exec portal voyager connection list --user-email alice@example.com
+docker compose exec portal postern user list
+docker compose exec portal postern connection list --user-email alice@example.com
 
 # Disable / enable / delete
-docker compose exec portal voyager connection disable <connection_id>
-docker compose exec portal voyager connection enable  <connection_id>
-docker compose exec portal voyager user disable alice@example.com
-docker compose exec portal voyager user delete  alice@example.com
+docker compose exec portal postern connection disable <connection_id>
+docker compose exec portal postern connection enable  <connection_id>
+docker compose exec portal postern user disable alice@example.com
+docker compose exec portal postern user delete  alice@example.com
 ```
 
 CLI commands that change connection state (`connection add/enable/disable`, `user disable/delete`) touch `/data/.reconcile-now` to wake the reconciler; the corresponding container appears (or disappears) within a few seconds. Pure reads (`list`) and `user add` do not trigger a reconcile — a user with no connections doesn't need any container.
@@ -124,7 +124,7 @@ From the user's side:
 
 1. Visit `https://<your-domain>/login`, enter their email.
 1. Receive a 6-digit OTP by email, submit it.
-1. On the dashboard, click their connection to download a JSON config (file name `voyager-<label>.json`).
+1. On the dashboard, click their connection to download a JSON config (file name `postern-<label>.json`).
 1. Import that JSON into a Shadowsocks-rust client. It points at `wss://<your-domain>:443` with `plugin_opts=tls;fast-open;path=/t/<token>;host=<your-domain>`.
 
 ## How the VPN tunnel works
@@ -136,8 +136,8 @@ A client connects to `wss://<your-domain>:443/t/<token>` (v2ray-plugin in TLS + 
 - **Logs.** Nginx logs are on the host at [nginx/log/](nginx/log/) (`access.log`, `error.log`). Portal logs go to `docker compose logs -f portal`. `ss-*` containers run with `LogConfig(type="none")` — they're deliberately logless.
 - **Reconciliation.** The portal runs a background loop every `RECONCILE_INTERVAL_SECONDS` (default 60s). To trigger it immediately after a DB mutation: `docker compose exec portal touch /data/.reconcile-now`. It also restarts exited `ss-*` containers and recreates them when the `local/shadowsocks-server` image ID changes.
 - **Cert renewal.** Nginx self-reloads every 6 hours via a background shell loop injected by [nginx/Dockerfile](nginx/Dockerfile). This picks up certbot-renewed certificates from the bind-mounted `/etc/letsencrypt` without restarting the container. `inotifywait` is not used — it does not reliably observe Let's Encrypt's symlink-target updates across Docker bind mounts.
-- **Portal restarts stop all tunnels.** When the `portal` container's lifespan ends, it calls `cleanup_all_containers()`, which stops and removes every `ss-*` container. They come back on the next reconciliation pass (a few seconds later), but connections are interrupted. Cleanup is best-effort — if the docker-proxy is unavailable during shutdown, containers can survive into the next portal start; the reconciler adopts them by their `voyager.managed=true` label on the following pass.
-- **Data.** The SQLite database lives only in the `voyager-data` named Docker volume. `./data/` is gitignored ([`.gitignore`](.gitignore)) and not otherwise used by the project.
+- **Portal restarts stop all tunnels.** When the `portal` container's lifespan ends, it calls `cleanup_all_containers()`, which stops and removes every `ss-*` container. They come back on the next reconciliation pass (a few seconds later), but connections are interrupted. Cleanup is best-effort — if the docker-proxy is unavailable during shutdown, containers can survive into the next portal start; the reconciler adopts them by their `postern.managed=true` label on the following pass.
+- **Data.** The SQLite database lives only in the `postern-data` named Docker volume. `./data/` is gitignored ([`.gitignore`](.gitignore)) and not otherwise used by the project.
 
 ## Project layout
 
@@ -151,7 +151,7 @@ nginx/                          # Reverse proxy
 portal/                         # FastAPI management service (Python 3.13)
     Dockerfile
     pyproject.toml
-    src/voyager/                # app.py, auth.py, db.py, reconciler.py, cli.py, ...
+    src/postern/                # app.py, auth.py, db.py, reconciler.py, cli.py, ...
     tests/
 shadowsocks/                    # Per-connection tunnel image (Go + Rust multi-stage)
     Dockerfile
@@ -174,3 +174,7 @@ scripts/                        # Prek (pre-commit) helpers
 Copyright (C) 2026, Anna Zhukova
 
 This project is licensed under the [GNU AGPL version 3.0](/LICENSE.md), which means it is free for you to use. Some files in this repository are external and are licensed under their own terms, conveyed in an in-file license header.
+
+## About
+
+A _postern_ is a small, hidden door set in the wall of a medieval fortification. Where the main gate was the formally guarded entrance, the postern let inhabitants slip in and out unnoticed — to launch a sortie, smuggle in supplies, or quietly retreat. Postern VPN takes the same shape: a discreet way through a wall.

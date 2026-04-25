@@ -1,14 +1,14 @@
-## E2E test stack for the Voyager portal.
+## E2E test stack for the Postern portal.
 ##
 ## Always run with the dedicated project name so volumes and networks stay
 ## isolated from a co-located production stack:
 ##
-##   docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --build --wait
-##   docker compose -p voyager-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
+##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --build --wait
+##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
 ##
 ## Network topology (see portal/tests/e2e/PLAN notes):
 ##   default            - internal service mesh (portal <-> docker-proxy, mailpit; nginx <-> portal)
-##   e2e-tunnel-entry   - ssclient <-> nginx (nginx aliased as voyager.test here)
+##   e2e-tunnel-entry   - ssclient <-> nginx (nginx aliased as postern.test here)
 ##   e2e-shadowsocks    - nginx <-> reconciler-spawned ss-* <-> go-httpbin
 ##
 ## ssclient cannot reach go-httpbin directly (no shared network). The only path
@@ -20,7 +20,7 @@ services:
     build:
       context: ../../..
       dockerfile: portal/Dockerfile
-    image: local/voyager-portal
+    image: local/postern-portal
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -31,12 +31,12 @@ services:
       SMTP_PORT: "1025"
       SMTP_USER: ""
       SMTP_PASSWORD: ""
-      SMTP_FROM: noreply@voyager.test
-      DOMAIN: voyager.test
+      SMTP_FROM: noreply@postern.test
+      DOMAIN: postern.test
       SHADOWSOCKS_NETWORK: e2e-shadowsocks
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:
-      - voyager-e2e-data:/data
+      - postern-e2e-data:/data
     networks: [default]
     depends_on:
       docker-proxy:
@@ -63,11 +63,11 @@ services:
       - type: bind
         read_only: true
         source: ./certs
-        target: /etc/letsencrypt/live/voyager.test
+        target: /etc/letsencrypt/live/postern.test
     networks:
       default:
       e2e-tunnel-entry:
-        aliases: [voyager.test]
+        aliases: [postern.test]
       e2e-shadowsocks:
     depends_on:
       portal:
@@ -117,13 +117,13 @@ services:
     build:
       context: ../../..
       dockerfile: portal/tests/e2e/ssclient.Dockerfile
-    image: local/voyager-ssclient
+    image: local/postern-ssclient
     networks: [e2e-tunnel-entry]
     command: ["sleep", "infinity"]
 
 networks:
   default:
-    name: voyager-e2e-default
+    name: postern-e2e-default
   e2e-tunnel-entry:
     name: e2e-tunnel-entry
     driver: bridge
@@ -132,5 +132,5 @@ networks:
     driver: bridge
 
 volumes:
-  voyager-e2e-data:
-    name: voyager-e2e-data
+  postern-e2e-data:
+    name: postern-e2e-data

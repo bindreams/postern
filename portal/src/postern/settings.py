@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     """Application configuration, loaded from environment variables."""
 
     # Database =========================================================================================================
-    database_path: str = "/data/voyager.db"
+    database_path: str = "/data/postern.db"
 
     # SMTP =============================================================================================================
     smtp_host: str = "localhost"
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     shadowsocks_network: str = "shadowsocks"
 
     # Domain ===========================================================================================================
-    domain: str = "voyager.binarydreams.me"
+    domain: str = "postern.example.com"
 
     @field_validator("secret_key")
     @classmethod

@@ -8,8 +8,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from voyager import db
-from voyager.ss_config import client_config
+from postern import db
+from postern.ss_config import client_config
 
 router = APIRouter()
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -63,7 +63,7 @@ async def download_config(request: Request, connection_id: str):
         content=config_json,
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="voyager-{re.sub(r"[^a-zA-Z0-9_-]", "_", conn.label)}.json"',
+            "Content-Disposition": f'attachment; filename="postern-{re.sub(r"[^a-zA-Z0-9_-]", "_", conn.label)}.json"',
         },
     )
 

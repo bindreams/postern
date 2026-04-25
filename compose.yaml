@@ -28,7 +28,7 @@ services:
     build:
       context: .
       dockerfile: portal/Dockerfile
-    image: local/voyager-portal
+    image: local/postern-portal
     container_name: portal
     env_file: .env
     read_only: true
@@ -37,7 +37,7 @@ services:
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
     volumes:
-      - voyager-data:/data
+      - postern-data:/data
     networks: [default]
     depends_on:
       docker-proxy:
@@ -76,5 +76,5 @@ networks:
     driver: bridge
 
 volumes:
-  voyager-data:
-    name: voyager-data
+  postern-data:
+    name: postern-data

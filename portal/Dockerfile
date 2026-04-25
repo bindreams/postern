@@ -1,6 +1,10 @@
 # syntax=docker/dockerfile:1
 FROM dhi.io/python:3.13-alpine3.21-dev
 
+LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
+LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"
+LABEL org.opencontainers.image.title="postern-portal"
+LABEL org.opencontainers.image.description="Postern VPN management portal"
 LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 COPY --from=ghcr.io/astral-sh/uv:0.11.2 /uv /bin/uv
@@ -15,9 +19,9 @@ COPY portal/src/ src/
 RUN uv sync --frozen --no-dev
 COPY portal/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-COPY LICENSE.md /usr/share/licenses/voyager/LICENSE.md
+COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 
 USER user
 EXPOSE 8000
 ENTRYPOINT ["/entrypoint.sh"]
-CMD ["uvicorn", "voyager.app:app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]
+CMD ["uvicorn", "postern.app:app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]

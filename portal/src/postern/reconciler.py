@@ -16,14 +16,14 @@ import docker.errors
 import docker.types
 from docker.models.containers import Container
 
-from voyager import db
-from voyager.models import Connection
-from voyager.settings import Settings
-from voyager.ss_config import server_config_b64
+from postern import db
+from postern.models import Connection
+from postern.settings import Settings
+from postern.ss_config import server_config_b64
 
 logger = logging.getLogger(__name__)
 
-MANAGED_LABEL = "voyager.managed"
+MANAGED_LABEL = "postern.managed"
 MANAGED_VALUE = "true"
 
 
@@ -126,7 +126,8 @@ def _reconcile_once(
         # container.attrs["Image"] is the image ID stored on the container at create
         # time. Cheaper than container.image.id (which does an images.get() lookup
         # and 404s when the old image has been garbage-collected after rebuild).
-        if name in desired_names and container.attrs.get("Image") != current_image.id:
+        attrs = container.attrs or {}
+        if name in desired_names and attrs.get("Image") != current_image.id:
             logger.info("Image changed for %s, recreating", name)
             conn = next(c for c in connections if _container_name(c) == name)
             _remove_container(container)

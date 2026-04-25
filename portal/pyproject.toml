@@ -1,7 +1,7 @@
 [project]
-name = "voyager"
+name = "postern"
 version = "0.1.0"
-description = "Voyager VPN management portal"
+description = "Postern VPN management portal"
 license = "AGPL-3.0-or-later"
 license-files = []
 requires-python = ">=3.13"
@@ -32,7 +32,7 @@ e2e = [
 ]
 
 [project.scripts]
-voyager = "voyager.cli:app"
+postern = "postern.cli:app"
 
 [tool.uv]
 package = true
@@ -44,7 +44,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/voyager"]
+packages = ["src/postern"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

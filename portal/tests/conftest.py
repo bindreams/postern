@@ -3,8 +3,8 @@ import pytest_asyncio
 
 import aiosqlite
 
-from voyager import db
-from voyager.settings import Settings
+from postern import db
+from postern.settings import Settings
 
 
 @pytest.fixture

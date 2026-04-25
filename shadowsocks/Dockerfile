@@ -12,13 +12,17 @@ COPY external/shadowsocks-rust/ .
 RUN cargo build --release --bin ssserver
 
 FROM dhi.io/alpine-base:3.23
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
+LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"
+LABEL org.opencontainers.image.title="postern-shadowsocks"
+LABEL org.opencontainers.image.description="Per-connection Shadowsocks-rust + v2ray-plugin tunnel for Postern"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 # ssserver links libgcc_s at runtime; non-dev alpine-base doesn't ship it, so
 # copy from the builder (where apk provided it via musl-dev transitive deps).
 COPY --from=build-shadowsocks /usr/lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1
 COPY --from=build-v2ray-plugin /v2ray-plugin /usr/local/bin/v2ray-plugin
 COPY --from=build-shadowsocks /src/target/release/ssserver /usr/local/bin/ssserver
-COPY LICENSE.md /usr/share/licenses/voyager/LICENSE.md
+COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 COPY external/v2ray-plugin/LICENSE /usr/share/licenses/v2ray-plugin/LICENSE
 COPY external/shadowsocks-rust/LICENSE /usr/share/licenses/shadowsocks-rust/LICENSE
 

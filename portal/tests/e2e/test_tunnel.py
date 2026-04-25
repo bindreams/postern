@@ -1,4 +1,4 @@
-"""End-to-end tests for the Voyager portal.
+"""End-to-end tests for the Postern portal.
 
 These tests boot the real compose stack and prove that:
   1. A full OTP login flow works against HTTPS.
@@ -26,12 +26,12 @@ from ._helpers import (
     container_exists,
     query_db,
     trigger_reconcile,
-    voyager_cli,
+    postern_cli,
     wait_for_container,
 )
 
 
-# Helpers ===========================================================================================================
+# Helpers ==============================================================================================================
 def _login_complete(client: httpx.Client, mailpit, email: str) -> httpx.Response:
     """Drive the OTP flow to a logged-in state. Returns the final 303 response
     that set the session cookie. The client picks up cookies as we go."""
@@ -61,9 +61,11 @@ def _launch_sslocal(ssclient_config_path: str) -> None:
     # Poll for the SOCKS port until it accepts a TCP connect.
     for _ in range(20):
         probe = subprocess.run(
-            compose("exec", "-T", "ssclient", "sh", "-c",
-                    "nc -z localhost 1080 2>/dev/null && echo READY || echo NOTREADY"),
-            capture_output=True, text=True,
+            compose(
+                "exec", "-T", "ssclient", "sh", "-c", "nc -z localhost 1080 2>/dev/null && echo READY || echo NOTREADY"
+            ),
+            capture_output=True,
+            text=True,
         )
         if "READY" in probe.stdout:
             return
@@ -71,15 +73,16 @@ def _launch_sslocal(ssclient_config_path: str) -> None:
     # Dump sslocal stderr on failure to aid debugging
     logs = subprocess.run(
         compose("exec", "-T", "ssclient", "sh", "-c", "pgrep -a sslocal || echo 'no sslocal process'"),
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     raise AssertionError(f"sslocal SOCKS port never opened. pgrep: {logs.stdout!r}")
 
 
-# Tunnel happy path =================================================================================================
+# Tunnel happy path ====================================================================================================
 def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_user, fresh_connection):
     """The single most important test: prove a byte tunnels end-to-end."""
-    email = "happy@voyager.test"
+    email = "happy@postern.test"
     fresh_user("Happy User", email)
     conn_id, path_token = fresh_connection(email, "happy-path-conn")
 
@@ -95,16 +98,16 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     assert r.status_code == 200
     config = r.json()
     server = config["servers"][0]
-    assert server["address"] == "voyager.test"
+    assert server["address"] == "postern.test"
     assert server["port"] == 443
     assert server["plugin"] == "v2ray-plugin"
     assert server["plugin_opts"].startswith("tls;fast-open;")
     assert f"path=/t/{path_token}" in server["plugin_opts"]
-    assert server["plugin_opts"].endswith(f"host=voyager.test")
+    assert server["plugin_opts"].endswith(f"host=postern.test")
 
     # Patch the config so it matches what the ssclient container can reach:
-    #   - voyager.test:443 -> ssclient is on the e2e-tunnel-entry network where
-    #     nginx is aliased as voyager.test, but nginx listens on 443 there too.
+    #   - postern.test:443 -> ssclient is on the e2e-tunnel-entry network where
+    #     nginx is aliased as postern.test, but nginx listens on 443 there too.
     #     So address+port are already correct.
     config_path_in_container = "/tmp/client.json"
     config_blob = json.dumps(config)
@@ -122,10 +125,16 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     # directly (different docker networks); the only path is the tunnel.
     result = subprocess.run(
         compose(
-            "exec", "-T", "ssclient",
-            "curl", "--silent", "--show-error",
-            "--socks5-hostname", "localhost:1080",
-            "--max-time", "10",
+            "exec",
+            "-T",
+            "ssclient",
+            "curl",
+            "--silent",
+            "--show-error",
+            "--socks5-hostname",
+            "localhost:1080",
+            "--max-time",
+            "10",
             "http://go-httpbin:8080/get",
         ),
         capture_output=True,
@@ -142,8 +151,14 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     # silently satisfy this check.
     direct = subprocess.run(
         compose(
-            "exec", "-T", "ssclient",
-            "curl", "--silent", "--show-error", "--max-time", "3",
+            "exec",
+            "-T",
+            "ssclient",
+            "curl",
+            "--silent",
+            "--show-error",
+            "--max-time",
+            "3",
             "http://go-httpbin:8080/get",
         ),
         capture_output=True,
@@ -159,9 +174,9 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     )
 
 
-# Auth-flow assertions ==============================================================================================
+# Auth-flow assertions =================================================================================================
 def test_invalid_otp_rejected(portal_client, mailpit_client, fresh_user):
-    email = "wrongotp@voyager.test"
+    email = "wrongotp@postern.test"
     fresh_user("Wrong OTP", email)
 
     r = portal_client.post("/login", data={"email": email})
@@ -177,7 +192,7 @@ def test_invalid_otp_rejected(portal_client, mailpit_client, fresh_user):
 def test_unknown_email_does_not_leak(portal_client):
     """Unknown emails get the same response shape as known ones and produce a
     __dummy__ row in otp_codes. Asserts the email-enumeration defence."""
-    unknown = "ghost-e2e@voyager.test"
+    unknown = "ghost-e2e@postern.test"
     r = portal_client.post("/login", data={"email": unknown})
     assert r.status_code == 303
     assert r.headers["location"] == "/login/verify"
@@ -192,13 +207,13 @@ def test_otp_cookie_lifetime_matches_expiry_invariant(portal_client):
     """CLAUDE.md invariant: OTP_EXPIRY_SECONDS (default 600) and the otp_email
     cookie max_age (hardcoded 900) drift independently and must stay in sync.
     This test pins both values."""
-    r = portal_client.post("/login", data={"email": "anyone@voyager.test"})
+    r = portal_client.post("/login", data={"email": "anyone@postern.test"})
     set_cookie = r.headers.get("set-cookie", "")
     # max_age is in seconds -- match `Max-Age=900` ignoring case
     assert "max-age=900" in set_cookie.lower(), set_cookie
 
     otp_expiry = compose_exec(
-        "python", "-c", "from voyager.settings import Settings; print(Settings().otp_expiry_seconds)"
+        "python", "-c", "from postern.settings import Settings; print(Settings().otp_expiry_seconds)"
     ).stdout.strip()
     assert otp_expiry == "600", (
         f"Settings().otp_expiry_seconds={otp_expiry!r} drifted from cookie max-age=900; "
@@ -206,13 +221,13 @@ def test_otp_cookie_lifetime_matches_expiry_invariant(portal_client):
     )
 
 
-# Authorization on config download ==================================================================================
+# Authorization on config download =====================================================================================
 def test_disabled_connection_config_returns_404(portal_client, mailpit_client, fresh_user, fresh_connection):
-    email = "disabled@voyager.test"
+    email = "disabled@postern.test"
     fresh_user("Disabled", email)
     conn_id, _ = fresh_connection(email, "to-disable")
 
-    voyager_cli("connection", "disable", conn_id)
+    postern_cli("connection", "disable", conn_id)
 
     _login_complete(portal_client, mailpit_client, email)
 
@@ -220,17 +235,16 @@ def test_disabled_connection_config_returns_404(portal_client, mailpit_client, f
     assert r.status_code == 404
 
 
-# Reconciler invariants =============================================================================================
+# Reconciler invariants ================================================================================================
 def test_reconciler_removes_orphan(e2e_stack):
-    """A container with the voyager.managed=true label but no DB row must be
+    """A container with the postern.managed=true label but no DB row must be
     removed on the next reconcile pass."""
     orphan = "ss-orphan0000000000000000"
     subprocess.run(
-        ["docker", "run", "-d",
-         "--name", orphan,
-         "--label", "voyager.managed=true",
-         "--network", "e2e-shadowsocks",
-         "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"],
+        [
+            "docker", "run", "-d", "--name", orphan, "--label", "postern.managed=true", "--network", "e2e-shadowsocks",
+            "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"
+        ],
         check=True,
         capture_output=True,
     )
@@ -245,25 +259,28 @@ def test_reconciler_removes_orphan(e2e_stack):
 def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
     """When local/shadowsocks-server image ID changes, the reconciler must
     recreate every managed container so the new bits propagate."""
-    email = "imgupgrade@voyager.test"
+    email = "imgupgrade@postern.test"
     fresh_user("Image Upgrade", email)
     _, token = fresh_connection(email, "to-upgrade")
 
     name = f"ss-{token}"
     inspect_before = subprocess.run(
         ["docker", "inspect", "--format", "{{.Image}}", name],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     )
     image_before = inspect_before.stdout.strip()
 
     # Bump the image with a no-op label change so the digest changes
-    bump_dockerfile = (
-        "FROM local/shadowsocks-server\n"
-        "LABEL voyager.test.bump=1\n"
-    )
+    bump_dockerfile = ("FROM local/shadowsocks-server\n"
+                       "LABEL postern.test.bump=1\n")
     subprocess.run(
         ["docker", "build", "-t", "local/shadowsocks-server", "-"],
-        input=bump_dockerfile, text=True, check=True, capture_output=True,
+        input=bump_dockerfile,
+        text=True,
+        check=True,
+        capture_output=True,
     )
 
     trigger_reconcile()
@@ -274,7 +291,8 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
     while time.monotonic() < deadline:
         inspect = subprocess.run(
             ["docker", "inspect", "--format", "{{.Image}}", name],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if inspect.returncode == 0 and inspect.stdout.strip() != image_before:
             return
@@ -285,7 +303,7 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
 def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
     """The portal's lifespan calls cleanup_all_containers on shutdown.
     After a graceful stop, no ss-* containers should remain."""
-    email = "shutdown@voyager.test"
+    email = "shutdown@postern.test"
     fresh_user("Shutdown", email)
     _, token = fresh_connection(email, "shutdown-test")
     name = f"ss-{token}"
@@ -297,8 +315,10 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
 
         # Belt and suspenders: confirm no managed containers anywhere
         result = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "label=voyager.managed=true", "--format", "{{.Names}}"],
-            capture_output=True, text=True, check=True,
+            ["docker", "ps", "-a", "--filter", "label=postern.managed=true", "--format", "{{.Names}}"],
+            capture_output=True,
+            text=True,
+            check=True,
         )
         assert result.stdout.strip() == ""
     finally:
@@ -308,7 +328,8 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
         for _ in range(30):
             health = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Health.Status}}", f"{PROJECT}-portal-1"],
-                capture_output=True, text=True,
+                capture_output=True,
+                text=True,
             )
             if health.stdout.strip() == "healthy":
                 break

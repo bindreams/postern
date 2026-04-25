@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the self-signed test CA and leaf cert for voyager.test.
+# Regenerate the self-signed test CA and leaf cert for postern.test.
 # Run from anywhere; the script uses its own directory as the output location.
 #
 # Output files (all PEM):
@@ -28,8 +28,8 @@ FULLCHAIN="fullchain.pem"
 CHAIN="chain.pem"
 
 DAYS=365
-SUBJ_CA="/CN=Voyager Test Root CA"
-SUBJ_LEAF="/CN=voyager.test"
+SUBJ_CA="/CN=Postern Test Root CA"
+SUBJ_LEAF="/CN=postern.test"
 
 # OpenSSL 3+ requires basicConstraints + keyUsage on the CA cert; older clients
 # are forgiving, Python's ssl module is not. v3_ca section below adds them.
@@ -39,7 +39,7 @@ distinguished_name = dn
 prompt = no
 
 [dn]
-CN = Voyager Test Root CA
+CN = Postern Test Root CA
 
 [v3_ca]
 basicConstraints = critical, CA:TRUE
@@ -65,8 +65,8 @@ extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = voyager.test
-DNS.2 = *.voyager.test
+DNS.1 = postern.test
+DNS.2 = *.postern.test
 EOF
 
 openssl x509 -req -in "$LEAF_CSR" -CA "$CA_CERT" -CAkey "$CA_KEY" \

@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 
-from voyager import db
-from voyager.reconciler import cleanup_all_containers, reconciliation_loop
-from voyager.routes import dashboard, login
-from voyager.settings import Settings
+from postern import db
+from postern.reconciler import cleanup_all_containers, reconciliation_loop
+from postern.routes import dashboard, login
+from postern.settings import Settings
 
 logger = logging.getLogger(__name__)
 

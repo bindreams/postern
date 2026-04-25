@@ -1,14 +1,14 @@
-"""Fixtures for the Voyager e2e suite.
+"""Fixtures for the Postern e2e suite.
 
 Boots the real compose stack at session start, tears it down at session end.
 Tests should use `portal_client` for HTTPS calls, `mailpit_client` for OTP
 extraction, and the helpers in _helpers.py for state mutation through the
 portal container.
 
-The test runner needs `127.0.0.1 voyager.test` in its /etc/hosts so the
-host-side `portal_client` can resolve voyager.test -> the host port mapped to
+The test runner needs `127.0.0.1 postern.test` in its /etc/hosts so the
+host-side `portal_client` can resolve postern.test -> the host port mapped to
 nginx (host:8443 in the e2e compose). Inside the docker network, ssclient
-resolves voyager.test via the network alias on the nginx service.
+resolves postern.test via the network alias on the nginx service.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from ._helpers import (
     query_db,
     run,
     trigger_reconcile,
-    voyager_cli,
+    postern_cli,
     wait_for_container,
 )
 
@@ -46,24 +46,24 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(pytest.mark.e2e)
 
 
-# Stack lifecycle ===================================================================================================
+# Stack lifecycle ======================================================================================================
 @pytest.fixture(scope="session", autouse=True)
-def _patch_dns_for_voyager_test() -> Iterator[None]:
-    """Map voyager.test -> 127.0.0.1 for the host-side pytest process without
+def _patch_dns_for_postern_test() -> Iterator[None]:
+    """Map postern.test -> 127.0.0.1 for the host-side pytest process without
     requiring an /etc/hosts edit. TLS SNI + cert verification still use the
     URL hostname, so trust against the test CA works as intended.
 
-    Inside the docker network, ssclient resolves voyager.test via the network
+    Inside the docker network, ssclient resolves postern.test via the network
     alias on the nginx service -- that path is unaffected by this patch.
     """
     original = socket.getaddrinfo
 
     def patched(host, *args, **kwargs):
-        if host == "voyager.test":
+        if host == "postern.test":
             host = "127.0.0.1"
         return original(host, *args, **kwargs)
 
-    socket.getaddrinfo = patched
+    socket.getaddrinfo = patched  # ty: ignore[invalid-assignment]
     try:
         yield
     finally:
@@ -71,7 +71,7 @@ def _patch_dns_for_voyager_test() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def e2e_stack(_patch_dns_for_voyager_test) -> Iterator[None]:
+def e2e_stack(_patch_dns_for_postern_test) -> Iterator[None]:
     if shutil.which("docker") is None:
         pytest.fail(
             "docker not on PATH. E2e tests require Linux + docker; see CONTRIBUTING.md. "
@@ -85,7 +85,7 @@ def e2e_stack(_patch_dns_for_voyager_test) -> Iterator[None]:
         subprocess.run(compose("down", "-v", "--timeout", "30"), check=False)
 
 
-# HTTP clients ======================================================================================================
+# HTTP clients =========================================================================================================
 @pytest.fixture
 def portal_client(e2e_stack) -> Iterator[httpx.Client]:
     """HTTPS client trusting the test CA, follow_redirects=False so tests can
@@ -139,19 +139,19 @@ def mailpit_client(e2e_stack) -> Iterator[MailpitClient]:
         client.close()
 
 
-# Test-data helpers =================================================================================================
+# Test-data helpers ====================================================================================================
 @pytest.fixture
 def fresh_user(e2e_stack):
     created: list[str] = []
 
     def _make(name: str, email: str) -> None:
-        voyager_cli("user", "add", name, email)
+        postern_cli("user", "add", name, email)
         created.append(email)
 
     yield _make
 
     for email in created:
-        subprocess.run(compose("exec", "-T", "portal", "voyager", "user", "delete", email), check=False)
+        subprocess.run(compose("exec", "-T", "portal", "postern", "user", "delete", email), check=False)
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def fresh_connection(e2e_stack):
     Triggers reconcile and waits for the ss-<token> container to appear."""
 
     def _make(email: str, label: str) -> tuple[str, str]:
-        result = voyager_cli("connection", "add", email, label)
+        result = postern_cli("connection", "add", email, label)
         match = CONNECTION_ID_RE.search(result.stdout)
         if not match:
             raise AssertionError(f"connection id not found in CLI output: {result.stdout!r}")

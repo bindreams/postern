@@ -1,14 +1,14 @@
 import asyncio
 from unittest.mock import MagicMock, patch
 
-from voyager.models import Connection
-from voyager.reconciler import (
+from postern.models import Connection
+from postern.reconciler import (
     _container_name,
     _reconcile_once,
     cleanup_all_containers,
     reconciliation_loop,
 )
-from voyager.settings import Settings
+from postern.settings import Settings
 
 
 def _make_settings():
@@ -16,7 +16,7 @@ def _make_settings():
         secret_key="test-secret",
         shadowsocks_image="local/shadowsocks-server",
         shadowsocks_network="shadowsocks",
-        domain="voyager.binarydreams.me",
+        domain="postern.example.com",
     )
 
 
@@ -126,7 +126,7 @@ def test_recreates_container_on_image_change():
 async def test_reconciliation_loop_responds_to_trigger_file(tmp_path):
     """The loop sleeps for reconcile_interval_seconds but wakes early when the
     .reconcile-now trigger file appears. Invariant documented in CLAUDE.md."""
-    db_path = tmp_path / "voyager.db"
+    db_path = tmp_path / "postern.db"
     trigger_path = tmp_path / ".reconcile-now"
     settings = Settings(
         secret_key="test-secret",
@@ -142,7 +142,7 @@ async def test_reconciliation_loop_responds_to_trigger_file(tmp_path):
         calls += 1
         call_event.set()
 
-    with patch("voyager.reconciler.reconcile", side_effect=fake_reconcile):
+    with patch("postern.reconciler.reconcile", side_effect=fake_reconcile):
         task = asyncio.create_task(reconciliation_loop(str(db_path), settings))
         try:
             # Wait for the first reconcile (happens before the sleep)
@@ -167,7 +167,7 @@ async def test_reconciliation_loop_responds_to_trigger_file(tmp_path):
                 pass
 
 
-@patch("voyager.reconciler._get_docker_client")
+@patch("postern.reconciler._get_docker_client")
 async def test_cleanup_all_containers(mock_get_client):
     c1 = _make_mock_container("ss-aaa111bbb222ccc333ddd444")
     c2 = _make_mock_container("ss-eee555fff666ggg777hhh888")

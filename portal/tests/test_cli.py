@@ -3,7 +3,7 @@
 import pytest
 from typer.testing import CliRunner
 
-from voyager.cli import app
+from postern.cli import app
 
 runner = CliRunner()
 

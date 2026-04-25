@@ -6,9 +6,9 @@ from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 
-from voyager import db
-from voyager.models import Session
-from voyager.settings import Settings
+from postern import db
+from postern.models import Session
+from postern.settings import Settings
 
 
 def generate_otp_code() -> str:

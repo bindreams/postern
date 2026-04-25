@@ -1,8 +1,8 @@
 import base64
 import json
 
-from voyager.models import Connection
-from voyager.ss_config import (
+from postern.models import Connection
+from postern.ss_config import (
     client_config,
     generate_password,
     server_config,
@@ -10,7 +10,7 @@ from voyager.ss_config import (
     server_config_json,
 )
 
-DOMAIN = "voyager.binarydreams.me"
+DOMAIN = "postern.example.com"
 
 
 def _make_connection(*, path_token="abcdef123456789012345678"):

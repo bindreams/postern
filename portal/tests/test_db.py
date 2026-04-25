@@ -5,8 +5,8 @@ from unittest.mock import patch
 
 import pytest
 
-from voyager import db
-from voyager.models import Connection, Session, User
+from postern import db
+from postern.models import Connection, Session, User
 
 
 # User CRUD ============================================================================================================
@@ -154,12 +154,12 @@ async def test_verify_otp_uses_constant_time_comparison(test_db):
     await db.create_otp(test_db, "alice@example.com", code_hash, expires)
 
     # Reject path: compare called with (stored, provided), returns False.
-    with patch("voyager.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
+    with patch("postern.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
         assert not await db.verify_otp(test_db, "alice@example.com", wrong_hash)
     mock_cmp.assert_called_once_with(code_hash, wrong_hash)
 
     # Accept path: compare_digest gates acceptance.
-    with patch("voyager.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
+    with patch("postern.db.hmac.compare_digest", wraps=hmac.compare_digest) as mock_cmp:
         assert await db.verify_otp(test_db, "alice@example.com", code_hash)
     mock_cmp.assert_called_once_with(code_hash, code_hash)
 

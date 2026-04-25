@@ -154,7 +154,3 @@ Before pushing:
 1. Commit messages are single-line and describe the change, not the process.
 
 If your change touches anything under the "architecture invariants" list in [CLAUDE.md](CLAUDE.md), explicitly call out why the invariant still holds (or why you updated all the linked locations together).
-
-### CI behavior on forks
-
-The e2e job needs Docker Hub credentials to pull `dhi.io` base images. For fork PRs, GitHub doesn't expose repo secrets automatically — the e2e job pauses on a maintainer-approval gate (the `e2e-dhi` environment). After a maintainer approves, e2e runs against your PR head with read-only Docker Hub credentials. Unit tests always run unrestricted.

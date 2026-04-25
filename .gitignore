@@ -1,6 +1,26 @@
-data/
 .env
 nginx/log/
 __pycache__/
 *.pyc
 .venv/
+
+# Python tooling caches
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+.ty_cache/
+*.egg-info/
+dist/
+build/
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Agent / temp workspace
+.tmp/

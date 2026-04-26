@@ -4,14 +4,14 @@
 # [tool.uv]
 # dev-dependencies = ["pytest"]
 # ///
-"""Pre-commit hook: fix section comment formatting in Rust, Python, TOML, and JS/TS files.
+"""Pre-commit hook: fix section comment formatting in Rust, Python, TOML, JS/TS, and Dockerfiles.
 
 Section comments must follow the format:
 
     // Section name ======...=  (Rust/JS/TS primary, filled with '=' to column 120)
     // Section name ------...-  (Rust/JS/TS secondary, filled with '-' to column 120)
-    # Section name =======...=  (Python/TOML primary, filled with '=' to column 120)
-    # Section name -------...-  (Python/TOML secondary, filled with '-' to column 120)
+    # Section name =======...=  (Python/TOML/Dockerfile primary, filled with '=' to column 120)
+    # Section name -------...-  (Python/TOML/Dockerfile secondary, filled with '-' to column 120)
 
 Leading whitespace counts toward the column limit.
 
@@ -30,7 +30,20 @@ from typing import NamedTuple
 
 COLUMN_LIMIT = 120
 
-EXTENSION_PREFIX = {".rs": "//", ".py": "#", ".toml": "#", ".js": "//", ".ts": "//", ".jsx": "//", ".tsx": "//"}
+# Dispatch by exact filename (Dockerfiles with no extension).
+FILENAME_PREFIX = {"Dockerfile": "#"}
+
+EXTENSION_PREFIX = {
+    ".rs": "//",
+    ".py": "#",
+    ".toml": "#",
+    ".js": "//",
+    ".ts": "//",
+    ".jsx": "//",
+    ".tsx": "//",
+    ".Dockerfile": "#",
+    ".dockerfile": "#",
+}
 
 
 class Patterns(NamedTuple):
@@ -55,13 +68,20 @@ def make_patterns(prefix: str) -> Patterns:
     )
 
 
-def is_doc_comment(line: str, prefix: str) -> bool:
+def is_doc_comment(line: str, prefix: str, is_dockerfile: bool = False) -> bool:
     """Check if a line is a doc/special comment that should not be treated as a section name half."""
     stripped = line.lstrip()
     if prefix == "//":
         return stripped.startswith("///") or stripped.startswith("//!")
     if prefix == "#":
-        return stripped.startswith("#!") or stripped.startswith("# ///")
+        if stripped.startswith("#!") or stripped.startswith("# ///"):
+            return True
+        if is_dockerfile:
+            # Dockerfile parser directives must remain on their own line and
+            # must not be merged with a following fill-only line.
+            return (
+                stripped.startswith("# syntax=") or stripped.startswith("# escape=") or stripped.startswith("# check=")
+            )
     return False
 
 
@@ -74,7 +94,10 @@ def rebuild(indent: str, name: str, fill_char: str, prefix: str) -> str:
     return line + fill_char * fill_count
 
 
-def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[list[str], bool]:
+def process_lines(lines: list[str],
+                  patterns: Patterns,
+                  prefix: str,
+                  is_dockerfile: bool = False) -> tuple[list[str], bool]:
     """Fix section comments in a list of lines. Returns (new_lines, changed)."""
     changed = False
     skip_next = False
@@ -93,7 +116,8 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
             prev_line = new_lines[-1].rstrip("\r\n")
             name_m = patterns.name_half.match(prev_line)
             if (
-                name_m and not patterns.section.match(prev_line) and not is_doc_comment(prev_line, prefix)
+                name_m and not patterns.section.match(prev_line)
+                and not is_doc_comment(prev_line, prefix, is_dockerfile=is_dockerfile)
                 and name_m.group(2)  # has actual text after prefix
             ):
                 indent = name_m.group(1)
@@ -123,8 +147,8 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
             if fill_m2:
                 name_m2 = patterns.name_half.match(line)
                 if (
-                    name_m2 and not patterns.section.match(line) and not is_doc_comment(line, prefix)
-                    and name_m2.group(2)
+                    name_m2 and not patterns.section.match(line)
+                    and not is_doc_comment(line, prefix, is_dockerfile=is_dockerfile) and name_m2.group(2)
                 ):
                     indent = name_m2.group(1)
                     name = name_m2.group(2).rstrip()
@@ -142,16 +166,21 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
 
 def process_file(path: str) -> bool:
     """Process one file. Returns True if the file was modified."""
+    name = os.path.basename(path)
     ext = os.path.splitext(path)[1]
-    prefix = EXTENSION_PREFIX.get(ext)
+    prefix = FILENAME_PREFIX.get(name)
+    if prefix is None:
+        prefix = EXTENSION_PREFIX.get(ext)
     if prefix is None:
         return False
+
+    is_dockerfile = name == "Dockerfile" or ext in {".Dockerfile", ".dockerfile"}
 
     with open(path, encoding="utf-8", newline="") as f:
         lines = f.readlines()
 
     patterns = make_patterns(prefix)
-    new_lines, changed = process_lines(lines, patterns, prefix)
+    new_lines, changed = process_lines(lines, patterns, prefix, is_dockerfile=is_dockerfile)
 
     if changed:
         with open(path, "w", encoding="utf-8", newline="") as f:
@@ -497,3 +526,50 @@ def test_toml_reflow():
     line = result.rstrip()
     assert line.startswith("# External hooks -")
     assert len(line) == 120
+
+
+# Dockerfile tests -----------------------------------------------------------------------------------------------------
+
+
+def test_process_file_dockerfile_no_ext(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_capital_ext(tmp_path):
+    p = tmp_path / "nginx.Dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_lowercase_ext(tmp_path):
+    p = tmp_path / "nginx.dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_dockerfile_parser_directive_not_merged(tmp_path):
+    # Without the parser-directive guard, the script would collapse the
+    # `# syntax=...` line and the following fill-only line into one
+    # malformed line, silently disabling the directive.
+    p = tmp_path / "Dockerfile"
+    p.write_text("# syntax=docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# syntax=docker/dockerfile:1\n"), f"parser directive was modified: {text!r}"
+
+
+def test_python_syntax_comment_still_merged(tmp_path):
+    # Python files do NOT get the parser-directive exemption — the
+    # # syntax= immunity is Dockerfile-only. This pins the gate so a
+    # future refactor cannot make the exemption global.
+    p = tmp_path / "test.py"
+    p.write_text("# syntax=foo\n# ==========\n")
+    assert process_file(str(p))
+    text = p.read_text()
+    assert text.count("\n") == 1
+    assert len(text.rstrip()) == 120

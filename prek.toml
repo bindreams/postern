@@ -14,7 +14,7 @@ id = "format-section-comments"
 name = "format section comments"
 entry = "python scripts/format-section-comments.py"
 language = "python"
-types_or = ["rust", "python", "toml", "javascript", "ts", "jsx", "tsx"]
+types_or = ["rust", "python", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile"]
 
 [[repos.hooks]]
 id = "ty"

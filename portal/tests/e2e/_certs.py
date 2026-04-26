@@ -124,6 +124,16 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
     (out_dir / "fullchain.pem").write_bytes(leaf_pem + ca_pem)
     (out_dir / "chain.pem").write_bytes(ca_pem)
 
+    # Make the dir + files world-traversable / world-readable so the nginx and
+    # ssclient containers (running as a non-root UID different from the test
+    # runner's UID) can read the bind-mounted files. Without this, pytest's
+    # tmp_path_factory creates 0o700 dirs and nginx fails with "Permission
+    # denied" on the bind-mounted cert. These are throwaway test certs; the
+    # private key has no security value.
+    out_dir.chmod(0o755)
+    for name in ("ca.pem", "privkey.pem", "fullchain.pem", "chain.pem"):
+        (out_dir / name).chmod(0o644)
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

@@ -5,9 +5,11 @@ want it to inherit the e2e marker that's auto-applied to anything in tests/e2e/.
 """
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -157,6 +159,21 @@ def test_validity_is_about_30_days(tmp_path):
     leaf = _load_first_cert(tmp_path / "fullchain.pem")
     span = leaf.not_valid_after_utc - leaf.not_valid_before_utc
     assert timedelta(days=29, hours=23) <= span <= timedelta(days=30, hours=1)
+
+
+# Filesystem-mode tests ================================================================================================
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits are no-ops on Windows")
+def test_output_dir_and_files_are_world_readable(tmp_path):
+    """Containerized consumers (nginx, ssclient) run as a non-root UID
+    different from the test runner's. Without world-traversable dir + world-
+    readable files, the bind mount fails with `Permission denied`. Regression
+    test for an early CI failure on PR #13."""
+    generate_test_pki(tmp_path)
+    dir_mode = tmp_path.stat().st_mode & 0o777
+    assert dir_mode & 0o005 == 0o005, f"out_dir not world-traversable: {oct(dir_mode)}"
+    for name in ("ca.pem", "privkey.pem", "fullchain.pem", "chain.pem"):
+        file_mode = (tmp_path / name).stat().st_mode & 0o777
+        assert file_mode & 0o004 == 0o004, f"{name} not world-readable: {oct(file_mode)}"
 
 
 # Idempotence ==========================================================================================================

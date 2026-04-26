@@ -159,7 +159,7 @@ external/                       # Vendored upstreams, managed as git-subrepos
     shadowsocks-rust/
     v2ray-plugin/
 scripts/                        # Prek (pre-commit) helpers
-.github/workflows/              # subrepo-pull.yml: Renovate-driven subrepo updates
+.github/workflows/              # subrepo-pull.yaml: Renovate-driven subrepo updates
 ```
 
 ## See also

@@ -143,7 +143,7 @@ These directories are:
 - Marked `linguist-vendored` in [.gitattributes](.gitattributes) (so they don't skew GitHub language stats)
 - Excluded from most project tooling
 
-[.github/workflows/subrepo-pull.yml](.github/workflows/subrepo-pull.yml) automates subrepo pulls in response to Renovate PRs that bump the pinned refs — you generally won't need to run `git subrepo pull` by hand.
+[.github/workflows/subrepo-pull.yaml](.github/workflows/subrepo-pull.yaml) automates subrepo pulls in response to Renovate PRs that bump the pinned refs — you generally won't need to run `git subrepo pull` by hand.
 
 **Do not edit files under `external/` directly.** Fixes to upstream code go upstream first, then flow back in via a subrepo pull.
 

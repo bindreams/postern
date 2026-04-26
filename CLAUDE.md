@@ -68,7 +68,7 @@ portal/src/postern/
 
 - Prek excludes `^external/` ([prek.toml](prek.toml)).
 - `.gitattributes` marks them `linguist-vendored`.
-- [.github/workflows/subrepo-pull.yml](.github/workflows/subrepo-pull.yml) automates `git subrepo pull` when Renovate bumps the pinned refs.
+- [.github/workflows/subrepo-pull.yaml](.github/workflows/subrepo-pull.yaml) automates `git subrepo pull` when Renovate bumps the pinned refs.
 
 **Do not** edit these files by hand, lint them, or include them in changes you make to the first-party code.
 

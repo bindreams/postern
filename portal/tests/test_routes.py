@@ -7,7 +7,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
 from postern import db
-from postern.app import create_app
+from postern.app import PosternApp
 from postern.models import Connection, Session, User
 from postern.settings import Settings
 
@@ -25,7 +25,7 @@ def app_settings(tmp_path):
 
 @pytest.fixture
 def test_app(app_settings):
-    app = create_app(app_settings)
+    app = PosternApp(app_settings)
     return app
 
 

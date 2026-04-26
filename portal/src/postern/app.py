@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def _lifespan(app: FastAPI):
     settings: Settings = app.state.settings
     async with db.get_connection(settings.database_path) as database:
         await db.migrate(database)
@@ -41,29 +41,16 @@ async def lifespan(app: FastAPI):
         logger.info("Shutdown complete")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    if settings is None:
-        settings = Settings()
-
-    application = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    application.state.settings = settings
-
-    # Middleware: inject DB connection into request state --------------------------------------------------------------
-    @application.middleware("http")
-    async def inject_db(request: Request, call_next):
-        request.state.db = application.state.db
-        return await call_next(request)
-
-    # Include routers --------------------------------------------------------------------------------------------------
-    application.include_router(login.router)
-    application.include_router(dashboard.router)
-
-    return application
+async def _inject_db(request: Request, call_next):
+    request.state.db = request.app.state.db
+    return await call_next(request)
 
 
-def _get_app() -> FastAPI:
-    """Lazy app factory for uvicorn. Only called when actually serving."""
-    return create_app()
+class PosternApp(FastAPI):
 
-
-app = _get_app
+    def __init__(self, settings: Settings | None = None):
+        super().__init__(lifespan=_lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+        self.state.settings = settings or Settings()
+        self.middleware("http")(_inject_db)
+        self.include_router(login.router)
+        self.include_router(dashboard.router)

@@ -1,0 +1,45 @@
+# Used INSTEAD of the root .dockerignore when building portal/Dockerfile (BuildKit
+# per-Dockerfile ignore). Must repeat the universal patterns from the root file
+# AND add portal-specific exclusions: the portal build only consumes portal/ and
+# LICENSE.md, so it can drop external/, nginx/, shadowsocks/, and scripts/.
+
+# Universal exclusions (mirror of root .dockerignore) =====
+**/.git
+
+.env
+.env.*
+!.env.example
+
+**/.tmp
+.claude
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.ty_cache
+**/.coverage
+**/htmlcov
+**/.venv
+**/*.egg-info
+
+**/dist
+
+.github
+
+# Portal-specific exclusions =====
+# Vendored upstream sources; only the shadowsocks build needs them.
+external/
+# Other services' source trees.
+nginx/
+shadowsocks/
+# Repo-level scripts not consumed by the portal image.
+scripts/
+# Test data not needed at build time (the portal Dockerfile copies portal/src/, not portal/tests/).
+portal/tests/

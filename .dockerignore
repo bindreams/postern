@@ -1,0 +1,39 @@
+# Universal exclusions — applied to every Dockerfile build context unless an adjacent
+# `<dockerfile-name>.dockerignore` overrides this file (see portal/Dockerfile.dockerignore).
+
+# VCS internals (huge, never needed by any build)
+**/.git
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Agent / temp / IDE state
+**/.tmp
+.claude
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python caches and local venvs
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.ty_cache
+**/.coverage
+**/htmlcov
+**/.venv
+**/*.egg-info
+
+# Generic build outputs. Note: NOT excluding **/build — would clobber
+# external/shadowsocks-rust/build/ which holds vendored release scripts.
+**/dist
+external/shadowsocks-rust/target
+
+# CI / repo metadata not consumed by any Dockerfile
+.github

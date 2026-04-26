@@ -235,6 +235,22 @@ def test_disabled_connection_config_returns_404(portal_client, mailpit_client, f
     assert r.status_code == 404
 
 
+# Image-shape invariants ===============================================================================================
+def test_portal_image_is_distroless(e2e_stack):
+    """Pin the distroless invariant in code: the production image must not ship a
+    POSIX shell. If this starts passing the wrong way, someone re-introduced an
+    `apk` install or moved off the non-dev DHI base; revisit the do-not-list in
+    CLAUDE.md before "fixing" the test."""
+    result = subprocess.run(
+        compose("exec", "-T", "portal", "/bin/sh", "-c", "true"),
+        capture_output=True,
+    )
+    assert result.returncode != 0, (
+        "Portal image unexpectedly has /bin/sh; the runtime stage of "
+        "portal/Dockerfile drifted away from the distroless DHI base."
+    )
+
+
 # Reconciler invariants ================================================================================================
 def test_reconciler_removes_orphan(e2e_stack):
     """A container with the postern.managed=true label but no DB row must be

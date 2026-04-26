@@ -41,7 +41,7 @@ def postern_cli(*args: str) -> subprocess.CompletedProcess:
 
 
 def trigger_reconcile() -> None:
-    compose_exec("touch", "/data/.reconcile-now")
+    compose_exec("postern", "reconcile")
 
 
 def query_db(sql: str, *params: str) -> str:

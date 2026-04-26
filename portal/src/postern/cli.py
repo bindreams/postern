@@ -24,9 +24,10 @@ def _settings() -> Settings:
     return Settings()
 
 
-def _trigger_reconcile(settings: Settings) -> None:
+def _trigger_reconcile(settings: Settings) -> Path:
     trigger = Path(settings.database_path).parent / ".reconcile-now"
     trigger.touch()
+    return trigger
 
 
 def run(coro):
@@ -204,6 +205,19 @@ def connection_enable(id: str) -> None:
         raise typer.Exit(1)
     typer.echo("Connection enabled")
     _trigger_reconcile(settings)
+
+
+# Reconcile command ====================================================================================================
+@app.command("reconcile")
+def reconcile() -> None:
+    """Wake the reconciler immediately instead of waiting for the next poll.
+
+    Creates the trigger file the reconciler watches. Equivalent to `touch
+    /data/.reconcile-now`, but works in the distroless production image which
+    ships no shell or busybox.
+    """
+    trigger = _trigger_reconcile(_settings())
+    typer.echo(f"Reconcile triggered: {trigger}")
 
 
 if __name__ == "__main__":

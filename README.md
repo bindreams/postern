@@ -118,7 +118,7 @@ docker compose exec portal postern user disable alice@example.com
 docker compose exec portal postern user delete  alice@example.com
 ```
 
-CLI commands that change connection state (`connection add/enable/disable`, `user disable/delete`) touch `/data/.reconcile-now` to wake the reconciler; the corresponding container appears (or disappears) within a few seconds. Pure reads (`list`) and `user add` do not trigger a reconcile — a user with no connections doesn't need any container.
+CLI commands that change connection state (`connection add/enable/disable`, `user disable/delete`) create `/data/.reconcile-now` to wake the reconciler; the corresponding container appears (or disappears) within a few seconds. Pure reads (`list`) and `user add` do not trigger a reconcile — a user with no connections doesn't need any container.
 
 From the user's side:
 
@@ -134,7 +134,7 @@ A client connects to `wss://<your-domain>:443/t/<token>` (v2ray-plugin in TLS + 
 ## Operations
 
 - **Logs.** Nginx logs are on the host at [nginx/log/](nginx/log/) (`access.log`, `error.log`). Portal logs go to `docker compose logs -f portal`. `ss-*` containers run with `LogConfig(type="none")` — they're deliberately logless.
-- **Reconciliation.** The portal runs a background loop every `RECONCILE_INTERVAL_SECONDS` (default 60s). To trigger it immediately after a DB mutation: `docker compose exec portal touch /data/.reconcile-now`. It also restarts exited `ss-*` containers and recreates them when the `local/shadowsocks-server` image ID changes.
+- **Reconciliation.** The portal runs a background loop every `RECONCILE_INTERVAL_SECONDS` (default 60s). To trigger it immediately after a DB mutation: `docker compose exec portal postern reconcile`. It also restarts exited `ss-*` containers and recreates them when the `local/shadowsocks-server` image ID changes.
 - **Cert renewal.** Nginx self-reloads every 6 hours via a background shell loop injected by [nginx/Dockerfile](nginx/Dockerfile). This picks up certbot-renewed certificates from the bind-mounted `/etc/letsencrypt` without restarting the container. `inotifywait` is not used — it does not reliably observe Let's Encrypt's symlink-target updates across Docker bind mounts.
 - **Portal restarts stop all tunnels.** When the `portal` container's lifespan ends, it calls `cleanup_all_containers()`, which stops and removes every `ss-*` container. They come back on the next reconciliation pass (a few seconds later), but connections are interrupted. Cleanup is best-effort — if the docker-proxy is unavailable during shutdown, containers can survive into the next portal start; the reconciler adopts them by their `postern.managed=true` label on the following pass.
 - **Data.** The SQLite database lives only in the `postern-data` named Docker volume. `./data/` is gitignored ([`.gitignore`](.gitignore)) and not otherwise used by the project.

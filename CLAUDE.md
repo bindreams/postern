@@ -20,7 +20,7 @@ These are load-bearing. Changing any of them without understanding the chain wil
   - Restart exited containers (lines 111–120)
   - Recreate containers when the `local/shadowsocks-server` image ID changes (lines 122–139)
   - Clean up expired sessions/OTPs each pass (line 160 → `db.cleanup_expired`)
-- **Manual reconcile trigger.** `touch <database_path>.parent/.reconcile-now`. Both [cli.py:28](portal/src/postern/cli.py#L28) and [reconciler.py:168](portal/src/postern/reconciler.py#L168) derive this path from `settings.database_path` — they must stay in sync. Any new code path that mutates connection state must trigger it too.
+- **Manual reconcile trigger.** The trigger file path (`<dirname(database_path)>/.reconcile-now`) is derived in two places that must stay in sync: [cli.py:28](portal/src/postern/cli.py#L28) (`_trigger_reconcile`, called by all state-mutating CLI commands and by `postern reconcile`) and [reconciler.py:163](portal/src/postern/reconciler.py#L163) (the watcher). The e2e helper [tests/e2e/\_helpers.py:43](portal/tests/e2e/_helpers.py#L43) and operators both go through `postern reconcile` rather than re-deriving the path. Any new code path that mutates connection state must call `_trigger_reconcile`.
 - **Production runtime is distroless.** [portal/Dockerfile](portal/Dockerfile)'s runtime stage is `dhi.io/python:3.13-alpine3.23` (no `-dev`). It ships only Python and its bundled libs — no `sh`, no busybox, no `touch`/`cat`/`ls`/`id`, no apk. Anything that previously assumed a shell — entrypoint scripts, `docker compose exec ... <unix tool>` patterns, healthchecks using `[CMD-SHELL ...]`, runtime-stage `RUN` instructions — must be rewritten in Python or moved to the build stage (which is `-dev` and still has Alpine + apk). Container debugging via `docker compose exec portal sh` will fail; use `python -c '...'` (see [tests/e2e/\_helpers.py:47](portal/tests/e2e/_helpers.py#L47) `query_db` for the pattern) or an ephemeral debug container.
 - **Shutdown wipes all `ss-*` containers.** [portal/src/postern/app.py:41](portal/src/postern/app.py#L41) calls `cleanup_all_containers()` on lifespan exit. Cleanup is best-effort — exceptions are swallowed ([reconciler.py:198-199](portal/src/postern/reconciler.py#L198-L199)). If the docker-proxy is unavailable at shutdown, containers survive; the reconciler adopts them on the next pass via the `postern.managed=true` label. Do not assume containers persist across portal restarts in tests or in code.
 - **App factory pattern.** [portal/src/postern/app.py:71](portal/src/postern/app.py#L71) is `app = _get_app` — a callable factory, not a `FastAPI` instance — because the Dockerfile runs `uvicorn postern.app:app --factory`. Do NOT "clean this up" to `app = _get_app()`: it opens the DB at module-import time and breaks. Tests that need an app should call `create_app()` directly, not import `postern.app.app`.
@@ -128,7 +128,7 @@ docker compose exec portal postern user add "Name" email@example.com
 docker compose exec portal postern connection add email@example.com "label"
 
 # Manual reconcile trigger (bypasses the 60s poll)
-docker compose exec portal touch /data/.reconcile-now
+docker compose exec portal postern reconcile
 
 # Tail logs
 docker compose logs -f portal

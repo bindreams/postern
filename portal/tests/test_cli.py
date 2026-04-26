@@ -1,5 +1,8 @@
 """Tests for the admin CLI commands."""
 
+import os
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -166,3 +169,25 @@ def test_connection_list_user_not_found(cli_env):
     result = runner.invoke(app, ["connection", "list", "--user-email", "nobody@example.com"])
     assert result.exit_code == 1
     assert "User not found: nobody@example.com" in result.output
+
+
+# Reconcile command ====================================================================================================
+def test_reconcile_creates_trigger_file(cli_env, tmp_path):
+    """`postern reconcile` is the operator-facing manual-reconcile trigger, used in
+    place of `touch /data/.reconcile-now` since the production image is distroless
+    and has no `touch` binary. It writes the same file the reconciler watches
+    (next to the database) and prints the path so operators can grep logs."""
+    trigger = tmp_path / ".reconcile-now"
+    assert trigger.parent == Path(os.environ["DATABASE_PATH"]).parent  # invariant pin
+    assert not trigger.exists()
+
+    result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0
+    assert trigger.exists()
+    assert "Reconcile triggered" in result.output
+    assert str(trigger) in result.output
+
+    # Idempotent: a second call must succeed without error or extra side-effects
+    result2 = runner.invoke(app, ["reconcile"])
+    assert result2.exit_code == 0
+    assert trigger.exists()

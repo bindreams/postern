@@ -49,6 +49,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 6
+    init: true
     stop_grace_period: 30s  # gives cleanup_all_containers room to run
 
   nginx:
@@ -78,6 +79,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 6
+    init: true
 
   docker-proxy:
     image: tecnativa/docker-socket-proxy:v0.4.2
@@ -97,6 +99,7 @@ services:
       interval: 3s
       timeout: 2s
       retries: 6
+    init: true
 
   mailpit:
     image: axllent/mailpit:v1.20
@@ -108,10 +111,12 @@ services:
       interval: 3s
       timeout: 2s
       retries: 6
+    init: true
 
   go-httpbin:
     image: mccutchen/go-httpbin:v2.15.0
     networks: [e2e-shadowsocks]
+    init: true
     # No healthcheck: the image is scratch-based (no shell, no wget). It starts in ms.
 
   ssclient:
@@ -120,6 +125,7 @@ services:
       dockerfile: portal/tests/e2e/ssclient.Dockerfile
     image: local/postern-ssclient
     networks: [e2e-tunnel-entry]
+    init: true
     command: ["sleep", "infinity"]
 
 networks:

@@ -38,6 +38,12 @@ def _make_mock_container(name, status="running", image_id="img1"):
     return container
 
 
+def _assert_init_passed(client):
+    """Reconciler must always pass init=True to docker (tini at PID 1)."""
+    call_kwargs = client.containers.run.call_args.kwargs
+    assert call_kwargs["init"] is True
+
+
 # Container naming =====================================================================================================
 def test_container_name():
     conn = _make_connection(path_token="abcdef123456789012345678")
@@ -60,6 +66,7 @@ def test_creates_missing_container():
     assert call_kwargs["name"] == "ss-abcdef123456789012345678"
     assert call_kwargs["network"] == "shadowsocks"
     assert "SS_CONFIG" in call_kwargs["environment"]
+    _assert_init_passed(client)
 
 
 def test_removes_orphan_container():
@@ -120,6 +127,7 @@ def test_recreates_container_on_image_change():
     old_container.stop.assert_called()
     old_container.remove.assert_called()
     client.containers.run.assert_called_once()
+    _assert_init_passed(client)
 
 
 # Async functions ======================================================================================================

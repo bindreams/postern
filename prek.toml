@@ -5,7 +5,7 @@
 exclude = "^external/"
 default_install_hook_types = ["pre-commit", "commit-msg"]
 
-# Local hooks =====
+# Local hooks ==========================================================================================================
 [[repos]]
 repo = "local"
 
@@ -14,6 +14,7 @@ id = "format-section-comments"
 name = "format section comments"
 entry = "python scripts/format-section-comments.py"
 language = "python"
+types_or = ["rust", "python", "toml", "javascript", "ts", "jsx", "tsx"]
 
 [[repos.hooks]]
 id = "ty"
@@ -27,7 +28,7 @@ language = "python"
 types = ["python"]
 pass_filenames = false
 
-# External hooks =====
+# External hooks =======================================================================================================
 [[repos]]
 repo = "https://github.com/pre-commit/pre-commit-hooks"
 rev = "v5.0.0"

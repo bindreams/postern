@@ -4,14 +4,14 @@
 # [tool.uv]
 # dev-dependencies = ["pytest"]
 # ///
-"""Pre-commit hook: fix section comment formatting in Rust and Python files.
+"""Pre-commit hook: fix section comment formatting in Rust, Python, TOML, and JS/TS files.
 
 Section comments must follow the format:
 
-    // Section name ======...=  (Rust primary, filled with '=' to column 120)
-    // Section name ------...-  (Rust secondary, filled with '-' to column 120)
-    # Section name =======...=  (Python primary, filled with '=' to column 120)
-    # Section name -------...-  (Python secondary, filled with '-' to column 120)
+    // Section name ======...=  (Rust/JS/TS primary, filled with '=' to column 120)
+    // Section name ------...-  (Rust/JS/TS secondary, filled with '-' to column 120)
+    # Section name =======...=  (Python/TOML primary, filled with '=' to column 120)
+    # Section name -------...-  (Python/TOML secondary, filled with '-' to column 120)
 
 Leading whitespace counts toward the column limit.
 
@@ -30,7 +30,7 @@ from typing import NamedTuple
 
 COLUMN_LIMIT = 120
 
-EXTENSION_PREFIX = {".rs": "//", ".py": "#"}
+EXTENSION_PREFIX = {".rs": "//", ".py": "#", ".toml": "#", ".js": "//", ".ts": "//", ".jsx": "//", ".tsx": "//"}
 
 
 class Patterns(NamedTuple):
@@ -418,3 +418,82 @@ def test_process_file_py(tmp_path):
     p.write_text("# CLI " + "=" * 30 + "\n")
     assert process_file(str(p))
     assert len(p.read_text().rstrip()) == 120
+
+
+# JS/TS tests ----------------------------------------------------------------------------------------------------------
+
+_JS_CORRECT_PRIMARY = "// State management " + "=" * (120 - len("// State management "))
+_JS_CORRECT_SECONDARY = "  // Helpers " + "-" * (120 - len("  // Helpers "))
+
+
+def test_js_correct_comment_unchanged():
+    assert not _changed(_JS_CORRECT_PRIMARY, "//")
+    assert not _changed(_JS_CORRECT_SECONDARY, "//")
+
+
+def test_js_too_short_padded():
+    short = "// State management " + "=" * 30
+    result = _fix(short, "//")
+    assert result.rstrip() == _JS_CORRECT_PRIMARY
+    assert len(result.rstrip()) == 120
+
+
+def test_js_reflow_name_then_fill():
+    text = "// Config management\n// -------------------------\n"
+    result = _fix(text, "//")
+    assert result.count("\n") == 1
+    line = result.rstrip()
+    assert line.startswith("// Config management -")
+    assert len(line) == 120
+
+
+def test_process_file_js(tmp_path):
+    p = tmp_path / "test.js"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_ts(tmp_path):
+    p = tmp_path / "test.ts"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_jsx(tmp_path):
+    p = tmp_path / "test.jsx"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_tsx(tmp_path):
+    p = tmp_path / "test.tsx"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+# TOML tests -----------------------------------------------------------------------------------------------------------
+
+
+def test_process_file_toml(tmp_path):
+    p = tmp_path / "test.toml"
+    p.write_text("# Local hooks " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_toml_correct_comment_unchanged():
+    line = "# Local hooks " + "=" * (120 - len("# Local hooks "))
+    assert not _changed(line, "#")
+
+
+def test_toml_reflow():
+    text = "# External hooks\n# -------------------------\n"
+    result = _fix(text, "#")
+    assert result.count("\n") == 1
+    line = result.rstrip()
+    assert line.startswith("# External hooks -")
+    assert len(line) == 120

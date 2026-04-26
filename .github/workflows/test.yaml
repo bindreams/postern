@@ -54,7 +54,11 @@ jobs:
       - name: Build e2e compose images (kept out of the pytest fixture so the build is not subject to the per-test timeout)
         uses: docker/bake-action@v5
         with:
-          files: portal/tests/e2e/e2e.compose.yaml
+          # workdir must be the compose file's directory: bake resolves `context:` relative
+          # to its cwd, not the compose file location, and the compose file uses `../../..`
+          # to point at the repo root.
+          workdir: portal/tests/e2e
+          files: e2e.compose.yaml
           load: true
           set: |
             *.cache-from=type=gha,scope=e2e

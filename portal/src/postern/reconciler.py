@@ -60,6 +60,7 @@ def _create_container(client: docker.DockerClient, conn: Connection, settings: S
         image=settings.shadowsocks_image,
         name=name,
         detach=True,
+        init=True,
         environment={"SS_CONFIG": config_b64},
         labels={MANAGED_LABEL: MANAGED_VALUE},
         log_config=docker.types.LogConfig(type="none"),

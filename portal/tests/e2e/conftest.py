@@ -172,6 +172,14 @@ def fresh_connection(e2e_stack):
             raise AssertionError(f"path_token not in DB for connection {conn_id}")
         trigger_reconcile()
         wait_for_container(f"ss-{path_token}", timeout=20)
+        # Reconciler-spawned ss-* containers must run with tini at PID 1.
+        init_state = subprocess.run(
+            ["docker", "inspect", f"ss-{path_token}", "--format", "{{.HostConfig.Init}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert init_state == "true", (f"reconciler-spawned ss-{path_token} missing init=true (got {init_state!r})")
         return conn_id, path_token
 
     return _make

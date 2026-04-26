@@ -30,20 +30,32 @@ from typing import NamedTuple
 
 COLUMN_LIMIT = 120
 
-# Dispatch by exact filename (Dockerfiles with no extension).
-FILENAME_PREFIX = {"Dockerfile": "#"}
+EXTENSION_PREFIX = {".rs": "//", ".py": "#", ".toml": "#", ".js": "//", ".ts": "//", ".jsx": "//", ".tsx": "//"}
 
-EXTENSION_PREFIX = {
-    ".rs": "//",
-    ".py": "#",
-    ".toml": "#",
-    ".js": "//",
-    ".ts": "//",
-    ".jsx": "//",
-    ".tsx": "//",
-    ".Dockerfile": "#",
-    ".dockerfile": "#",
-}
+# Dockerfile detection. Mirrors the set of names that pre-commit's `identify`
+# library tags as `dockerfile`, plus lowercase `*.dockerfile` so direct CLI
+# invocation works (prek does not route lowercase-d files to this hook).
+_DOCKERFILE_NAME_PARTS = frozenset({"Dockerfile", "Containerfile"})
+
+
+def is_dockerfile_name(basename: str) -> bool:
+    """Return True if `basename` should be treated as a Dockerfile.
+
+    Matches: ``Dockerfile``, ``Containerfile``, ``foo.Dockerfile``,
+    ``foo.Containerfile``, ``Dockerfile.<anything>``, ``Containerfile.<anything>``,
+    and lowercase ``*.dockerfile``.
+    """
+    if any(part in _DOCKERFILE_NAME_PARTS for part in basename.split(".")):
+        return True
+    return basename.endswith(".dockerfile")
+
+
+# Dockerfile parser directives are case-insensitive on the directive name and
+# tolerate whitespace around `=` per the BuildKit spec. Per the Dockerfile
+# reference, directives are only valid before the first non-comment line, but
+# this script flags the form anywhere in the file — that errs toward not
+# modifying user content.
+_DOCKERFILE_DIRECTIVE_RE = re.compile(r"^#\s*(syntax|escape|check)\s*=", re.IGNORECASE)
 
 
 class Patterns(NamedTuple):
@@ -76,12 +88,8 @@ def is_doc_comment(line: str, prefix: str, is_dockerfile: bool = False) -> bool:
     if prefix == "#":
         if stripped.startswith("#!") or stripped.startswith("# ///"):
             return True
-        if is_dockerfile:
-            # Dockerfile parser directives must remain on their own line and
-            # must not be merged with a following fill-only line.
-            return (
-                stripped.startswith("# syntax=") or stripped.startswith("# escape=") or stripped.startswith("# check=")
-            )
+        if is_dockerfile and _DOCKERFILE_DIRECTIVE_RE.match(stripped):
+            return True
     return False
 
 
@@ -130,7 +138,7 @@ def process_lines(lines: list[str],
 
         # Case 2: single-line section comment with wrong format/length.
         sec_m = patterns.section.match(line)
-        if sec_m:
+        if sec_m and not is_doc_comment(line, prefix, is_dockerfile=is_dockerfile):
             can_m = patterns.canonical.match(line)
             if can_m:
                 indent, name, fill_char = can_m.group(1), can_m.group(2), can_m.group(3)
@@ -167,20 +175,20 @@ def process_lines(lines: list[str],
 def process_file(path: str) -> bool:
     """Process one file. Returns True if the file was modified."""
     name = os.path.basename(path)
-    ext = os.path.splitext(path)[1]
-    prefix = FILENAME_PREFIX.get(name)
-    if prefix is None:
-        prefix = EXTENSION_PREFIX.get(ext)
+    if is_dockerfile_name(name):
+        prefix = "#"
+        is_df = True
+    else:
+        prefix = EXTENSION_PREFIX.get(os.path.splitext(path)[1])
+        is_df = False
     if prefix is None:
         return False
-
-    is_dockerfile = name == "Dockerfile" or ext in {".Dockerfile", ".dockerfile"}
 
     with open(path, encoding="utf-8", newline="") as f:
         lines = f.readlines()
 
     patterns = make_patterns(prefix)
-    new_lines, changed = process_lines(lines, patterns, prefix, is_dockerfile=is_dockerfile)
+    new_lines, changed = process_lines(lines, patterns, prefix, is_dockerfile=is_df)
 
     if changed:
         with open(path, "w", encoding="utf-8", newline="") as f:
@@ -573,3 +581,79 @@ def test_python_syntax_comment_still_merged(tmp_path):
     text = p.read_text()
     assert text.count("\n") == 1
     assert len(text.rstrip()) == 120
+
+
+def test_dockerfile_inline_parser_directive_not_modified(tmp_path):
+    # Single-line shape: the directive sits on the same line as a fill run.
+    # Case 2 (single-line section reformatting) must skip it.
+    p = tmp_path / "Dockerfile"
+    p.write_text("# syntax=docker/dockerfile:1 ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# syntax=docker/dockerfile:1 ==========\n"), f"inline directive was modified: {text!r}"
+
+
+def test_dockerfile_escape_directive_not_merged(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# escape=`\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# escape=`\n"), f"escape directive was modified: {text!r}"
+
+
+def test_dockerfile_check_directive_not_merged(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# check=skip=all\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# check=skip=all\n"), f"check directive was modified: {text!r}"
+
+
+def test_dockerfile_directive_case_insensitive(tmp_path):
+    # BuildKit accepts directive names case-insensitively (per the spec).
+    p = tmp_path / "Dockerfile"
+    p.write_text("# SYNTAX=docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# SYNTAX=docker/dockerfile:1\n"), f"uppercase directive was modified: {text!r}"
+
+
+def test_dockerfile_directive_whitespace_tolerant(tmp_path):
+    # BuildKit accepts whitespace around `=` and the directive name.
+    p = tmp_path / "Dockerfile"
+    p.write_text("#  syntax = docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("#  syntax = docker/dockerfile:1\n"), \
+        f"whitespace-padded directive was modified: {text!r}"
+
+
+def test_process_file_containerfile(tmp_path):
+    # Podman-style Containerfile: identify tags it as `dockerfile`, so prek
+    # routes it here. The dispatch must handle it like a Dockerfile.
+    p = tmp_path / "Containerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_dotted(tmp_path):
+    # `Dockerfile.<suffix>` is a common pattern (e.g. Dockerfile.dev).
+    # identify tags these as `dockerfile`.
+    p = tmp_path / "Dockerfile.dev"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_containerfile_dotted(tmp_path):
+    p = tmp_path / "Containerfile.dev"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_is_dockerfile_name_negative(tmp_path):
+    # Files that look adjacent to Dockerfile but aren't.
+    for n in ["dockerfile", "DOCKERFILE", "MyDockerfile", "dockerfile.txt", "foo.txt"]:
+        assert not is_dockerfile_name(n), f"{n!r} should not match"

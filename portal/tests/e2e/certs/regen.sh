@@ -28,7 +28,6 @@ FULLCHAIN="fullchain.pem"
 CHAIN="chain.pem"
 
 DAYS=365
-SUBJ_CA="/CN=Postern Test Root CA"
 SUBJ_LEAF="/CN=postern.test"
 
 # OpenSSL 3+ requires basicConstraints + keyUsage on the CA cert; older clients

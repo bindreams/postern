@@ -26,7 +26,7 @@ COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 COPY external/v2ray-plugin/LICENSE /usr/share/licenses/v2ray-plugin/LICENSE
 COPY external/shadowsocks-rust/LICENSE /usr/share/licenses/shadowsocks-rust/LICENSE
 
-# Config is passed as base64-encoded SS_CONFIG env var, decoded to tmpfs at runtime.
-# Inlined into CMD because the non-dev runtime is distroless + nonroot and can't
-# accept a written entrypoint script in /.
-CMD ["/bin/sh", "-c", "echo \"$SS_CONFIG\" | base64 -d > /tmp/config.jsonc && exec ssserver -c /tmp/config.jsonc"]
+# Config is passed as base64-encoded SS_CONFIG env var; entrypoint.sh decodes it
+# to /tmp (the only nonroot-writable path at runtime) and execs ssserver.
+COPY --chmod=755 shadowsocks/entrypoint.sh /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

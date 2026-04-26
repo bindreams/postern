@@ -228,6 +228,35 @@ async def test_cleanup_expired(test_db):
     assert await db.get_valid_session(test_db, "current") is not None
 
 
+# SQLite datetime adapter ==============================================================================================
+def test_adapt_datetime_aware_utc_matches_strftime():
+    # Format must be byte-identical to auth.py's strftime path so rows from
+    # both writers compare as raw text.
+    dt = datetime(2025, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+    assert db._adapt_datetime(dt) == "2025-01-02 03:04:05"
+    assert db._adapt_datetime(dt) == dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_adapt_datetime_aware_non_utc_normalizes_to_utc():
+    plus3 = timezone(timedelta(hours=3))
+    dt = datetime(2025, 1, 2, 6, 4, 5, tzinfo=plus3)  # 03:04:05 UTC
+    assert db._adapt_datetime(dt) == "2025-01-02 03:04:05"
+
+
+def test_adapt_datetime_naive_raises():
+    # Naive datetimes are rejected to avoid silently storing local time as UTC.
+    with pytest.raises(ValueError, match="naive datetime"):
+        db._adapt_datetime(datetime(2025, 1, 2, 3, 4, 5))
+
+
+def test_adapt_datetime_truncates_microseconds():
+    # Sub-second precision is dropped — consistent with auth.py's strftime
+    # and SQLite's `datetime('now')` default. Pinning so a future format
+    # change is intentional.
+    dt = datetime(2025, 1, 2, 3, 4, 5, 999999, tzinfo=timezone.utc)
+    assert db._adapt_datetime(dt) == "2025-01-02 03:04:05"
+
+
 # Edge cases ===========================================================================================================
 async def test_delete_connections_for_user(test_db):
     user = User(name="Alice", email="alice@example.com")

@@ -97,7 +97,8 @@ async def test_dashboard_with_valid_session(client, app_settings):
         session = Session(token="test-session-token", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get("/", cookies={"session": "test-session-token"})
+    client.cookies.set("session", "test-session-token")
+    response = await client.get("/")
     assert response.status_code == 200
     assert "Alice" in response.text
 
@@ -124,10 +125,8 @@ async def test_config_download_for_owned_connection(client, app_settings):
         session = Session(token="test-token", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get(
-        f"/connection/{conn.id}/config",
-        cookies={"session": "test-token"},
-    )
+    client.cookies.set("session", "test-token")
+    response = await client.get(f"/connection/{conn.id}/config")
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     data = response.json()
@@ -153,10 +152,8 @@ async def test_config_download_for_other_user_returns_404(client, app_settings):
         session = Session(token="alice-token", user_id=alice.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get(
-        f"/connection/{conn.id}/config",
-        cookies={"session": "alice-token"},
-    )
+    client.cookies.set("session", "alice-token")
+    response = await client.get(f"/connection/{conn.id}/config")
     assert response.status_code == 404
 
 
@@ -176,11 +173,8 @@ async def test_logout(client, app_settings):
         session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.post(
-        "/logout",
-        cookies={"session": "tok"},
-        follow_redirects=False,
-    )
+    client.cookies.set("session", "tok")
+    response = await client.post("/logout", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/login"
 
@@ -194,11 +188,8 @@ async def test_login_page_redirects_when_logged_in(client, app_settings):
         session = Session(token="active-tok", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get(
-        "/login",
-        cookies={"session": "active-tok"},
-        follow_redirects=False,
-    )
+    client.cookies.set("session", "active-tok")
+    response = await client.get("/login", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/"
 
@@ -220,10 +211,8 @@ async def test_download_disabled_connection_returns_404(client, app_settings):
         session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get(
-        f"/connection/{conn.id}/config",
-        cookies={"session": "tok"},
-    )
+    client.cookies.set("session", "tok")
+    response = await client.get(f"/connection/{conn.id}/config")
     assert response.status_code == 404
 
 
@@ -235,8 +224,6 @@ async def test_download_nonexistent_connection_returns_404(client, app_settings)
         session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
         await db.create_session(database, session)
 
-    response = await client.get(
-        "/connection/nonexistent-uuid/config",
-        cookies={"session": "tok"},
-    )
+    client.cookies.set("session", "tok")
+    response = await client.get("/connection/nonexistent-uuid/config")
     assert response.status_code == 404

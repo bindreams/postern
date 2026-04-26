@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import hmac
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import aiosqlite
 
 from postern.models import Connection, Session, User
+
+
+# SQLite adapters ======================================================================================================
+def _adapt_datetime(dt: datetime) -> str:
+    """Serialize datetimes for SQLite TEXT columns.
+
+    Output is byte-identical to `auth.py`'s `strftime("%Y-%m-%d %H:%M:%S")` so
+    rows written via the adapter and via the manual strftime path stay
+    comparable as raw text. Aware values are normalized to UTC. Naive values
+    are rejected: Postern is UTC-everywhere, but a naive `datetime` carries no
+    proof of that, and silently storing local time as UTC is a foot-gun.
+    """
+    if dt.tzinfo is None:
+        raise ValueError(
+            "naive datetime not supported by SQLite adapter; pass an aware datetime"
+            " (e.g. datetime.now(timezone.utc))"
+        )
+    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+# register_adapter is process-global. Removing this re-introduces the Python-3.12
+# DeprecationWarning and breaks outright in 3.14+. No other code in the repo
+# uses sqlite3 directly, so there's no competing registration.
+sqlite3.register_adapter(datetime, _adapt_datetime)
 
 # Schema versions ======================================================================================================
 MIGRATIONS: dict[int, str] = {

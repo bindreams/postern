@@ -5,8 +5,9 @@
 ## set for any compose command other than `build` and `logs` -- the e2e_certs
 ## fixture in conftest.py does this for pytest runs; for ad-hoc bring-up:
 ##
-##   POSTERN_E2E_TLS_DIR=$(uv run python tests/e2e/_certs.py /tmp/postern-e2e-tls) \
-##     docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --build --wait
+##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
+##   POSTERN_E2E_TLS_DIR=$(uv run python portal/tests/e2e/_certs.py /tmp/postern-e2e-tls) \
+##     docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --wait
 ##   POSTERN_E2E_TLS_DIR=/tmp/postern-e2e-tls \
 ##     docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
 ##
@@ -52,6 +53,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 6
+    init: true
     stop_grace_period: 30s  # gives cleanup_all_containers room to run
 
   nginx:
@@ -81,6 +83,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 6
+    init: true
 
   docker-proxy:
     image: tecnativa/docker-socket-proxy:v0.4.2
@@ -100,6 +103,7 @@ services:
       interval: 3s
       timeout: 2s
       retries: 6
+    init: true
 
   mailpit:
     image: axllent/mailpit:v1.20
@@ -111,10 +115,12 @@ services:
       interval: 3s
       timeout: 2s
       retries: 6
+    init: true
 
   go-httpbin:
     image: mccutchen/go-httpbin:v2.15.0
     networks: [e2e-shadowsocks]
+    init: true
     # No healthcheck: the image is scratch-based (no shell, no wget). It starts in ms.
 
   ssclient:
@@ -123,6 +129,7 @@ services:
       dockerfile: portal/tests/e2e/ssclient.Dockerfile
     image: local/postern-ssclient
     networks: [e2e-tunnel-entry]
+    init: true
     volumes:
       # The .crt extension is load-bearing: update-ca-certificates only ingests *.crt.
       - type: bind

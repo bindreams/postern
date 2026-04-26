@@ -4,14 +4,14 @@
 # [tool.uv]
 # dev-dependencies = ["pytest"]
 # ///
-"""Pre-commit hook: fix section comment formatting in Rust and Python files.
+"""Pre-commit hook: fix section comment formatting in Rust, Python, TOML, JS/TS, and Dockerfiles.
 
 Section comments must follow the format:
 
-    // Section name ======...=  (Rust primary, filled with '=' to column 120)
-    // Section name ------...-  (Rust secondary, filled with '-' to column 120)
-    # Section name =======...=  (Python primary, filled with '=' to column 120)
-    # Section name -------...-  (Python secondary, filled with '-' to column 120)
+    // Section name ======...=  (Rust/JS/TS primary, filled with '=' to column 120)
+    // Section name ------...-  (Rust/JS/TS secondary, filled with '-' to column 120)
+    # Section name =======...=  (Python/TOML/Dockerfile primary, filled with '=' to column 120)
+    # Section name -------...-  (Python/TOML/Dockerfile secondary, filled with '-' to column 120)
 
 Leading whitespace counts toward the column limit.
 
@@ -30,7 +30,32 @@ from typing import NamedTuple
 
 COLUMN_LIMIT = 120
 
-EXTENSION_PREFIX = {".rs": "//", ".py": "#"}
+EXTENSION_PREFIX = {".rs": "//", ".py": "#", ".toml": "#", ".js": "//", ".ts": "//", ".jsx": "//", ".tsx": "//"}
+
+# Dockerfile detection. Mirrors the set of names that pre-commit's `identify`
+# library tags as `dockerfile`, plus lowercase `*.dockerfile` so direct CLI
+# invocation works (prek does not route lowercase-d files to this hook).
+_DOCKERFILE_NAME_PARTS = frozenset({"Dockerfile", "Containerfile"})
+
+
+def is_dockerfile_name(basename: str) -> bool:
+    """Return True if `basename` should be treated as a Dockerfile.
+
+    Matches: ``Dockerfile``, ``Containerfile``, ``foo.Dockerfile``,
+    ``foo.Containerfile``, ``Dockerfile.<anything>``, ``Containerfile.<anything>``,
+    and lowercase ``*.dockerfile``.
+    """
+    if any(part in _DOCKERFILE_NAME_PARTS for part in basename.split(".")):
+        return True
+    return basename.endswith(".dockerfile")
+
+
+# Dockerfile parser directives are case-insensitive on the directive name and
+# tolerate whitespace around `=` per the BuildKit spec. Per the Dockerfile
+# reference, directives are only valid before the first non-comment line, but
+# this script flags the form anywhere in the file — that errs toward not
+# modifying user content.
+_DOCKERFILE_DIRECTIVE_RE = re.compile(r"^#\s*(syntax|escape|check)\s*=", re.IGNORECASE)
 
 
 class Patterns(NamedTuple):
@@ -55,13 +80,16 @@ def make_patterns(prefix: str) -> Patterns:
     )
 
 
-def is_doc_comment(line: str, prefix: str) -> bool:
+def is_doc_comment(line: str, prefix: str, is_dockerfile: bool = False) -> bool:
     """Check if a line is a doc/special comment that should not be treated as a section name half."""
     stripped = line.lstrip()
     if prefix == "//":
         return stripped.startswith("///") or stripped.startswith("//!")
     if prefix == "#":
-        return stripped.startswith("#!") or stripped.startswith("# ///")
+        if stripped.startswith("#!") or stripped.startswith("# ///"):
+            return True
+        if is_dockerfile and _DOCKERFILE_DIRECTIVE_RE.match(stripped):
+            return True
     return False
 
 
@@ -74,7 +102,10 @@ def rebuild(indent: str, name: str, fill_char: str, prefix: str) -> str:
     return line + fill_char * fill_count
 
 
-def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[list[str], bool]:
+def process_lines(lines: list[str],
+                  patterns: Patterns,
+                  prefix: str,
+                  is_dockerfile: bool = False) -> tuple[list[str], bool]:
     """Fix section comments in a list of lines. Returns (new_lines, changed)."""
     changed = False
     skip_next = False
@@ -93,7 +124,8 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
             prev_line = new_lines[-1].rstrip("\r\n")
             name_m = patterns.name_half.match(prev_line)
             if (
-                name_m and not patterns.section.match(prev_line) and not is_doc_comment(prev_line, prefix)
+                name_m and not patterns.section.match(prev_line)
+                and not is_doc_comment(prev_line, prefix, is_dockerfile=is_dockerfile)
                 and name_m.group(2)  # has actual text after prefix
             ):
                 indent = name_m.group(1)
@@ -106,7 +138,7 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
 
         # Case 2: single-line section comment with wrong format/length.
         sec_m = patterns.section.match(line)
-        if sec_m:
+        if sec_m and not is_doc_comment(line, prefix, is_dockerfile=is_dockerfile):
             can_m = patterns.canonical.match(line)
             if can_m:
                 indent, name, fill_char = can_m.group(1), can_m.group(2), can_m.group(3)
@@ -123,8 +155,8 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
             if fill_m2:
                 name_m2 = patterns.name_half.match(line)
                 if (
-                    name_m2 and not patterns.section.match(line) and not is_doc_comment(line, prefix)
-                    and name_m2.group(2)
+                    name_m2 and not patterns.section.match(line)
+                    and not is_doc_comment(line, prefix, is_dockerfile=is_dockerfile) and name_m2.group(2)
                 ):
                     indent = name_m2.group(1)
                     name = name_m2.group(2).rstrip()
@@ -142,8 +174,13 @@ def process_lines(lines: list[str], patterns: Patterns, prefix: str) -> tuple[li
 
 def process_file(path: str) -> bool:
     """Process one file. Returns True if the file was modified."""
-    ext = os.path.splitext(path)[1]
-    prefix = EXTENSION_PREFIX.get(ext)
+    name = os.path.basename(path)
+    if is_dockerfile_name(name):
+        prefix = "#"
+        is_df = True
+    else:
+        prefix = EXTENSION_PREFIX.get(os.path.splitext(path)[1])
+        is_df = False
     if prefix is None:
         return False
 
@@ -151,7 +188,7 @@ def process_file(path: str) -> bool:
         lines = f.readlines()
 
     patterns = make_patterns(prefix)
-    new_lines, changed = process_lines(lines, patterns, prefix)
+    new_lines, changed = process_lines(lines, patterns, prefix, is_dockerfile=is_df)
 
     if changed:
         with open(path, "w", encoding="utf-8", newline="") as f:
@@ -418,3 +455,205 @@ def test_process_file_py(tmp_path):
     p.write_text("# CLI " + "=" * 30 + "\n")
     assert process_file(str(p))
     assert len(p.read_text().rstrip()) == 120
+
+
+# JS/TS tests ----------------------------------------------------------------------------------------------------------
+
+_JS_CORRECT_PRIMARY = "// State management " + "=" * (120 - len("// State management "))
+_JS_CORRECT_SECONDARY = "  // Helpers " + "-" * (120 - len("  // Helpers "))
+
+
+def test_js_correct_comment_unchanged():
+    assert not _changed(_JS_CORRECT_PRIMARY, "//")
+    assert not _changed(_JS_CORRECT_SECONDARY, "//")
+
+
+def test_js_too_short_padded():
+    short = "// State management " + "=" * 30
+    result = _fix(short, "//")
+    assert result.rstrip() == _JS_CORRECT_PRIMARY
+    assert len(result.rstrip()) == 120
+
+
+def test_js_reflow_name_then_fill():
+    text = "// Config management\n// -------------------------\n"
+    result = _fix(text, "//")
+    assert result.count("\n") == 1
+    line = result.rstrip()
+    assert line.startswith("// Config management -")
+    assert len(line) == 120
+
+
+def test_process_file_js(tmp_path):
+    p = tmp_path / "test.js"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_ts(tmp_path):
+    p = tmp_path / "test.ts"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_jsx(tmp_path):
+    p = tmp_path / "test.jsx"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_tsx(tmp_path):
+    p = tmp_path / "test.tsx"
+    p.write_text("// State " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+# TOML tests -----------------------------------------------------------------------------------------------------------
+
+
+def test_process_file_toml(tmp_path):
+    p = tmp_path / "test.toml"
+    p.write_text("# Local hooks " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_toml_correct_comment_unchanged():
+    line = "# Local hooks " + "=" * (120 - len("# Local hooks "))
+    assert not _changed(line, "#")
+
+
+def test_toml_reflow():
+    text = "# External hooks\n# -------------------------\n"
+    result = _fix(text, "#")
+    assert result.count("\n") == 1
+    line = result.rstrip()
+    assert line.startswith("# External hooks -")
+    assert len(line) == 120
+
+
+# Dockerfile tests -----------------------------------------------------------------------------------------------------
+
+
+def test_process_file_dockerfile_no_ext(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_capital_ext(tmp_path):
+    p = tmp_path / "nginx.Dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_lowercase_ext(tmp_path):
+    p = tmp_path / "nginx.dockerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_dockerfile_parser_directive_not_merged(tmp_path):
+    # Without the parser-directive guard, the script would collapse the
+    # `# syntax=...` line and the following fill-only line into one
+    # malformed line, silently disabling the directive.
+    p = tmp_path / "Dockerfile"
+    p.write_text("# syntax=docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# syntax=docker/dockerfile:1\n"), f"parser directive was modified: {text!r}"
+
+
+def test_python_syntax_comment_still_merged(tmp_path):
+    # Python files do NOT get the parser-directive exemption — the
+    # # syntax= immunity is Dockerfile-only. This pins the gate so a
+    # future refactor cannot make the exemption global.
+    p = tmp_path / "test.py"
+    p.write_text("# syntax=foo\n# ==========\n")
+    assert process_file(str(p))
+    text = p.read_text()
+    assert text.count("\n") == 1
+    assert len(text.rstrip()) == 120
+
+
+def test_dockerfile_inline_parser_directive_not_modified(tmp_path):
+    # Single-line shape: the directive sits on the same line as a fill run.
+    # Case 2 (single-line section reformatting) must skip it.
+    p = tmp_path / "Dockerfile"
+    p.write_text("# syntax=docker/dockerfile:1 ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# syntax=docker/dockerfile:1 ==========\n"), f"inline directive was modified: {text!r}"
+
+
+def test_dockerfile_escape_directive_not_merged(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# escape=`\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# escape=`\n"), f"escape directive was modified: {text!r}"
+
+
+def test_dockerfile_check_directive_not_merged(tmp_path):
+    p = tmp_path / "Dockerfile"
+    p.write_text("# check=skip=all\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# check=skip=all\n"), f"check directive was modified: {text!r}"
+
+
+def test_dockerfile_directive_case_insensitive(tmp_path):
+    # BuildKit accepts directive names case-insensitively (per the spec).
+    p = tmp_path / "Dockerfile"
+    p.write_text("# SYNTAX=docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("# SYNTAX=docker/dockerfile:1\n"), f"uppercase directive was modified: {text!r}"
+
+
+def test_dockerfile_directive_whitespace_tolerant(tmp_path):
+    # BuildKit accepts whitespace around `=` and the directive name.
+    p = tmp_path / "Dockerfile"
+    p.write_text("#  syntax = docker/dockerfile:1\n# ==========\nFROM alpine\n")
+    process_file(str(p))
+    text = p.read_text()
+    assert text.startswith("#  syntax = docker/dockerfile:1\n"), \
+        f"whitespace-padded directive was modified: {text!r}"
+
+
+def test_process_file_containerfile(tmp_path):
+    # Podman-style Containerfile: identify tags it as `dockerfile`, so prek
+    # routes it here. The dispatch must handle it like a Dockerfile.
+    p = tmp_path / "Containerfile"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_dockerfile_dotted(tmp_path):
+    # `Dockerfile.<suffix>` is a common pattern (e.g. Dockerfile.dev).
+    # identify tags these as `dockerfile`.
+    p = tmp_path / "Dockerfile.dev"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_process_file_containerfile_dotted(tmp_path):
+    p = tmp_path / "Containerfile.dev"
+    p.write_text("# Stage " + "=" * 30 + "\n")
+    assert process_file(str(p))
+    assert len(p.read_text().rstrip()) == 120
+
+
+def test_is_dockerfile_name_negative(tmp_path):
+    # Files that look adjacent to Dockerfile but aren't.
+    for n in ["dockerfile", "DOCKERFILE", "MyDockerfile", "dockerfile.txt", "foo.txt"]:
+        assert not is_dockerfile_name(n), f"{n!r} should not match"

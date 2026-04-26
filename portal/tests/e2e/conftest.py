@@ -104,7 +104,9 @@ def e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
             "To opt out, run `pytest -m 'not e2e'`.",
             pytrace=False,
         )
-    run(compose("up", "-d", "--build", "--wait"))
+    # Compose images must be pre-built. CI does it (see .github/workflows/test.yaml);
+    # locally run `docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build`.
+    run(compose("up", "-d", "--wait"))
     try:
         yield
     finally:
@@ -196,6 +198,14 @@ def fresh_connection(e2e_stack):
             raise AssertionError(f"path_token not in DB for connection {conn_id}")
         trigger_reconcile()
         wait_for_container(f"ss-{path_token}", timeout=20)
+        # Reconciler-spawned ss-* containers must run with tini at PID 1.
+        init_state = subprocess.run(
+            ["docker", "inspect", f"ss-{path_token}", "--format", "{{.HostConfig.Init}}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        assert init_state == "true", (f"reconciler-spawned ss-{path_token} missing init=true (got {init_state!r})")
         return conn_id, path_token
 
     return _make

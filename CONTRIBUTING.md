@@ -57,8 +57,10 @@ uv run pytest -m e2e -v
   ```bash
   docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
   ```
-
-The session fixture builds the other images (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) automatically via `docker compose up --build`.
+- **Compose images** (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) must also exist before the suite starts. The session fixture only does `compose up --wait` so the build is not subject to the per-test timeout. Build them once from the repo root:
+  ```bash
+  docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
+  ```
 
 **Test certs** are generated at session start by the `e2e_certs` fixture (Ed25519 self-signed CA + leaf, 30-day validity). The fixture writes them under pytest's tmp dir and exposes the path via `POSTERN_E2E_TLS_DIR` for compose to interpolate into volume mounts. No manual setup or yearly regeneration.
 

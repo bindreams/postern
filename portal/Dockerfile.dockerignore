@@ -3,7 +3,7 @@
 # AND add portal-specific exclusions: the portal build only consumes portal/ and
 # LICENSE.md, so it can drop external/, nginx/, shadowsocks/, and scripts/.
 
-# Universal exclusions (mirror of root .dockerignore) =====
+# Universal exclusions (mirror of root .dockerignore) ==================================================================
 **/.git
 
 .env
@@ -33,7 +33,7 @@ Thumbs.db
 
 .github
 
-# Portal-specific exclusions =====
+# Portal-specific exclusions ===========================================================================================
 # Vendored upstream sources; only the shadowsocks build needs them.
 external/
 # Other services' source trees.

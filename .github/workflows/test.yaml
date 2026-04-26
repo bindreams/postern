@@ -8,6 +8,7 @@ on:
 
 jobs:
   unit:
+    name: Unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,6 +21,7 @@ jobs:
         working-directory: portal
 
   e2e:
+    name: End-to-end tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,7 +42,27 @@ jobs:
           enable-cache: true
 
       - name: Build the per-connection shadowsocks image (compose does not build it)
-        run: docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: shadowsocks/Dockerfile
+          tags: local/shadowsocks-server
+          load: true
+          cache-from: type=gha,scope=shadowsocks
+          cache-to: type=gha,mode=max,scope=shadowsocks
+
+      - name: Build e2e compose images (kept out of the pytest fixture so the build is not subject to the per-test timeout)
+        uses: docker/bake-action@v5
+        with:
+          # workdir must be the compose file's directory: bake resolves `context:` relative
+          # to its cwd, not the compose file location, and the compose file uses `../../..`
+          # to point at the repo root.
+          workdir: portal/tests/e2e
+          files: e2e.compose.yaml
+          load: true
+          set: |
+            *.cache-from=type=gha,scope=e2e
+            *.cache-to=type=gha,mode=max,scope=e2e
 
       - run: uv sync --group e2e
         working-directory: portal

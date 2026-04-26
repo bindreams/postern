@@ -78,7 +78,9 @@ def e2e_stack(_patch_dns_for_postern_test) -> Iterator[None]:
             "To opt out, run `pytest -m 'not e2e'`.",
             pytrace=False,
         )
-    run(compose("up", "-d", "--build", "--wait"))
+    # Compose images must be pre-built. CI does it (see .github/workflows/test.yaml);
+    # locally run `docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build`.
+    run(compose("up", "-d", "--wait"))
     try:
         yield
     finally:

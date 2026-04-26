@@ -1,26 +1,19 @@
 .env
+
+# Runtime state
 nginx/log/
+
+# Cache
 __pycache__/
 *.pyc
-.venv/
-
-# Python tooling caches
-.pytest_cache/
-.coverage
-.mypy_cache/
-.ruff_cache/
-.ty_cache/
 *.egg-info/
-dist/
-build/
-htmlcov/
+.venv/
+.pytest_cache/
 
-# Editors / OS
+# Editors
 .vscode/
 .idea/
-*.swp
-.DS_Store
-Thumbs.db
 
-# Agent / temp workspace
-.tmp/
+# Claude Code
+.claude/*.local.*
+CLAUDE.local.md

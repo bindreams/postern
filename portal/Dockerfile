@@ -29,4 +29,4 @@ COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 
 USER nonroot
 EXPOSE 8000
-CMD ["uvicorn", "postern.app:app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]
+CMD ["uvicorn", "postern.app:PosternApp", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]

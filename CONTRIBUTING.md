@@ -96,10 +96,10 @@ For local testing, you have two realistic options:
 
   ```bash
   cd portal
-  SECRET_KEY=dev uv run uvicorn postern.app:app --factory --port 8000
+  SECRET_KEY=dev uv run uvicorn postern.app:PosternApp --factory --port 8000
   ```
 
-  `--factory` is required — `postern.app:app` is a callable factory, not a `FastAPI` instance. You cannot complete the OTP login end-to-end this way (session cookies need HTTPS).
+  `--factory` tells uvicorn to call the target (`PosternApp`) once to produce the ASGI app, instead of treating the class itself as an ASGI callable. You cannot complete the OTP login end-to-end this way (session cookies need HTTPS).
 
 The admin CLI works regardless: `docker compose exec portal postern user list`.
 

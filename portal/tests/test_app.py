@@ -6,13 +6,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from asgi_lifespan import LifespanManager
 
-from postern.app import create_app
+from postern.app import PosternApp
 from postern.settings import Settings
 
 
 async def test_lifespan_starts_and_stops_reconciler(tmp_path):
     settings = Settings(database_path=str(tmp_path / "lifespan.db"), secret_key="test-secret")
-    app = create_app(settings)
+    app = PosternApp(settings)
 
     loop_calls: list[tuple] = []
     loop_started = asyncio.Event()
@@ -45,7 +45,7 @@ async def test_lifespan_closes_db_when_migrate_fails(tmp_path):
     import threading
 
     settings = Settings(database_path=str(tmp_path / "lifespan-fail.db"), secret_key="test-secret")
-    application = create_app(settings)
+    application = PosternApp(settings)
 
     def aiosqlite_workers() -> set[threading.Thread]:
         return {t for t in threading.enumerate() if t.is_alive() and "_connection_worker_thread" in (t.name or "")}

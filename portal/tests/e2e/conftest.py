@@ -13,18 +13,20 @@ resolves postern.test via the network alias on the nginx service.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import socket
 import subprocess
 import time
 from collections.abc import Iterator
+from pathlib import Path
 
 import httpx
 import pytest
 
+from ._certs import generate_test_pki
 from ._helpers import (
-    CA_PATH,
     COMPOSE_FILE,
     CONNECTION_ID_RE,
     MAILPIT_BASE_URL,
@@ -71,7 +73,31 @@ def _patch_dns_for_postern_test() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def e2e_stack(_patch_dns_for_postern_test) -> Iterator[None]:
+def e2e_certs(tmp_path_factory) -> Iterator[Path]:
+    """Generate a fresh self-signed CA + leaf for the e2e session.
+
+    Sets POSTERN_E2E_TLS_DIR in the process env so docker compose's volume
+    interpolation in e2e.compose.yaml resolves. Always overrides any
+    pre-existing value (test-state hygiene). The env var must remain set
+    through e2e_stack teardown because `compose down -v` re-resolves volume
+    sources -- pytest tears fixtures down in reverse creation order, so this
+    fixture's `finally` runs after e2e_stack's, which is the correct order.
+    """
+    tls_dir = tmp_path_factory.mktemp("e2e-tls")
+    generate_test_pki(tls_dir)
+    prior = os.environ.get("POSTERN_E2E_TLS_DIR")
+    os.environ["POSTERN_E2E_TLS_DIR"] = tls_dir.as_posix()  # forward slashes for compose on any host
+    try:
+        yield tls_dir / "ca.pem"
+    finally:
+        if prior is None:
+            os.environ.pop("POSTERN_E2E_TLS_DIR", None)
+        else:
+            os.environ["POSTERN_E2E_TLS_DIR"] = prior
+
+
+@pytest.fixture(scope="session")
+def e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
     if shutil.which("docker") is None:
         pytest.fail(
             "docker not on PATH. E2e tests require Linux + docker; see CONTRIBUTING.md. "
@@ -89,10 +115,10 @@ def e2e_stack(_patch_dns_for_postern_test) -> Iterator[None]:
 
 # HTTP clients =========================================================================================================
 @pytest.fixture
-def portal_client(e2e_stack) -> Iterator[httpx.Client]:
+def portal_client(e2e_certs, e2e_stack) -> Iterator[httpx.Client]:
     """HTTPS client trusting the test CA, follow_redirects=False so tests can
     assert on 303s and Set-Cookie headers."""
-    with httpx.Client(base_url=PORTAL_BASE_URL, verify=str(CA_PATH), follow_redirects=False) as client:
+    with httpx.Client(base_url=PORTAL_BASE_URL, verify=str(e2e_certs), follow_redirects=False) as client:
         yield client
 
 

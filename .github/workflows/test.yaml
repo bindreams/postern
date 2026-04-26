@@ -23,6 +23,14 @@ jobs:
   e2e:
     name: End-to-end tests
     runs-on: ubuntu-latest
+    env:
+      # Belt-and-braces: pytest's e2e_certs fixture overrides this for the
+      # subprocesses it spawns, but the failure-logs step below invokes
+      # `docker compose ...` from the workflow shell. compose `logs` does
+      # not interpolate volume sources today, but a placeholder ensures any
+      # future addition can't trip over a missing-var error that masks the
+      # real CI failure being reported.
+      POSTERN_E2E_TLS_DIR: /tmp/postern-e2e-tls-placeholder
     steps:
       - uses: actions/checkout@v4
 

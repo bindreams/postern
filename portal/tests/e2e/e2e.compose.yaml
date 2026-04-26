@@ -1,11 +1,15 @@
 ## E2E test stack for the Postern portal.
 ##
 ## Always run with the dedicated project name so volumes and networks stay
-## isolated from a co-located production stack:
+## isolated from a co-located production stack. POSTERN_E2E_TLS_DIR must be
+## set for any compose command other than `build` and `logs` -- the e2e_certs
+## fixture in conftest.py does this for pytest runs; for ad-hoc bring-up:
 ##
 ##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
-##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --wait
-##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
+##   POSTERN_E2E_TLS_DIR=$(uv run python portal/tests/e2e/_certs.py /tmp/postern-e2e-tls) \
+##     docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --wait
+##   POSTERN_E2E_TLS_DIR=/tmp/postern-e2e-tls \
+##     docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
 ##
 ## Network topology (see portal/tests/e2e/PLAN notes):
 ##   default            - internal service mesh (portal <-> docker-proxy, mailpit; nginx <-> portal)
@@ -64,7 +68,7 @@ services:
         target: /etc/nginx/nginx.conf
       - type: bind
         read_only: true
-        source: ./certs
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set by the e2e fixture (see conftest.py) or exported manually}
         target: /etc/letsencrypt/live/postern.test
     networks:
       default:
@@ -126,7 +130,26 @@ services:
     image: local/postern-ssclient
     networks: [e2e-tunnel-entry]
     init: true
-    command: ["sleep", "infinity"]
+    volumes:
+      # The .crt extension is load-bearing: update-ca-certificates only ingests *.crt.
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set by the e2e fixture (see conftest.py) or exported manually}/ca.pem
+        target: /usr/local/share/ca-certificates/postern-test-ca.crt
+    # ssclient is alpine-base (NOT distroless), so sh + busybox are available.
+    # Touch the sentinel only after update-ca-certificates returns 0; the
+    # healthcheck then waits on the sentinel. Greppin' the bundle file for
+    # the CN is unreliable -- the bundle is base64 PEM, the CN never appears
+    # in plaintext there.
+    command: ["sh", "-c", "update-ca-certificates && touch /tmp/.ca-trusted && exec sleep infinity"]
+    healthcheck:
+      # Mandatory, not optional: compose --wait considers a no-healthcheck
+      # service "ready" the moment PID 1 spawns. Without this, the very first
+      # `compose exec ssclient sslocal ...` could race update-ca-certificates.
+      test: ["CMD", "test", "-f", "/tmp/.ca-trusted"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
 
 networks:
   default:

@@ -32,15 +32,13 @@ def test_app(app_settings):
 @pytest_asyncio.fixture
 async def client(test_app, app_settings):
     # Initialize DB without the reconciler
-    database = await db.get_connection(app_settings.database_path)
-    await db.migrate(database)
-    test_app.state.db = database
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        test_app.state.db = database
 
-    transport = ASGITransport(app=test_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-
-    await database.close()
+        transport = ASGITransport(app=test_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            yield c
 
 
 # Login page ===========================================================================================================
@@ -52,9 +50,8 @@ async def test_login_page_renders(client):
 
 async def test_login_redirects_to_verify(client, app_settings):
     # Create a user first
-    database = await db.get_connection(app_settings.database_path)
-    await db.create_user(database, User(name="Alice", email="alice@example.com"))
-    await database.close()
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.create_user(database, User(name="Alice", email="alice@example.com"))
 
     with patch("postern.routes.login.email.send_otp_email", new_callable=AsyncMock, return_value=True):
         response = await client.post(
@@ -93,13 +90,12 @@ async def test_dashboard_requires_auth(client):
 
 
 async def test_dashboard_with_valid_session(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    session = Session(token="test-session-token", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="test-session-token", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get("/", cookies={"session": "test-session-token"})
     assert response.status_code == 200
@@ -113,21 +109,20 @@ async def test_config_download_requires_auth(client):
 
 
 async def test_config_download_for_owned_connection(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    conn = Connection(
-        user_id=user.id,
-        path_token="abcdef123456789012345678",
-        label="iPhone",
-        password="dGVzdGtleQ==",
-    )
-    await db.create_connection(database, conn)
+        conn = Connection(
+            user_id=user.id,
+            path_token="abcdef123456789012345678",
+            label="iPhone",
+            password="dGVzdGtleQ==",
+        )
+        await db.create_connection(database, conn)
 
-    session = Session(token="test-token", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="test-token", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get(
         f"/connection/{conn.id}/config",
@@ -141,23 +136,22 @@ async def test_config_download_for_owned_connection(client, app_settings):
 
 
 async def test_config_download_for_other_user_returns_404(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    alice = User(name="Alice", email="alice@example.com")
-    bob = User(name="Bob", email="bob@example.com")
-    await db.create_user(database, alice)
-    await db.create_user(database, bob)
+    async with db.get_connection(app_settings.database_path) as database:
+        alice = User(name="Alice", email="alice@example.com")
+        bob = User(name="Bob", email="bob@example.com")
+        await db.create_user(database, alice)
+        await db.create_user(database, bob)
 
-    conn = Connection(
-        user_id=bob.id,
-        label="X",
-        password="k",
-        path_token="abcdef123456789012345678",
-    )
-    await db.create_connection(database, conn)
+        conn = Connection(
+            user_id=bob.id,
+            label="X",
+            password="k",
+            path_token="abcdef123456789012345678",
+        )
+        await db.create_connection(database, conn)
 
-    session = Session(token="alice-token", user_id=alice.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="alice-token", user_id=alice.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get(
         f"/connection/{conn.id}/config",
@@ -175,13 +169,12 @@ async def test_healthz(client):
 
 # Logout ===============================================================================================================
 async def test_logout(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.post(
         "/logout",
@@ -194,13 +187,12 @@ async def test_logout(client, app_settings):
 
 # Edge cases ===========================================================================================================
 async def test_login_page_redirects_when_logged_in(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    session = Session(token="active-tok", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="active-tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get(
         "/login",
@@ -212,22 +204,21 @@ async def test_login_page_redirects_when_logged_in(client, app_settings):
 
 
 async def test_download_disabled_connection_returns_404(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    conn = Connection(
-        user_id=user.id,
-        path_token="abcdef123456789012345678",
-        label="Phone",
-        password="k",
-        enabled=False,
-    )
-    await db.create_connection(database, conn)
+        conn = Connection(
+            user_id=user.id,
+            path_token="abcdef123456789012345678",
+            label="Phone",
+            password="k",
+            enabled=False,
+        )
+        await db.create_connection(database, conn)
 
-    session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get(
         f"/connection/{conn.id}/config",
@@ -237,13 +228,12 @@ async def test_download_disabled_connection_returns_404(client, app_settings):
 
 
 async def test_download_nonexistent_connection_returns_404(client, app_settings):
-    database = await db.get_connection(app_settings.database_path)
-    user = User(name="Alice", email="alice@example.com")
-    await db.create_user(database, user)
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
 
-    session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
-    await db.create_session(database, session)
-    await database.close()
+        session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
 
     response = await client.get(
         "/connection/nonexistent-uuid/config",

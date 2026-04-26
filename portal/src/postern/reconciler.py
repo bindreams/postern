@@ -140,24 +140,21 @@ def _reconcile_once(
 async def reconcile(database_path: str, settings: Settings) -> None:
     """Run a single reconciliation pass."""
     client = _get_docker_client()
-
-    if not _image_exists(client, settings.shadowsocks_image):
-        logger.error(
-            "Image '%s' not found. Build it from the repo root with: "
-            "docker build -f shadowsocks/Dockerfile -t %s .",
-            settings.shadowsocks_image,
-            settings.shadowsocks_image,
-        )
-        client.close()
-        return
-
-    database = await db.get_connection(database_path)
     try:
-        connections = await db.list_connections(database, enabled_only=True)
-        await asyncio.to_thread(_reconcile_once, client, connections, settings)
-        await db.cleanup_expired(database)
+        if not _image_exists(client, settings.shadowsocks_image):
+            logger.error(
+                "Image '%s' not found. Build it from the repo root with: "
+                "docker build -f shadowsocks/Dockerfile -t %s .",
+                settings.shadowsocks_image,
+                settings.shadowsocks_image,
+            )
+            return
+
+        async with db.get_connection(database_path) as database:
+            connections = await db.list_connections(database, enabled_only=True)
+            await asyncio.to_thread(_reconcile_once, client, connections, settings)
+            await db.cleanup_expired(database)
     finally:
-        await database.close()
         client.close()
 
 

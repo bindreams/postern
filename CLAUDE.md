@@ -98,6 +98,7 @@ Type checking is `ty` (invoked via `uvx ty check` in prek). Commit messages are 
 - Don't change the nginx path regex without updating `token_hex(12)` in `cli.py` and `_container_name` in `reconciler.py`.
 - Don't create Shadowsocks containers outside the reconciler.
 - Don't bypass `db.get_connection()` with a raw `aiosqlite.connect()`.
+- Don't open an aiosqlite connection without `async with db.get_connection(...) as conn:` (or fixture teardown). The aiosqlite worker is a non-daemon `Thread` and a missed `close()` hangs interpreter exit forever after pytest finishes. `db.get_connection` is an `@asynccontextmanager` exactly to make this impossible to get wrong.
 - Don't simplify `hmac.compare_digest` to `==`.
 - Don't remove the `__dummy__{email}` path in `auth.request_otp`.
 - Don't rename the `session` or `otp_email` cookies.

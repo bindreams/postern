@@ -390,6 +390,7 @@ dev = [
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pytest-timeout" },
     { name = "ty" },
     { name = "yapf" },
 ]
@@ -422,6 +423,7 @@ dev = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "ty", specifier = ">=0.0.29" },
     { name = "yapf", specifier = ">=0.43" },
 ]

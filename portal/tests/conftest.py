@@ -1,8 +1,6 @@
 import pytest
 import pytest_asyncio
 
-import aiosqlite
-
 from postern import db
 from postern.settings import Settings
 
@@ -14,7 +12,6 @@ def settings(tmp_path):
 
 @pytest_asyncio.fixture
 async def test_db(settings):
-    conn = await db.get_connection(settings.database_path)
-    await db.migrate(conn)
-    yield conn
-    await conn.close()
+    async with db.get_connection(settings.database_path) as conn:
+        await db.migrate(conn)
+        yield conn

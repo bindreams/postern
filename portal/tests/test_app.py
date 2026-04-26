@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from asgi_lifespan import LifespanManager
 
 from postern.app import create_app
@@ -35,3 +36,27 @@ async def test_lifespan_starts_and_stops_reconciler(tmp_path):
 
         # Shutdown: cleanup_all_containers was awaited
         mock_cleanup.assert_awaited_once()
+
+
+async def test_lifespan_closes_db_when_migrate_fails(tmp_path):
+    """Regression: the lifespan opens the DB connection BEFORE migrate runs.
+    If migrate raises, the connection (and its non-daemon aiosqlite worker
+    thread) must still be closed."""
+    import threading
+
+    settings = Settings(database_path=str(tmp_path / "lifespan-fail.db"), secret_key="test-secret")
+    application = create_app(settings)
+
+    def aiosqlite_workers() -> set[threading.Thread]:
+        return {t for t in threading.enumerate() if t.is_alive() and "_connection_worker_thread" in (t.name or "")}
+
+    before = aiosqlite_workers()
+
+    # Force migrate to fail; the connection it was given must still be closed.
+    with patch("postern.app.db.migrate", new_callable=AsyncMock, side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError, match="boom"):
+            async with LifespanManager(application):
+                pass  # should not reach here
+
+    leaked = aiosqlite_workers() - before
+    assert not leaked, f"Lifespan leaked aiosqlite worker on migrate failure: {leaked}"

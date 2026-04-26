@@ -30,6 +30,37 @@ def test_user_add_duplicate_email(cli_env):
     assert result.exit_code != 0
 
 
+def test_cli_does_not_leak_aiosqlite_workers_on_error(cli_env):
+    """Regression: every cli command must close its DB connection on every
+    path. The aiosqlite worker is a non-daemon Thread; a missed close() means
+    the thread blocks interpreter exit forever after pytest finishes.
+
+    The duplicate-email path is the canonical trigger: the second `user add`
+    raises sqlite3.IntegrityError before close()."""
+    import threading
+
+    def aiosqlite_workers() -> set[threading.Thread]:
+        # Worker target is `aiosqlite.core._connection_worker_thread`; default
+        # Thread name embeds the target on Python 3.10+ (e.g. "Thread-7
+        # (_connection_worker_thread)").
+        return {t for t in threading.enumerate() if t.is_alive() and "_connection_worker_thread" in (t.name or "")}
+
+    # First invoke succeeds and runs close(); snapshot AFTER it so any
+    # still-terminating worker from this success path is treated as
+    # "pre-existing" and excluded from the leak count.
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    before = aiosqlite_workers()
+
+    result = runner.invoke(app, ["user", "add", "Alice2", "alice@example.com"])
+    assert result.exit_code != 0  # duplicate email -> IntegrityError
+
+    leaked = aiosqlite_workers() - before
+    assert not leaked, (
+        f"CLI leaked aiosqlite worker thread(s) on error path: {leaked}. "
+        f"Each leaked non-daemon thread will hang interpreter exit forever."
+    )
+
+
 def test_user_list(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     runner.invoke(app, ["user", "add", "Bob", "bob@example.com"])
@@ -127,3 +158,11 @@ def test_connection_enable(cli_env):
 def test_connection_disable_not_found(cli_env):
     result = runner.invoke(app, ["connection", "disable", "nonexistent-uuid"])
     assert result.exit_code == 1
+
+
+def test_connection_list_user_not_found(cli_env):
+    """The --user-email path raises typer.Exit(1) from inside an async with block;
+    pin the user-facing message + exit code so the rewrite can't drift."""
+    result = runner.invoke(app, ["connection", "list", "--user-email", "nobody@example.com"])
+    assert result.exit_code == 1
+    assert "User not found: nobody@example.com" in result.output

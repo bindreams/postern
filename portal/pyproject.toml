@@ -21,15 +21,13 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.25",
+    "pytest-timeout>=2.3",
     "httpx>=0.28",
     "ty>=0.0.29",
     "yapf>=0.43",
     "asgi-lifespan>=2.1.0",
 ]
-e2e = [
-    {include-group = "dev"},
-    "pytest-timeout>=2.3",
-]
+e2e = [{include-group = "dev"}]
 
 [project.scripts]
 postern = "postern.cli:app"
@@ -49,6 +47,7 @@ packages = ["src/postern"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+timeout = 30
 markers = [
     "e2e: end-to-end tests that spin up the full compose stack (slow, requires docker; opt in with -m e2e)",
 ]

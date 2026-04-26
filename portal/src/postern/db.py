@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 import aiosqlite
 
@@ -44,14 +46,21 @@ MIGRATIONS: dict[int, str] = {
 }
 
 
-async def get_connection(path: str) -> aiosqlite.Connection:
-    """Open a database connection with standard pragmas."""
-    db = await aiosqlite.connect(path)
-    db.row_factory = aiosqlite.Row
-    await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA foreign_keys=ON")
-    await db.execute("PRAGMA busy_timeout=5000")
-    return db
+@asynccontextmanager
+async def get_connection(path: str) -> AsyncIterator[aiosqlite.Connection]:
+    """Open a DB connection with standard pragmas; auto-close on exit.
+
+    Use as `async with db.get_connection(path) as conn:`. Closure on every
+    exit path is load-bearing: the aiosqlite worker is a non-daemon Thread
+    and a missed close() hangs interpreter exit forever (see CLAUDE.md
+    `Do-not list`).
+    """
+    async with aiosqlite.connect(path) as conn:
+        conn.row_factory = aiosqlite.Row
+        await conn.execute("PRAGMA journal_mode=WAL")
+        await conn.execute("PRAGMA foreign_keys=ON")
+        await conn.execute("PRAGMA busy_timeout=5000")
+        yield conn
 
 
 async def migrate(db: aiosqlite.Connection) -> None:

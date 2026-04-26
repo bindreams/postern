@@ -40,12 +40,11 @@ def user_add(name: str, email: str) -> None:
     settings = _settings()
 
     async def _add():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        user = User(name=name, email=email)
-        await db.create_user(database, user)
-        await database.close()
-        return user
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            user = User(name=name, email=email)
+            await db.create_user(database, user)
+            return user
 
     user = run(_add())
     typer.echo(f"Created user {user.name} ({user.id})")
@@ -57,11 +56,9 @@ def user_list() -> None:
     settings = _settings()
 
     async def _list():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        users = await db.list_users(database)
-        await database.close()
-        return users
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            return await db.list_users(database)
 
     users = run(_list())
     if not users:
@@ -77,17 +74,15 @@ def user_disable(email: str) -> None:
     settings = _settings()
 
     async def _disable():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        user = await db.get_user_by_email(database, email)
-        if user is None:
-            await database.close()
-            return None
-        connections = await db.list_connections(database, user_id=user.id)
-        for conn in connections:
-            await db.set_connection_enabled(database, conn.id, False)
-        await database.close()
-        return len(connections)
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            user = await db.get_user_by_email(database, email)
+            if user is None:
+                return None
+            connections = await db.list_connections(database, user_id=user.id)
+            for conn in connections:
+                await db.set_connection_enabled(database, conn.id, False)
+            return len(connections)
 
     count = run(_disable())
     if count is None:
@@ -103,15 +98,13 @@ def user_delete(email: str) -> None:
     settings = _settings()
 
     async def _delete():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        user = await db.get_user_by_email(database, email)
-        if user is None:
-            await database.close()
-            return False
-        await db.delete_user(database, user.id)
-        await database.close()
-        return True
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            user = await db.get_user_by_email(database, email)
+            if user is None:
+                return False
+            await db.delete_user(database, user.id)
+            return True
 
     if not run(_delete()):
         typer.echo(f"User not found: {email}")
@@ -127,25 +120,23 @@ def connection_add(user_email: str, label: str) -> None:
     settings = _settings()
 
     async def _add():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        user = await db.get_user_by_email(database, user_email)
-        if user is None:
-            await database.close()
-            return None
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            user = await db.get_user_by_email(database, user_email)
+            if user is None:
+                return None
 
-        path_token = secrets.token_hex(12)
-        password = generate_password()
+            path_token = secrets.token_hex(12)
+            password = generate_password()
 
-        conn = Connection(
-            user_id=user.id,
-            path_token=path_token,
-            label=label,
-            password=password,
-        )
-        await db.create_connection(database, conn)
-        await database.close()
-        return conn
+            conn = Connection(
+                user_id=user.id,
+                path_token=path_token,
+                label=label,
+                password=password,
+            )
+            await db.create_connection(database, conn)
+            return conn
 
     conn = run(_add())
     if conn is None:
@@ -161,19 +152,16 @@ def connection_list(user_email: str | None = None) -> None:
     settings = _settings()
 
     async def _list():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        user_id = None
-        if user_email:
-            user = await db.get_user_by_email(database, user_email)
-            if user is None:
-                await database.close()
-                typer.echo(f"User not found: {user_email}")
-                raise typer.Exit(1)
-            user_id = user.id
-        connections = await db.list_connections(database, user_id=user_id)
-        await database.close()
-        return connections
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            user_id = None
+            if user_email:
+                user = await db.get_user_by_email(database, user_email)
+                if user is None:
+                    typer.echo(f"User not found: {user_email}")
+                    raise typer.Exit(1)
+                user_id = user.id
+            return await db.list_connections(database, user_id=user_id)
 
     connections = run(_list())
     if not connections:
@@ -190,11 +178,9 @@ def connection_disable(id: str) -> None:
     settings = _settings()
 
     async def _disable():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        result = await db.set_connection_enabled(database, id, False)
-        await database.close()
-        return result
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            return await db.set_connection_enabled(database, id, False)
 
     if not run(_disable()):
         typer.echo(f"Connection not found: {id}")
@@ -209,11 +195,9 @@ def connection_enable(id: str) -> None:
     settings = _settings()
 
     async def _enable():
-        database = await db.get_connection(settings.database_path)
-        await db.migrate(database)
-        result = await db.set_connection_enabled(database, id, True)
-        await database.close()
-        return result
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            return await db.set_connection_enabled(database, id, True)
 
     if not run(_enable()):
         typer.echo(f"Connection not found: {id}")

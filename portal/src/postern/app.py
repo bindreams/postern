@@ -19,26 +19,26 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
-    database = await db.get_connection(settings.database_path)
-    await db.migrate(database)
-    app.state.db = database
+    async with db.get_connection(settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
 
-    # Start reconciliation loop ----------------------------------------------------------------------------------------
-    reconciler_task = asyncio.create_task(reconciliation_loop(settings.database_path, settings))
-    logger.info("Reconciliation loop started")
+        # Start reconciliation loop ------------------------------------------------------------------------------------
+        reconciler_task = asyncio.create_task(reconciliation_loop(settings.database_path, settings))
+        logger.info("Reconciliation loop started")
 
-    yield
+        try:
+            yield
+        finally:
+            # Shutdown -------------------------------------------------------------------------------------------------
+            reconciler_task.cancel()
+            try:
+                await reconciler_task
+            except asyncio.CancelledError:
+                pass
+            await cleanup_all_containers()
 
-    # Shutdown ---------------------------------------------------------------------------------------------------------
-    reconciler_task.cancel()
-    try:
-        await reconciler_task
-    except asyncio.CancelledError:
-        pass
-
-    await cleanup_all_containers()
-    await database.close()
-    logger.info("Shutdown complete")
+        logger.info("Shutdown complete")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

@@ -3,8 +3,8 @@ updates:
   - package-ecosystem: pip
     directory: /portal
     schedule: { interval: monthly }
-    open-pull-requests-limit: 0  # security-only: PRs only for advisories
+    open-pull-requests-limit: 0 # security-only: PRs only for advisories
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
-    open-pull-requests-limit: 0  # security-only
+    open-pull-requests-limit: 0 # security-only

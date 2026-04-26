@@ -16,7 +16,6 @@ from pathlib import Path
 TESTS_E2E_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_E2E_DIR.parents[2]
 COMPOSE_FILE = TESTS_E2E_DIR / "e2e.compose.yaml"
-CA_PATH = TESTS_E2E_DIR / "certs" / "ca.pem"
 PROJECT = "postern-e2e"
 
 PORTAL_BASE_URL = "https://postern.test:8443"

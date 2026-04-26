@@ -60,13 +60,14 @@ uv run pytest -m e2e -v
 
 The session fixture builds the other images (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) automatically via `docker compose up --build`.
 
-**Test certs.** The e2e stack uses a self-signed CA + leaf for `postern.test` committed under [portal/tests/e2e/certs/](portal/tests/e2e/certs/). To regenerate (1-year validity):
+**Test certs** are generated at session start by the `e2e_certs` fixture (Ed25519 self-signed CA + leaf, 30-day validity). The fixture writes them under pytest's tmp dir and exposes the path via `POSTERN_E2E_TLS_DIR` for compose to interpolate into volume mounts. No manual setup or yearly regeneration.
+
+If you need to bring the stack up by hand outside pytest, set `POSTERN_E2E_TLS_DIR` first — any compose command other than `build`/`logs` will refuse without it. Quickest path from inside `portal/`:
 
 ```bash
-bash portal/tests/e2e/certs/regen.sh
+POSTERN_E2E_TLS_DIR=$(uv run python tests/e2e/_certs.py /tmp/postern-e2e-tls) \
+  docker compose -p postern-e2e -f tests/e2e/e2e.compose.yaml up -d --build --wait
 ```
-
-Tests trust the committed CA via `httpx(verify=...)` for the host-side client and via `update-ca-certificates` baked into the ssclient image.
 
 ## Running the stack locally
 

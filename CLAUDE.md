@@ -94,7 +94,9 @@ Global convention: Python is yapf-formatted, type-hinted, and section-comment-an
 
 That script is ALSO a pytest module (the tests live in the same file). If you find yourself "cleaning up dead code" there, stop — you are looking at its test suite.
 
-Type checking is `ty` (invoked via `uvx ty check` in prek). Commit messages are single-line; trailers like `Approved-By:` go after a blank line and are reserved for tool-generated metadata.
+Type checking is `ty` (invoked via `uvx ty check` in prek).
+
+Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/): `type(scope): subject`. Allowed types: `feat`, `fix`, `refactor`, `chore`, `ci`, `docs`, `test`, `build`, `perf`. Scope is optional but encouraged (e.g. `cli`, `portal`, `shadowsocks`, `nginx`, `deps`). The subject stays single-line; trailers like `Approved-By:` go after a blank line and are reserved for tool-generated metadata. Renovate is configured to follow the same convention via `semanticCommits` in [.github/renovate.json](.github/renovate.json).
 
 ## Do-not list
 
@@ -113,6 +115,7 @@ Type checking is `ty` (invoked via `uvx ty check` in prek). Commit messages are 
 - Don't build the shadowsocks image with `docker build ./shadowsocks/` — the Dockerfile pulls from `external/` and needs the repo root as context.
 - Don't add shell-form `RUN`, `CMD`, or `HEALTHCHECK` in the runtime stage of [portal/Dockerfile](portal/Dockerfile), and don't use `[CMD-SHELL ...]` for the portal in compose. The runtime is distroless. Use Python (`python -c '...'`) or move shell work to the build stage.
 - Don't drop `init: true` (compose) or `init=True` (`containers.run` kwarg) when adding a new service or container launch. Every container in this repo runs with tini at PID 1 — see the **PID 1 is `tini`** invariant.
+- Don't write commit subjects that don't follow Conventional Commits 1.0.0 — applies to humans, AI agents, and Renovate equally.
 
 ## Useful commands
 

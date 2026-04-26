@@ -1,6 +1,9 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
+  "registryAliases": {
+    "dhi.io": "dhi.io"
+  },
   "customManagers": [
     {
       "description": "Tag-pinned git-subrepos (e.g. shadowsocks-rust at v1.24.0). Renovate bumps 'branch = vX.Y.Z' to the newest upstream release; .github/workflows/subrepo-pull.yaml completes the pull.",
@@ -26,7 +29,9 @@
   "hostRules": [
     {
       "matchHost": "dhi.io",
-      "hostType": "docker"
+      "hostType": "docker",
+      "username": "{{ secrets.DOCKERHUB_USERNAME }}",
+      "password": "{{ secrets.DOCKERHUB_TOKEN }}"
     }
   ]
 }

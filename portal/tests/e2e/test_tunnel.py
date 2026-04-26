@@ -222,22 +222,25 @@ def test_otp_cookie_lifetime_matches_expiry_invariant(portal_client):
 
 
 def test_login_rate_limit_has_suite_burst_headroom(portal_client):
-    """Pin the e2e nginx auth-zone rate limit so the suite cannot exhaust its
-    own bucket and so a future "align e2e to prod" change cannot silently
-    re-introduce GitHub issue #7.
+    """Fire `burst + 1` = 21 sequential POSTs to /login and assert no 503.
 
-    All e2e tests share a single source IP (docker bridge gateway through the
-    published 127.0.0.1:8443 port), so the auth zone in
-    portal/tests/e2e/nginx.conf must allow at least burst=20 immediate
-    requests. Production [nginx/etc/nginx.conf] is intentionally stricter.
+    The e2e nginx auth zone is sized at rate=600r/m, burst=20 (one rate slot
+    plus a 20-deep burst -> nginx admits 21 instantaneous requests before
+    rejecting). At the production rate (10r/m, burst=5) this test fails on
+    request 7; at the current e2e config all 21 pass. Pinning the boundary
+    here ensures a future "align e2e to prod" change re-introduces GitHub
+    issue #7 in this test before it re-introduces the suite-level flake.
 
-    Each request uses a distinct email so the per-email
-    Settings.otp_max_requests_per_window throttle (3/email/15min) does not
-    interfere; only the per-IP nginx limit_req is exercised."""
-    for i in range(20):
+    Distinct emails per request so Settings.otp_max_requests_per_window
+    (3/email/15min) does not interfere -- only nginx limit_req is exercised.
+
+    Ordering: the e2e suite does not use pytest-randomly, so this test runs
+    at its file position. The bucket refills at 10/s, so by the next auth-
+    using test the bucket is full again."""
+    for i in range(21):
         r = portal_client.post("/login", data={"email": f"rate-headroom-{i}@postern.test"})
         assert r.status_code == 303, (
-            f"request {i + 1}/20 to /login was rejected with {r.status_code}; "
+            f"request {i + 1}/21 to /login was rejected with {r.status_code}; "
             "the e2e nginx auth-zone burst dropped below the suite's required "
             "headroom -- see GitHub issue #7"
         )

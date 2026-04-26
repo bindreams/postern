@@ -53,6 +53,9 @@ uv run pytest -m e2e -v
   echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
   ```
 - **DHI auth.** Same prerequisite as building any production image. `docker login dhi.io` with a Docker Hub PAT (any free Docker Hub account works; the DHI catalog is free under Apache 2.0).
+
+  Renovate (Mend Cloud App) authenticates to `dhi.io` independently of GitHub Actions. Credentials live in the Mend UI at [developer.mend.io](https://developer.mend.io) under the repo's Credentials section, as `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` — referenced from [.github/renovate.json](.github/renovate.json) via `{{ secrets.NAME }}`. Rotating the Docker Hub PAT requires updating GitHub Actions secrets and Mend Credentials together.
+
 - **`local/shadowsocks-server` image** must exist before the suite starts. Build it from the repo root:
   ```bash
   docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .

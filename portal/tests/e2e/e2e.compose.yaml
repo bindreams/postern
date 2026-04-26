@@ -3,7 +3,8 @@
 ## Always run with the dedicated project name so volumes and networks stay
 ## isolated from a co-located production stack:
 ##
-##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --build --wait
+##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
+##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml up -d --wait
 ##   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml down -v
 ##
 ## Network topology (see portal/tests/e2e/PLAN notes):

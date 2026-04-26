@@ -221,8 +221,29 @@ def test_otp_cookie_lifetime_matches_expiry_invariant(portal_client):
     )
 
 
+def test_login_rate_limit_has_suite_burst_headroom(portal_client):
+    """Pin the e2e nginx auth-zone rate limit so the suite cannot exhaust its
+    own bucket and so a future "align e2e to prod" change cannot silently
+    re-introduce GitHub issue #7.
+
+    All e2e tests share a single source IP (docker bridge gateway through the
+    published 127.0.0.1:8443 port), so the auth zone in
+    portal/tests/e2e/nginx.conf must allow at least burst=20 immediate
+    requests. Production [nginx/etc/nginx.conf] is intentionally stricter.
+
+    Each request uses a distinct email so the per-email
+    Settings.otp_max_requests_per_window throttle (3/email/15min) does not
+    interfere; only the per-IP nginx limit_req is exercised."""
+    for i in range(20):
+        r = portal_client.post("/login", data={"email": f"rate-headroom-{i}@postern.test"})
+        assert r.status_code == 303, (
+            f"request {i + 1}/20 to /login was rejected with {r.status_code}; "
+            "the e2e nginx auth-zone burst dropped below the suite's required "
+            "headroom -- see GitHub issue #7"
+        )
+
+
 # Authorization on config download =====================================================================================
-@pytest.mark.skip(reason="flakes with nginx 503 on /login/verify after `connection disable`; see #7")
 def test_disabled_connection_config_returns_404(portal_client, mailpit_client, fresh_user, fresh_connection):
     email = "disabled@postern.test"
     fresh_user("Disabled", email)

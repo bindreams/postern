@@ -11,10 +11,10 @@ Responsibilities:
 
 1. On startup, ensure a DKIM keypair exists. If state.json is absent, generate
    the first selector (`<prefix>-<YYYY-MM>`) and write a STABLE state. This runs
-   regardless of MTA_DNS_PROVIDER -- the mta needs a key to sign with even on
+   regardless of DNS_PROVIDER -- the mta needs a key to sign with even on
    manual-rotation deployments.
 
-2. If MTA_DNS_PROVIDER=none: log and exit 0. Compose's restart=no keeps the
+2. If DNS_PROVIDER=none: log and exit 0. Compose's restart=no keeps the
    container stopped.
 
 3. Otherwise, run the rotation state machine: every 60 minutes, or on
@@ -292,14 +292,14 @@ def run_rotation_loop(domain: str, selector_prefix: str) -> NoReturn:
 def main() -> NoReturn:
     domain = _require("DOMAIN")
     selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")
-    dns_provider = os.environ.get("MTA_DNS_PROVIDER", "none").strip().lower()
+    dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
 
     state = ensure_initial_key(domain, selector_prefix)
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
 
     if dns_provider == "none":
         logger.info(
-            "MTA_DNS_PROVIDER=none -- auto-rotation disabled, exiting (run `postern mta show-dns` for the DKIM TXT to publish)"
+            "DNS_PROVIDER=none -- auto-rotation disabled, exiting (run `postern mta show-dns` for the DKIM TXT to publish)"
         )
         sys.exit(0)
 

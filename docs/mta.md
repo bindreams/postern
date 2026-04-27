@@ -117,7 +117,7 @@ Note on DMARC reports: when `rua=`/`ruf=` point at a mailbox **outside** the pol
 
 DKIM keys rotate every `MTA_DKIM_ROTATION_DAYS` (default 180 days). Selectors are date-suffixed: `postern-2026-04`, `postern-2026-10`, etc.
 
-### Manual rotation (when `MTA_DNS_PROVIDER=none`)
+### Manual rotation (when `DNS_PROVIDER=none`)
 
 The provisioner generates the initial key on first start, then exits. To rotate:
 
@@ -129,9 +129,9 @@ The provisioner generates the initial key on first start, then exits. To rotate:
 
 This is a once-per-six-months chore.
 
-### Auto rotation (when `MTA_DNS_PROVIDER=<provider>`)
+### Auto rotation (when `DNS_PROVIDER=<provider>`)
 
-Set `MTA_DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`:
+Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`:
 
 | Provider     | Env vars                                                                            |
 | ------------ | ----------------------------------------------------------------------------------- |
@@ -185,7 +185,7 @@ After a few days of running you should see DMARC aggregate reports landing in yo
 
 **Forwarded DMARC reports go to spam at the receiver.** SRS rewriting should handle SPF alignment for forwarded mail. If your `MTA_ADMIN_EMAIL` provider is still flagging, set up the receiver-side opt-in TXT (RFC 7489 §7.1) — see the DNS records section above.
 
-**Local development.** Set `MTA_VERIFY_DNS=false` and use `mkcert` for `mail.<dev-domain>` and `mta-sts.<dev-domain>` certs (extends the mkcert pattern in [CONTRIBUTING.md](../CONTRIBUTING.md#running-the-stack-locally)). With auto-rotation off (`MTA_DNS_PROVIDER=none`), the provisioner generates the initial key and exits cleanly.
+**Local development.** Set `MTA_VERIFY_DNS=false` and use `mkcert` for `mail.<dev-domain>` and `mta-sts.<dev-domain>` certs (extends the mkcert pattern in [CONTRIBUTING.md](../CONTRIBUTING.md#running-the-stack-locally)). With auto-rotation off (`DNS_PROVIDER=none`), the provisioner generates the initial key and exits cleanly.
 
 ## Threat-model rationale
 

@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     mta_dkim_selector_prefix: str = "postern"
     mta_admin_email: str = ""
     mta_dkim_rotation_days: int = 180
-    mta_dns_provider: str = "none"
+    dns_provider: str = "none"
 
     @field_validator("secret_key")
     @classmethod

@@ -53,7 +53,7 @@ These are load-bearing. Changing any of them without understanding the chain wil
 - **DKIM key sharing.** `postern-mta-data` is mounted rw on mta and provisioner, ro on portal. The portal's `postern mta show-dns` reads `<selector>.txt` directly via this read-only mount. No HTTP listener.
 - **Trigger files mirror the reconciler pattern.** [portal/src/postern/mta/rotation.py](portal/src/postern/mta/rotation.py) defines two: `.rotate-dkim` (portal CLI -> provisioner) and `.reload-opendkim` (provisioner -> mta). Existence is the signal; consumer deletes after handling. Same race acceptance as `.reconcile-now` at [reconciler.py:163](portal/src/postern/reconciler.py#L163): double-trigger may collapse, which is fine because the state machine is idempotent.
 - **MTA-STS policy is served by nginx**, not by mta. The `mta-sts.<domain>` server block at [nginx/etc/conf.d/mta-sts.conf](nginx/etc/conf.d/mta-sts.conf) is load-bearing for the MTA-STS standard (RFC 8461 §3.3 mandates HTTPS with a publicly-trusted CA). Outbound MTA-STS enforcement (consuming recipient policies) is via `postfix-mta-sts-resolver` running inside mta.
-- **`postern-dns` (the libdns wrapper) lives in the provisioner only.** The DNS provider API token is in the provisioner's env (`MTA_DNS_PROVIDER` plus libdns-native env vars like `CLOUDFLARE_API_TOKEN`). The mta image does not have it and cannot publish/retire DNS records.
+- **`postern-dns` (the libdns wrapper) lives in the provisioner only.** The DNS provider API token is in the provisioner's env (`DNS_PROVIDER` plus libdns-native env vars like `CLOUDFLARE_API_TOKEN`). The mta image does not have it and cannot publish/retire DNS records.
 
 ## Where things live
 
@@ -84,7 +84,7 @@ mta/
 
 provisioner/
     Dockerfile       # libdns-wrapped Go binary + Python state-machine driver
-    entrypoint.py    # Generates initial DKIM key; runs rotation state machine if MTA_DNS_PROVIDER set
+    entrypoint.py    # Generates initial DKIM key; runs rotation state machine if DNS_PROVIDER set
     postern-dns/     # Go module: txt-set / txt-delete via libdns providers
 ```
 

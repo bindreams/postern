@@ -8,7 +8,7 @@
 //	postern-dns txt-set    <fqdn> <value>
 //	postern-dns txt-delete <fqdn> <value>
 //
-// Provider selection: env var MTA_DNS_PROVIDER (matches a known provider name).
+// Provider selection: env var DNS_PROVIDER (matches a known provider name).
 // Provider config: each provider's native env vars (e.g. CLOUDFLARE_API_TOKEN,
 // AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, GANDI_API_TOKEN, DO_AUTH_TOKEN).
 // Postern documents the env-var contract per provider in docs/mta.md.
@@ -102,7 +102,7 @@ func usage() {
   postern-dns txt-delete <fqdn> <value>
 
 env vars:
-  MTA_DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
+  DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
                       ovh, hetzner, linode, namecheap)
   Plus the provider's native credential env vars; see docs/mta.md.`)
 	os.Exit(2)
@@ -113,9 +113,9 @@ func main() {
 		usage()
 	}
 	cmd, fqdn, value := os.Args[1], os.Args[2], os.Args[3]
-	providerName := os.Getenv("MTA_DNS_PROVIDER")
+	providerName := os.Getenv("DNS_PROVIDER")
 	if providerName == "" || providerName == "none" {
-		fmt.Fprintln(os.Stderr, "postern-dns: MTA_DNS_PROVIDER not set or set to 'none'")
+		fmt.Fprintln(os.Stderr, "postern-dns: DNS_PROVIDER not set or set to 'none'")
 		os.Exit(1)
 	}
 	provider, err := newProvider(providerName)

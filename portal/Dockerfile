@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 FROM dhi.io/python:3.13-alpine3.23-dev AS build
-COPY --from=ghcr.io/astral-sh/uv:0.11.7 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /bin/uv
 WORKDIR /app
 COPY portal/pyproject.toml portal/uv.lock ./
 COPY portal/src/ src/

@@ -122,7 +122,7 @@ def postmap_hash(path: Path) -> None:
 
 
 # DNS verification =====================================================================================================
-def build_local_resolver():
+def build_local_resolver() -> dns.resolver.Resolver:
     """Construct a dns.resolver.Resolver pointed at the local validating Unbound."""
     sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     import dns.resolver as _resolver
@@ -132,7 +132,13 @@ def build_local_resolver():
     return resolver
 
 
-def verify_dns(domain: str, admin_email: str, require_dnssec: bool, *, resolver) -> None:
+def verify_dns(
+    domain: str,
+    admin_email: str,
+    require_dnssec: bool,
+    *,
+    resolver: dns.resolver.Resolver,
+) -> None:
     sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     from postern_mta import dkim as mta_dkim
     from postern_mta import dns as mta_dns
@@ -235,7 +241,10 @@ def main() -> NoReturn:
     domain = _require("DOMAIN")
     verify_dns_enabled = _bool_env("MTA_VERIFY_DNS", default=True)
     # Tri-state: True / False / "auto". Auto-detect runs after Unbound starts (below).
-    require_dnssec_setting = dnssec.parse_setting(os.environ.get("MTA_REQUIRE_DNSSEC"))
+    try:
+        require_dnssec_setting = dnssec.parse_setting(os.environ.get("MTA_REQUIRE_DNSSEC"))
+    except ValueError as e:
+        die(str(e))
     admin_email = os.environ.get("MTA_ADMIN_EMAIL", "").strip()
     bounce_local_part = (parseaddr(os.environ.get("SMTP_FROM", ""))[1] or "noreply@x").rsplit("@", 1)[0] or "noreply"
     dkim_selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")

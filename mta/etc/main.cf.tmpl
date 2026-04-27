@@ -22,8 +22,8 @@ disable_vrfy_command = yes
 smtpd_tls_security_level = may
 smtpd_tls_protocols = >=TLSv1.2
 smtpd_tls_mandatory_protocols = >=TLSv1.2
-smtpd_tls_cert_file = /etc/letsencrypt/live/mail.${DOMAIN}/fullchain.pem
-smtpd_tls_key_file  = /etc/letsencrypt/live/mail.${DOMAIN}/privkey.pem
+smtpd_tls_cert_file = /etc/letsencrypt/live/${DOMAIN}/fullchain.pem
+smtpd_tls_key_file  = /etc/letsencrypt/live/${DOMAIN}/privkey.pem
 smtpd_tls_loglevel = 1
 
 # Outbound TLS to recipient MTAs ---------------------------------------------------------------------------------------

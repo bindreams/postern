@@ -1,0 +1,46 @@
+# Compose override that activates ACME DNS-01 wildcard cert auto-renewal.
+#
+# Apply by setting (in .env):
+#   COMPOSE_FILE=compose.yaml:compose.cert.yaml
+#   COMPOSE_PROFILES=with-mta,with-cert-renewal     (drop with-mta if not using built-in MTA)
+#   DNS_PROVIDER=cloudflare                          (or your provider)
+#   CERT_RENEWAL=true
+#   CERT_ACME_EMAIL=ops@<your-domain>
+#
+# This swaps nginx and mta cert mounts from the host /etc/letsencrypt bind to
+# the postern-letsencrypt named volume that the provisioner writes. Adds
+# depends_on: condition: service_healthy so nginx and mta block startup until
+# first issuance succeeds. Switches the provisioner restart policy from "no" to
+# unless-stopped so transient outages self-heal.
+#
+# See docs/certs.md for the operator runbook.
+
+services:
+  nginx:
+    volumes:
+      # Override the host bind-mount with the named volume.
+      - postern-letsencrypt:/etc/letsencrypt:rw
+    depends_on:
+      provisioner:
+        condition: service_healthy
+
+  mta:
+    volumes:
+      - postern-letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      provisioner:
+        condition: service_healthy
+
+  portal:
+    volumes:
+      # rw so `postern cert renew` can write the trigger and `postern cert show`
+      # / `cert verify` can read state.json + the cert files.
+      - postern-letsencrypt:/etc/letsencrypt:rw
+
+  provisioner:
+    profiles: [with-cert-renewal]
+    volumes:
+      - postern-letsencrypt:/etc/letsencrypt:rw
+    # Run forever to drive the cert renewal tick loop. The 24-hour rate-limit
+    # guard makes restart loops safe even on persistent failure.
+    restart: unless-stopped

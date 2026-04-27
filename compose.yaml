@@ -94,7 +94,9 @@ services:
       dockerfile: provisioner/Dockerfile
     image: local/postern-provisioner
     container_name: provisioner
-    profiles: [with-mta]
+    # Multiple profiles -- a service starts when ANY listed profile is active.
+    # with-cert-renewal lets cert auto-renewal run even without MTA.
+    profiles: [with-mta, with-cert-renewal]
     user: "110:110"
     env_file: .env
     cap_drop: [ALL]
@@ -147,3 +149,9 @@ volumes:
     name: postern-mta-data
   postern-mta-queue:
     name: postern-mta-queue
+  # Auto-renewal cert volume; populated by the provisioner under compose.cert.yaml
+  # and mounted on nginx + mta (both ro) and provisioner + portal (both rw, the
+  # provisioner writes the cert files, the portal writes the .renew-cert trigger).
+  # In BYO-certs mode this volume is unused; nginx and mta bind-mount /etc/letsencrypt.
+  postern-letsencrypt:
+    name: postern-letsencrypt

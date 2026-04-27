@@ -36,7 +36,7 @@ Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small Fa
   - Reverse DNS (PTR) on the IP set to `mail.<domain>`. Configured at the VPS provider's panel; cannot be automated.
   - Three Let's Encrypt certs at `/etc/letsencrypt/live/<domain>/`, `/etc/letsencrypt/live/mail.<domain>/`, `/etc/letsencrypt/live/mta-sts.<domain>/`. A multi-SAN cert covering all three works too: `certbot certonly --standalone -d <domain> -d mail.<domain> -d mta-sts.<domain>`.
   - DNS records published as listed by `docker compose exec portal postern mta show-dns`. Includes MX, SPF, DMARC `p=reject` strict, MTA-STS, TLS-RPT, DKIM. The DKIM TXT is auto-managed when `MTA_DNS_PROVIDER` is set to a libdns-supported provider (Cloudflare, Route53, Gandi, DigitalOcean, OVH, Hetzner, Linode, Namecheap); otherwise published manually after first run.
-  - **Strongly recommended: DNSSEC enabled at your TLD/registrar.** Without it, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access. Most modern registrars (Cloudflare Registrar, Gandi, Namecheap, Porkbun, Hover) support this; verify with `dig +dnssec DS <yourdomain>` returning a signed RRset. Set `MTA_REQUIRE_DNSSEC=true` in `.env` to fail-stop on missing AD bit.
+  - **Strongly recommended: DNSSEC enabled at your TLD/registrar.** Without it, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access. Most modern registrars (Cloudflare Registrar, Gandi, Namecheap, Porkbun, Hover) support this; verify with `dig +dnssec DS <yourdomain>` returning a signed RRset. DNSSEC is auto-detected at MTA startup (`MTA_REQUIRE_DNSSEC=auto` default); set explicitly to `true` for fail-closed production.
   - An external mailbox you read for technical reports (postmaster, abuse, tls-rpt, bounces). Set `MTA_ADMIN_EMAIL=` in `.env`. Postern forwards there; it does not host an inbox.
   - See [docs/mta.md](docs/mta.md) for a full deployer walkthrough.
 - **Third-party SMTP relay** (Resend, SES, Mailgun, Postmark, etc.). Comment `COMPOSE_PROFILES=with-mta` in `.env` and set `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` to your provider. TLS mode is derived from the port: 465 → implicit TLS, 587 → STARTTLS.
@@ -72,31 +72,31 @@ The portal is served from `https://<your-domain>/`. First login requires that yo
 
 Environment variables are loaded from `.env` (copied from `.env.example`) into the `portal` container only. All settings are read by [portal/src/postern/settings.py](portal/src/postern/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
 
-| Variable                      | Default                    | Purpose                                                                                                                    |
-| ----------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `SECRET_KEY`                  | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`. |
-| `DATABASE_PATH`               | `/data/postern.db`         | SQLite path inside the portal container. Lives on the `postern-data` named volume, not `./data/`.                          |
-| `SMTP_HOST`                   | `localhost`                | Outbound SMTP server.                                                                                                      |
-| `SMTP_PORT`                   | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                         |
-| `SMTP_USER`                   | _(empty)_                  | SMTP auth username.                                                                                                        |
-| `SMTP_PASSWORD`               | _(empty)_                  | SMTP auth password.                                                                                                        |
-| `SMTP_FROM`                   | `noreply@example.com`      | `From:` header for OTP emails.                                                                                             |
-| `OTP_EXPIRY_SECONDS`          | `600`                      | OTP lifetime (10 min).                                                                                                     |
-| `OTP_MAX_ATTEMPTS`            | `5`                        | Wrong-code attempts before the OTP is invalidated.                                                                         |
-| `OTP_MAX_REQUESTS_PER_WINDOW` | `3`                        | Max active OTPs per email in the rate window.                                                                              |
-| `OTP_RATE_WINDOW_SECONDS`     | `900`                      | OTP rate-limit window (15 min).                                                                                            |
-| `SESSION_EXPIRY_DAYS`         | `7`                        | Browser session lifetime.                                                                                                  |
-| `RECONCILE_INTERVAL_SECONDS`  | `60`                       | How often the reconciler syncs DB → containers.                                                                            |
-| `SHADOWSOCKS_IMAGE`           | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                |
-| `SHADOWSOCKS_NETWORK`         | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                              |
-| `DOMAIN`                      | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                            |
-| `COMPOSE_PROFILES`            | `with-mta`                 | Compose profiles to activate. Built-in MTA default-on; comment to opt out and set `SMTP_HOST` to a third-party relay.      |
-| `MTA_VERIFY_DNS`              | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                 |
-| `MTA_REQUIRE_DNSSEC`          | `false`                    | When true, mta refuses to start unless DNSSEC AD bit is set on the sending domain. Recommended for production.             |
-| `MTA_ADMIN_EMAIL`             | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.            |
-| `MTA_DKIM_SELECTOR_PREFIX`    | `postern`                  | DKIM selectors take the form `<prefix>-<YYYY-MM>` (date-suffixed for rotation).                                            |
-| `MTA_DKIM_ROTATION_DAYS`      | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                               |
-| `MTA_DNS_PROVIDER`            | `none`                     | libdns provider name for auto-rotation (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).         |
+| Variable                      | Default                    | Purpose                                                                                                                           |
+| ----------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `SECRET_KEY`                  | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`.        |
+| `DATABASE_PATH`               | `/data/postern.db`         | SQLite path inside the portal container. Lives on the `postern-data` named volume, not `./data/`.                                 |
+| `SMTP_HOST`                   | `localhost`                | Outbound SMTP server.                                                                                                             |
+| `SMTP_PORT`                   | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                                |
+| `SMTP_USER`                   | _(empty)_                  | SMTP auth username.                                                                                                               |
+| `SMTP_PASSWORD`               | _(empty)_                  | SMTP auth password.                                                                                                               |
+| `SMTP_FROM`                   | `noreply@example.com`      | `From:` header for OTP emails.                                                                                                    |
+| `OTP_EXPIRY_SECONDS`          | `600`                      | OTP lifetime (10 min).                                                                                                            |
+| `OTP_MAX_ATTEMPTS`            | `5`                        | Wrong-code attempts before the OTP is invalidated.                                                                                |
+| `OTP_MAX_REQUESTS_PER_WINDOW` | `3`                        | Max active OTPs per email in the rate window.                                                                                     |
+| `OTP_RATE_WINDOW_SECONDS`     | `900`                      | OTP rate-limit window (15 min).                                                                                                   |
+| `SESSION_EXPIRY_DAYS`         | `7`                        | Browser session lifetime.                                                                                                         |
+| `RECONCILE_INTERVAL_SECONDS`  | `60`                       | How often the reconciler syncs DB → containers.                                                                                   |
+| `SHADOWSOCKS_IMAGE`           | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                       |
+| `SHADOWSOCKS_NETWORK`         | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                                     |
+| `DOMAIN`                      | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                                   |
+| `COMPOSE_PROFILES`            | `with-mta`                 | Compose profiles to activate. Built-in MTA default-on; comment to opt out and set `SMTP_HOST` to a third-party relay.             |
+| `MTA_VERIFY_DNS`              | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                        |
+| `MTA_REQUIRE_DNSSEC`          | `auto`                     | Tri-state. `auto` (default) probes DNSSEC at startup and enforces if signed. `true` always enforces (fail-closed). `false` skips. |
+| `MTA_ADMIN_EMAIL`             | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.                   |
+| `MTA_DKIM_SELECTOR_PREFIX`    | `postern`                  | DKIM selectors take the form `<prefix>-<YYYY-MM>` (date-suffixed for rotation).                                                   |
+| `MTA_DKIM_ROTATION_DAYS`      | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                                      |
+| `MTA_DNS_PROVIDER`            | `none`                     | libdns provider name for auto-rotation (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).                |
 
 The Nginx container doesn't read `.env`. Its domain and cert paths are baked into the config — see [Re-hosting to a different domain](#re-hosting-to-a-different-domain).
 

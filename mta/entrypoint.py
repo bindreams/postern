@@ -122,10 +122,24 @@ def postmap_hash(path: Path) -> None:
 
 
 # DNS verification =====================================================================================================
-def verify_dns(domain: str, admin_email: str, require_dnssec: bool) -> None:
+def build_local_resolver() -> dns.resolver.Resolver:
+    """Construct a dns.resolver.Resolver pointed at the local validating Unbound."""
     sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     import dns.resolver as _resolver
+    resolver = _resolver.Resolver(configure=False)
+    resolver.nameservers = ["127.0.0.1"]
+    resolver.lifetime = 10.0
+    return resolver
 
+
+def verify_dns(
+    domain: str,
+    admin_email: str,
+    require_dnssec: bool,
+    *,
+    resolver: dns.resolver.Resolver,
+) -> None:
+    sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     from postern_mta import dkim as mta_dkim
     from postern_mta import dns as mta_dns
     from postern_mta import rotation
@@ -134,11 +148,6 @@ def verify_dns(domain: str, admin_email: str, require_dnssec: bool) -> None:
     pubkeys = {selector: mta_dkim.read_local_pubkey(selector, keydir=KEYDIR) for selector in state.active_selectors}
     if not pubkeys:
         die("DKIM keys not present after wait_for_state -- provisioner output is inconsistent")
-
-    # Use the local Unbound on 127.0.0.1 -- DANE/DNSSEC validation requires it.
-    resolver = _resolver.Resolver(configure=False)
-    resolver.nameservers = ["127.0.0.1"]
-    resolver.lifetime = 10.0
 
     failures = mta_dns.verify(
         domain,
@@ -226,9 +235,16 @@ async def reload_watcher(opendkim_proc: subprocess.Popen, poll_seconds: float = 
 
 # Main =================================================================================================================
 def main() -> NoReturn:
+    sys.path.insert(0, "/usr/lib/python3.13/site-packages")
+    from postern_mta import dnssec
+
     domain = _require("DOMAIN")
     verify_dns_enabled = _bool_env("MTA_VERIFY_DNS", default=True)
-    require_dnssec = _bool_env("MTA_REQUIRE_DNSSEC", default=False)
+    # Tri-state: True / False / "auto". Auto-detect runs after Unbound starts (below).
+    try:
+        require_dnssec_setting = dnssec.parse_setting(os.environ.get("MTA_REQUIRE_DNSSEC"))
+    except ValueError as e:
+        die(str(e))
     admin_email = os.environ.get("MTA_ADMIN_EMAIL", "").strip()
     bounce_local_part = (parseaddr(os.environ.get("SMTP_FROM", ""))[1] or "noreply@x").rsplit("@", 1)[0] or "noreply"
     dkim_selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")
@@ -307,7 +323,12 @@ def main() -> NoReturn:
     logger.info("sidecars up: unbound, postsrsd, mta-sts-daemon, opendkim")
 
     if verify_dns_enabled:
-        verify_dns(domain, admin_email, require_dnssec)
+        # Build the validating-Unbound resolver once and reuse it for both the
+        # auto-detect probe and verify_dns() (every per-record check inside
+        # mta_dns.verify shares this resolver).
+        local_resolver = build_local_resolver()
+        require_dnssec = dnssec.resolve_required(require_dnssec_setting, domain, resolver=local_resolver)
+        verify_dns(domain, admin_email, require_dnssec, resolver=local_resolver)
         logger.info("DNS verification passed")
 
     # Spawn the reload watcher in a background thread (asyncio.run blocks until cancelled).

@@ -48,4 +48,7 @@ COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 # The compose file mounts a named volume there so the queue persists.
 EXPOSE 25 587
 
+# PYTHONPATH so `python3` finds postern_mta regardless of which interpreter the
+# runtime image's PATH resolves to.
+ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]

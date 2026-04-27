@@ -42,5 +42,10 @@ COPY portal/src/postern/mta /usr/lib/python3.13/site-packages/postern_mta
 COPY --chmod=755 provisioner/entrypoint.py /usr/local/bin/entrypoint.py
 COPY --from=go-build /out/postern-dns /usr/local/bin/postern-dns
 
+# PYTHONPATH so `python3` finds postern_mta regardless of which interpreter the
+# runtime image's PATH resolves to. dhi.io/alpine-base:3.23-dev may ship its own
+# /usr/local/bin/python with a different site-packages path; prepending the
+# build stage's site-packages keeps the import working either way.
+ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 USER opendkim
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]

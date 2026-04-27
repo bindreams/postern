@@ -1,13 +1,14 @@
 # Unbound config for the e2e-mta overlay.
 #
-# Overlaid via bind mount onto /usr/local/share/mta-templates/unbound.conf.tmpl
-# (the entrypoint renders this same file via string.Template; we don't use any
-# $-substitutions, so the body passes through unchanged).
+# Overlaid via bind mount onto /usr/local/share/mta-templates/unbound.conf.tmpl.
+# The entrypoint renders every template through string.Template.substitute(),
+# so this file must escape every literal dollar sign by doubling it ($$ -> $$).
+# Apart from that constraint, the body passes through unchanged.
 #
 # Why we override: the production Unbound config recurses to root nameservers,
-# which CI runners cannot reach. Worse, postfix's `reject_unknown_sender_domain`
+# which CI runners cannot reach. Worse, postfix's reject_unknown_sender_domain
 # (smtpd_sender_restrictions) queries the sender's domain on every MAIL FROM;
-# without an answer for `postern.test`, the portal's submissions are deferred
+# without an answer for postern.test, the portal's submissions are deferred
 # with 4xx and no mail reaches mailpit.
 #
 # This config:

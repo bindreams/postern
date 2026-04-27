@@ -1,4 +1,4 @@
-from typing import Self
+from typing import Any, Literal, Self
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # MTA ==============================================================================================================
     mta_verify_dns: bool = True
-    mta_require_dnssec: bool = False
+    mta_require_dnssec: bool | Literal["auto"] = "auto"
     mta_dkim_selector_prefix: str = "postern"
     mta_admin_email: str = ""
     mta_dkim_rotation_days: int = 180
@@ -59,6 +59,13 @@ class Settings(BaseSettings):
                 "generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
         return v
+
+    @field_validator("mta_require_dnssec", mode="before")
+    @classmethod
+    def _normalize_require_dnssec(cls, v: Any) -> bool | Literal["auto"]:
+        # Imported lazily to keep module-load cheap and avoid any chance of a cycle.
+        from postern.mta.dnssec import parse_setting
+        return parse_setting(v)
 
     @model_validator(mode="after")
     def _check_cert_settings(self) -> Self:

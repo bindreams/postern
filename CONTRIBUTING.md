@@ -122,7 +122,7 @@ The `mta` and `provisioner` services are gated by the `with-mta` Compose profile
   done
   ```
 
-  Set `MTA_VERIFY_DNS=false`, `MTA_REQUIRE_DNSSEC=false`, `DNS_PROVIDER=none`, `MTA_ADMIN_EMAIL=admin@elsewhere.example` in `.env`. The provisioner generates the initial DKIM key and exits; the mta starts but cannot deliver mail to the public internet (rDNS/SPF/etc. unset). Useful for testing the bring-up path of the MTA itself, not for actually sending OTPs.
+  Set `MTA_VERIFY_DNS=false`, `MTA_REQUIRE_DNSSEC=false`, `DNS_PROVIDER=none`, `MTA_ADMIN_EMAIL=admin@elsewhere.example` in `.env`. (`MTA_REQUIRE_DNSSEC=auto` would resolve to `false` for unsigned `postern.localtest.me` anyway, but `false` is explicit and skips the probe entirely.) The provisioner generates the initial DKIM key and exits; the mta starts but cannot deliver mail to the public internet (rDNS/SPF/etc. unset). Useful for testing the bring-up path of the MTA itself, not for actually sending OTPs.
 
 ## Code style
 

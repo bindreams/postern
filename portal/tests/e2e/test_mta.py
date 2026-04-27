@@ -10,21 +10,16 @@ tests in this file do not declare ``pytestmark``.
 
 from __future__ import annotations
 
-import json
 import re
-import time
 
-import dkim  # dkimpy; in the e2e dependency group  # ty: ignore[unresolved-import]
 import pytest
 
 from ._mta_helpers import (
-    PROJECT_MTA,
     docker_inspect,
     get_container_id,
     get_provisioner_state,
     mta_exec,
     network_inspect,
-    portal_mta_exec,
     read_dkim_volume_file,
 )
 
@@ -91,6 +86,10 @@ def test_dkim_signature_verifies(
     Pins the cryptographic correctness of the signing pipeline (opendkim +
     keypair on the volume) -- not just the presence of the header.
     """
+    # Lazy import: dkimpy is in the e2e dependency group. Importing at module
+    # level would break the unit job (which uses --all-extras and skips e2e).
+    import dkim  # ty: ignore[unresolved-import]
+
     email = "dkim-verify@postern.test"
     fresh_mta_user("DKIM Verify Test", email)
     _request_otp(portal_mta_client, email)

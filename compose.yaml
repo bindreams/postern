@@ -39,7 +39,10 @@ services:
       DOCKER_HOST: tcp://docker-proxy:2375
     volumes:
       - postern-data:/data
-    networks: [default]
+      # Read-only mount of the DKIM keydir so `postern mta show-dns` can
+      # render the canonical TXT record. Empty no-op when with-mta is off.
+      - postern-mta-data:/var/lib/opendkim:ro
+    networks: [default, mta-submit]
     depends_on:
       docker-proxy:
         condition: service_healthy
@@ -50,6 +53,57 @@ services:
       retries: 3
     init: true
     restart: unless-stopped
+
+  mta:
+    build:
+      context: .
+      dockerfile: mta/Dockerfile
+    image: local/postern-mta
+    container_name: mta
+    profiles: [with-mta]
+    hostname: mail.${DOMAIN:-postern.example.com}
+    env_file: .env
+    environment:
+      MTA_SUBMIT_CIDR: 172.30.42.0/29
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "25:25/tcp"
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+      - postern-mta-queue:/var/spool/postfix
+      - type: bind
+        read_only: true
+        source: /etc/letsencrypt
+        target: /etc/letsencrypt
+    networks: [default, mta-submit]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.create_connection(('127.0.0.1',25),3); s.close(); s=socket.create_connection(('127.0.0.1',587),3); s.close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    init: true
+    restart: unless-stopped
+
+  provisioner:
+    build:
+      context: .
+      dockerfile: provisioner/Dockerfile
+    image: local/postern-provisioner
+    container_name: provisioner
+    profiles: [with-mta]
+    user: "110:110"
+    env_file: .env
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+    networks: [default]
+    init: true
+    restart: "no"
 
   docker-proxy:
     image: tecnativa/docker-socket-proxy:v0.4.2
@@ -77,7 +131,17 @@ networks:
   shadowsocks:
     name: shadowsocks
     driver: bridge
+  mta-submit:
+    name: mta-submit
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.42.0/29
 
 volumes:
   postern-data:
     name: postern-data
+  postern-mta-data:
+    name: postern-mta-data
+  postern-mta-queue:
+    name: postern-mta-queue

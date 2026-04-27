@@ -27,8 +27,19 @@ Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small Fa
 
 - Docker Engine and Docker Compose v2
 - A public domain you control, with Let's Encrypt certificates at `/etc/letsencrypt/live/<domain>/` (bind-mounted into the Nginx container)
-- SMTP credentials for OTP email delivery (Postern was developed against [Resend](https://resend.com), but any SMTP server works — TLS mode is derived from the port: 465 → implicit TLS, 587 → STARTTLS)
 - A free [Docker Hub](https://hub.docker.com) account with a Personal Access Token. The base images used by Nginx and the portal come from [Docker Hardened Images](https://docs.docker.com/dhi/) (`dhi.io`); the catalog is free under Apache 2.0 but pulls require authentication. Run `docker login dhi.io` with your Docker Hub username + PAT before the first build.
+
+**SMTP — pick one:**
+
+- **Built-in MTA (default).** Postern ships a self-hosted Postfix + opendkim + Unbound + postsrsd + mta-sts-resolver stack as the default `with-mta` Compose profile. Eliminates the third-party metadata leak (no provider sees who your users are or when they log in). Additional prerequisites:
+  - Public IPv4 with **port 25 outbound allowed**. Many cloud providers block it by default (AWS, GCP, DigitalOcean new accounts); Hetzner-class VPS providers usually allow it. Without port 25 outbound, the built-in MTA cannot deliver mail.
+  - Reverse DNS (PTR) on the IP set to `mail.<domain>`. Configured at the VPS provider's panel; cannot be automated.
+  - Three Let's Encrypt certs at `/etc/letsencrypt/live/<domain>/`, `/etc/letsencrypt/live/mail.<domain>/`, `/etc/letsencrypt/live/mta-sts.<domain>/`. A multi-SAN cert covering all three works too: `certbot certonly --standalone -d <domain> -d mail.<domain> -d mta-sts.<domain>`.
+  - DNS records published as listed by `docker compose exec portal postern mta show-dns`. Includes MX, SPF, DMARC `p=reject` strict, MTA-STS, TLS-RPT, DKIM. The DKIM TXT is auto-managed when `MTA_DNS_PROVIDER` is set to a libdns-supported provider (Cloudflare, Route53, Gandi, DigitalOcean, OVH, Hetzner, Linode, Namecheap); otherwise published manually after first run.
+  - **Strongly recommended: DNSSEC enabled at your TLD/registrar.** Without it, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access. Most modern registrars (Cloudflare Registrar, Gandi, Namecheap, Porkbun, Hover) support this; verify with `dig +dnssec DS <yourdomain>` returning a signed RRset. Set `MTA_REQUIRE_DNSSEC=true` in `.env` to fail-stop on missing AD bit.
+  - An external mailbox you read for technical reports (postmaster, abuse, tls-rpt, bounces). Set `MTA_ADMIN_EMAIL=` in `.env`. Postern forwards there; it does not host an inbox.
+  - See [docs/mta.md](docs/mta.md) for a full deployer walkthrough.
+- **Third-party SMTP relay** (Resend, SES, Mailgun, Postmark, etc.). Comment `COMPOSE_PROFILES=with-mta` in `.env` and set `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASSWORD` to your provider. TLS mode is derived from the port: 465 → implicit TLS, 587 → STARTTLS.
 
 ## Quick start
 
@@ -79,6 +90,13 @@ Environment variables are loaded from `.env` (copied from `.env.example`) into t
 | `SHADOWSOCKS_IMAGE`           | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                |
 | `SHADOWSOCKS_NETWORK`         | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                              |
 | `DOMAIN`                      | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                            |
+| `COMPOSE_PROFILES`            | `with-mta`                 | Compose profiles to activate. Built-in MTA default-on; comment to opt out and set `SMTP_HOST` to a third-party relay.      |
+| `MTA_VERIFY_DNS`              | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                 |
+| `MTA_REQUIRE_DNSSEC`          | `false`                    | When true, mta refuses to start unless DNSSEC AD bit is set on the sending domain. Recommended for production.             |
+| `MTA_ADMIN_EMAIL`             | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.            |
+| `MTA_DKIM_SELECTOR_PREFIX`    | `postern`                  | DKIM selectors take the form `<prefix>-<YYYY-MM>` (date-suffixed for rotation).                                            |
+| `MTA_DKIM_ROTATION_DAYS`      | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                               |
+| `MTA_DNS_PROVIDER`            | `none`                     | libdns provider name for auto-rotation (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).         |
 
 The Nginx container doesn't read `.env`. Its domain and cert paths are baked into the config — see [Re-hosting to a different domain](#re-hosting-to-a-different-domain).
 
@@ -87,8 +105,10 @@ The Nginx container doesn't read `.env`. Its domain and cert paths are baked int
 The default config is built around `postern.example.com`. To deploy under your own domain, edit the following:
 
 1. **[nginx/etc/nginx.conf](nginx/etc/nginx.conf)** — replace every occurrence of `postern.example.com` (the `server_name` directive and both `include conf.d/certs/...` lines).
-1. **[nginx/etc/conf.d/certs/postern.example.com.conf](nginx/etc/conf.d/certs/postern.example.com.conf)** — rename the file to match your domain and edit the three `/etc/letsencrypt/live/...` paths inside it. Then update the `include` lines from step 1 to point at the renamed file.
-1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@postern.example.com>` to `<noreply@<your-domain>>`, and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`).
+1. **[nginx/etc/conf.d/mta-sts.conf](nginx/etc/conf.d/mta-sts.conf)** — replace `postern.example.com` in the `server_name` and the cert include path. Skip if you opted out of the built-in MTA.
+1. **[nginx/etc/conf.d/mta-sts/policy.txt](nginx/etc/conf.d/mta-sts/policy.txt)** — replace `mail.postern.example.com` with `mail.<your-domain>` in the `mx:` line. Skip if you opted out of the built-in MTA.
+1. **[nginx/etc/conf.d/certs/postern.example.com.conf](nginx/etc/conf.d/certs/postern.example.com.conf)** and **[nginx/etc/conf.d/certs/mta-sts.postern.example.com.conf](nginx/etc/conf.d/certs/mta-sts.postern.example.com.conf)** — rename both files to match your domain and edit the three `/etc/letsencrypt/live/...` paths inside each. Then update the `include` lines from steps 1 and 2 to point at the renamed files.
+1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@postern.example.com>` to `<noreply@<your-domain>>`, set `MTA_ADMIN_EMAIL=` (required when using the built-in MTA), and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`).
 1. **Test fixtures** (optional; only if you plan to run the test suite with your domain). Three test files reference the default:
    - [portal/tests/test_reconciler.py](portal/tests/test_reconciler.py)
    - [portal/tests/test_routes.py](portal/tests/test_routes.py)
@@ -142,19 +162,29 @@ A client connects to `wss://<your-domain>:443/t/<token>` (v2ray-plugin in TLS + 
 ## Project layout
 
 ```
-compose.yaml                    # Orchestration (nginx + portal + docker-proxy)
+compose.yaml                    # Orchestration (nginx + portal + docker-proxy + optional mta + provisioner)
 nginx/                          # Reverse proxy
     Dockerfile
     etc/nginx.conf
-    etc/conf.d/                 # ssl.conf, cert include, mozilla ssl policy
+    etc/conf.d/                 # ssl.conf, cert include, mta-sts vhost
     log/                        # Bind-mounted; nginx writes access/error logs here
 portal/                         # FastAPI management service (Python 3.13)
     Dockerfile
     pyproject.toml
-    src/postern/                # app.py, auth.py, db.py, reconciler.py, cli.py, ...
+    src/postern/                # app.py, auth.py, db.py, reconciler.py, cli.py, mta/...
     tests/
+mta/                            # Built-in MTA (Postfix + opendkim + Unbound + postsrsd + mta-sts-resolver)
+    Dockerfile
+    entrypoint.py
+    etc/                        # string.Template config templates
+provisioner/                    # DKIM rotation + (planned) ACME DNS-01 cert renewal
+    Dockerfile
+    entrypoint.py
+    postern-dns/                # Go module: txt-set/txt-delete via libdns
 shadowsocks/                    # Per-connection tunnel image (Go + Rust multi-stage)
     Dockerfile
+docs/                           # Deployer guides
+    mta.md
 external/                       # Vendored upstreams, managed as git-subrepos
     shadowsocks-rust/
     v2ray-plugin/

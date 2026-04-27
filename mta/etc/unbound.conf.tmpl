@@ -1,0 +1,22 @@
+server:
+  interface: 127.0.0.1
+  port: 53
+  do-ip4: yes
+  do-ip6: no
+  do-udp: yes
+  do-tcp: yes
+  access-control: 127.0.0.0/8 allow
+  auto-trust-anchor-file: /var/lib/unbound/root.key
+  hide-identity: yes
+  hide-version: yes
+  qname-minimisation: yes
+  harden-glue: yes
+  harden-dnssec-stripped: yes
+  use-caps-for-id: no
+  prefetch: yes
+  username: ""
+  chroot: ""
+  directory: "/etc/unbound"
+  pidfile: "/var/run/unbound.pid"
+  logfile: ""
+  use-syslog: no

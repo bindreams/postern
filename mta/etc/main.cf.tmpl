@@ -1,0 +1,59 @@
+# Postern MTA main.cf -- rendered at startup by entrypoint.py.
+# string.Template syntax: $${VAR}. $$myvar -> literal $myvar.
+
+myhostname = mail.${DOMAIN}
+mydomain = ${DOMAIN}
+myorigin = $$mydomain
+inet_interfaces = all
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8 [::1]/128 ${MTA_SUBMIT_CIDR}
+mydestination =
+
+compatibility_level = 3.6
+
+smtpd_helo_required = yes
+smtpd_helo_restrictions = permit_mynetworks, reject_invalid_helo_hostname, reject_non_fqdn_helo_hostname
+smtpd_sender_restrictions = reject_non_fqdn_sender, reject_unknown_sender_domain
+smtpd_relay_restrictions = permit_mynetworks, reject_unauth_destination
+smtpd_recipient_restrictions = permit_mynetworks, reject_unauth_destination, reject_non_fqdn_recipient
+disable_vrfy_command = yes
+
+# Inbound TLS (port 25) ------------------------------------------------------------------------------------------------
+smtpd_tls_security_level = may
+smtpd_tls_protocols = >=TLSv1.2
+smtpd_tls_mandatory_protocols = >=TLSv1.2
+smtpd_tls_cert_file = /etc/letsencrypt/live/mail.${DOMAIN}/fullchain.pem
+smtpd_tls_key_file  = /etc/letsencrypt/live/mail.${DOMAIN}/privkey.pem
+smtpd_tls_loglevel = 1
+
+# Outbound TLS to recipient MTAs ---------------------------------------------------------------------------------------
+# smtp_tls_security_level=dane requires DNSSEC validation -- supplied by local Unbound.
+smtp_tls_security_level = dane
+smtp_dns_support_level = dnssec
+smtp_tls_policy_maps = socketmap:inet:127.0.0.1:8461:postfix
+smtp_tls_protocols = >=TLSv1.2
+smtp_tls_mandatory_protocols = >=TLSv1.2
+smtp_tls_loglevel = 1
+smtp_host_lookup = dns
+
+# Local-delivery scope -------------------------------------------------------------------------------------------------
+# Only the four named addresses are accepted at SMTP RCPT TO. They are virtual-aliased
+# to MTA_ADMIN_EMAIL by /etc/postfix/virtual; nothing is delivered locally.
+local_recipient_maps = hash:/etc/postfix/local_recipients
+virtual_alias_maps = hash:/etc/postfix/virtual
+mailbox_command =
+
+# SRS envelope-sender rewriting ----------------------------------------------------------------------------------------
+sender_canonical_maps = tcp:127.0.0.1:10001
+sender_canonical_classes = envelope_sender
+recipient_canonical_maps = tcp:127.0.0.1:10002
+recipient_canonical_classes = envelope_recipient
+
+# OpenDKIM milter -- tempfail (queue) instead of accept (send unsigned). An unsigned
+# outbound from this MTA defeats DMARC p=reject; queueing until opendkim is up is safer.
+milter_default_action = tempfail
+smtpd_milters = inet:127.0.0.1:8891
+non_smtpd_milters = inet:127.0.0.1:8891
+
+# E2e routing override (no-op in production) ---------------------------------------------------------------------------
+${TRANSPORT_OVERRIDE}

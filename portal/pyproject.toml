@@ -15,6 +15,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     "docker>=7.1",
     "typer>=0.15",
+    "dnspython>=2.6",
 ]
 
 [dependency-groups]
@@ -32,7 +33,10 @@ dev = [
     # collect and run it without pulling the full e2e group.
     "cryptography>=42",
 ]
-e2e = [{include-group = "dev"}]
+e2e = [
+    {include-group = "dev"},
+    "dkimpy>=1.1",
+]
 
 [project.scripts]
 postern = "postern.cli:app"
@@ -55,6 +59,7 @@ testpaths = ["tests"]
 timeout = 30
 markers = [
     "e2e: end-to-end tests that spin up the full compose stack (slow, requires docker; opt in with -m e2e)",
+    "e2e_mta: end-to-end tests for the built-in MTA stack (slow, requires docker; opt in with -m e2e_mta)",
 ]
 
 [tool.ty.rules]

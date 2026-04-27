@@ -74,3 +74,21 @@ async def test_send_otp_email_other_port_is_plaintext(mock_send):
     call_kwargs = mock_send.call_args.kwargs
     assert call_kwargs["use_tls"] is False
     assert call_kwargs["start_tls"] is False
+
+
+@patch("postern.email.aiosmtplib.send", new_callable=AsyncMock)
+async def test_send_otp_email_skips_cert_validation_for_builtin_mta(mock_send):
+    """When SMTP_HOST=mta, the cert is for `mail.<domain>` not `mta`; verify is skipped."""
+    settings = _make_settings(smtp_host="mta", smtp_port=587)
+    await send_otp_email("alice@example.com", "123456", settings)
+
+    assert mock_send.call_args.kwargs["validate_certs"] is False
+
+
+@patch("postern.email.aiosmtplib.send", new_callable=AsyncMock)
+async def test_send_otp_email_validates_cert_for_external_relay(mock_send):
+    """External SMTP providers must keep strict cert validation."""
+    settings = _make_settings(smtp_host="smtp.resend.com", smtp_port=465)
+    await send_otp_email("alice@example.com", "123456", settings)
+
+    assert mock_send.call_args.kwargs["validate_certs"] is True

@@ -106,6 +106,24 @@ For local testing, you have two realistic options:
 
 The admin CLI works regardless: `docker compose exec portal postern user list`.
 
+### Built-in MTA
+
+The `mta` and `provisioner` services are gated by the `with-mta` Compose profile and turned on by default via `COMPOSE_PROFILES=with-mta` in `.env.example`. For local development you have two options:
+
+- **Comment out `COMPOSE_PROFILES=with-mta`** in `.env` and use a fake SMTP for OTP testing. The simplest pattern matches the e2e suite: bring up [mailpit](https://github.com/axllent/mailpit) on the side, set `SMTP_HOST=mailpit`, read OTPs from its HTTP UI at `:8025`. No DNS / cert setup needed.
+- **Bring up the real built-in MTA with `MTA_VERIFY_DNS=false`** and locally-trusted certs for `mail.<dev-domain>` and `mta-sts.<dev-domain>` (extending the mkcert pattern above):
+
+  ```bash
+  for sub in '' 'mail.' 'mta-sts.'; do
+    sudo mkdir -p /etc/letsencrypt/live/${sub}postern.localtest.me
+    cd /etc/letsencrypt/live/${sub}postern.localtest.me
+    sudo mkcert -cert-file fullchain.pem -key-file privkey.pem ${sub}postern.localtest.me
+    sudo cp fullchain.pem chain.pem
+  done
+  ```
+
+  Set `MTA_VERIFY_DNS=false`, `MTA_REQUIRE_DNSSEC=false`, `MTA_DNS_PROVIDER=none`, `MTA_ADMIN_EMAIL=admin@elsewhere.example` in `.env`. The provisioner generates the initial DKIM key and exits; the mta starts but cannot deliver mail to the public internet (rDNS/SPF/etc. unset). Useful for testing the bring-up path of the MTA itself, not for actually sending OTPs.
+
 ## Code style
 
 Prek (a Rust-based drop-in replacement for `pre-commit`) enforces everything; just run `prek install` once and let the hooks do the work. In detail:

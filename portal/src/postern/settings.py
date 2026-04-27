@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     # Domain ===========================================================================================================
     domain: str = "postern.example.com"
 
+    # MTA ==============================================================================================================
+    mta_verify_dns: bool = True
+    mta_require_dnssec: bool = False
+    mta_dkim_selector_prefix: str = "postern"
+    mta_admin_email: str = ""
+    mta_dkim_rotation_days: int = 180
+    mta_dns_provider: str = "none"
+
     @field_validator("secret_key")
     @classmethod
     def _reject_placeholder(cls, v: str) -> str:

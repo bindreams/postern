@@ -274,17 +274,38 @@ def mta_verify_dns_cmd() -> None:
         )
         raise typer.Exit(1)
 
-    failures = mta_dns.verify(
+    # The CLI never has a validating local resolver (it uses Docker's embedded
+    # DNS via the system stub), so DNSSEC enforcement is done here via the
+    # external 2-of-3 consensus check. mta_dns.verify is always called with
+    # require_dnssec=False to avoid the AD-bit check inside it running against
+    # a non-validating resolver.
+    from postern.mta import dnssec
+    setting = settings.mta_require_dnssec  # bool | Literal["auto"]
+    dnssec_failures: list[str] = []
+    signed: bool | None = None
+    if setting is True:
+        dnssec_failures = dnssec.check(settings.domain)
+    elif setting == "auto":
+        consensus = dnssec.check(settings.domain)
+        signed = not consensus
+        # auto never fails the command; outcome is reported below.
+
+    verify_failures = mta_dns.verify(
         settings.domain,
         pubkeys,
         admin_email=settings.mta_admin_email,
-        require_dnssec=settings.mta_require_dnssec,
+        require_dnssec=False,
     )
-    if failures:
-        for f in failures:
+
+    all_failures = list(dnssec_failures) + list(verify_failures)
+    if all_failures:
+        for f in all_failures:
             typer.echo(f"FAIL: {f}", err=True)
         raise typer.Exit(1)
     typer.echo("All DNS records verified.")
+    if setting == "auto":
+        outcome = "enforce" if signed else "skip"
+        typer.echo(f"DNSSEC: auto-detect resolved to {outcome} for {settings.domain}")
 
 
 @mta_app.command("rotate-dkim")
@@ -317,11 +338,17 @@ def mta_dnssec_status() -> None:
     from postern.mta import dnssec
     settings = _settings()
     failures = dnssec.check(settings.domain)
+    signed = not failures
     if failures:
         for f in failures:
             typer.echo(f"FAIL: {f}", err=True)
+    else:
+        typer.echo(f"DNSSEC: {settings.domain} is signed and validating.")
+    if settings.mta_require_dnssec == "auto":
+        verb = "enforced" if signed else "skipped"
+        typer.echo(f"With MTA_REQUIRE_DNSSEC=auto, this would be {verb} at startup.")
+    if not signed:
         raise typer.Exit(1)
-    typer.echo(f"DNSSEC: {settings.domain} is signed and validating.")
 
 
 if __name__ == "__main__":

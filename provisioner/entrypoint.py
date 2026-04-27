@@ -40,6 +40,10 @@ import dns.resolver
 from postern_mta import dkim as mta_dkim  # noqa: E402
 from postern_mta import rotation  # noqa: E402
 
+# Cert renewal driver -- imported via the postern.* namespace (also COPYed in by Dockerfile).
+from postern.cert import state as cert_state  # noqa: E402
+from postern_provisioner import cert as cert_driver  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s provisioner %(levelname)s: %(message)s")
 logger = logging.getLogger("entrypoint")
 
@@ -289,21 +293,109 @@ def run_rotation_loop(domain: str, selector_prefix: str) -> NoReturn:
             slept += TRIGGER_POLL_SECONDS
 
 
+def _has_cert_trigger() -> bool:
+    return cert_state.trigger_path().exists()
+
+
+def _consume_cert_trigger() -> None:
+    try:
+        cert_state.trigger_path().unlink()
+    except OSError:
+        pass
+
+
+def _build_cert_settings(domain: str) -> cert_driver.CertSettings:
+    return cert_driver.CertSettings(
+        domain=domain,
+        dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
+        cert_acme_email=os.environ.get("CERT_ACME_EMAIL", ""),
+        cert_acme_directory=os.environ.get("CERT_ACME_DIRECTORY", "https://acme-v02.api.letsencrypt.org/directory"),
+        cert_renewal_days_before_expiry=int(os.environ.get("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", "30")),
+        cert_force_reissue=_bool_env("CERT_FORCE_REISSUE", False),
+    )
+
+
+def _try_advance_dkim(domain: str, selector_prefix: str, counters: dict[str, int]) -> None:
+    try:
+        state = rotation.read_state(keydir=KEYDIR)
+        had_trigger = _has_explicit_trigger()
+        new_state = advance_state(state, domain, selector_prefix)
+        if had_trigger:
+            _consume_trigger()
+        if new_state != state:
+            rotation.write_state(new_state, keydir=KEYDIR)
+            rotation.trigger_opendkim_reload(keydir=KEYDIR)
+            logger.info("rotation: %s -> %s", state.state, new_state.state)
+        counters["dkim"] = 0
+    except Exception:
+        counters["dkim"] = counters.get("dkim", 0) + 1
+        logger.exception("dkim rotation step failed (%d consecutive)", counters["dkim"])
+
+
+def _try_advance_cert(domain: str, counters: dict[str, int]) -> None:
+    try:
+        settings = _build_cert_settings(domain)
+        state = cert_state.read_state()
+        had_trigger = _has_cert_trigger()
+        lego = cert_driver.LegoRunner()
+        new_state = cert_driver.advance_cert_state(
+            state,
+            settings=settings,
+            lego=lego,
+            trigger_present=had_trigger,
+        )
+        if had_trigger:
+            _consume_cert_trigger()
+        if new_state != state:
+            cert_state.write_state(new_state)
+            logger.info("cert: %s -> %s", state.state, new_state.state)
+        counters["cert"] = 0
+    except Exception:
+        counters["cert"] = counters.get("cert", 0) + 1
+        logger.exception("cert step failed (%d consecutive)", counters["cert"])
+
+
+def _sleep_with_triggers() -> None:
+    """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
+    slept = 0
+    while slept < TICK_SECONDS:
+        if _has_explicit_trigger() or _has_cert_trigger():
+            break
+        time.sleep(TRIGGER_POLL_SECONDS)
+        slept += TRIGGER_POLL_SECONDS
+
+
+def run_combined_loop(domain: str, selector_prefix: str, *, dkim_enabled: bool, cert_enabled: bool) -> NoReturn:
+    counters: dict[str, int] = {"dkim": 0, "cert": 0}
+    while True:
+        if dkim_enabled:
+            _try_advance_dkim(domain, selector_prefix, counters)
+        if cert_enabled:
+            _try_advance_cert(domain, counters)
+        _sleep_with_triggers()
+
+
 def main() -> NoReturn:
     domain = _require("DOMAIN")
     selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")
     dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
+    cert_renewal = _bool_env("CERT_RENEWAL", False)
 
-    state = ensure_initial_key(domain, selector_prefix)
-    logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
+    # DKIM init runs whenever a DKIM keydir exists (i.e. when MTA is configured)
+    # OR when DNS_PROVIDER is set non-none. Cert-only deployments without MTA
+    # should NOT generate a DKIM key they'll never use.
+    mta_active = (KEYDIR / "state.json").exists() or dns_provider != "none"
+    if mta_active and dns_provider != "none":
+        state = ensure_initial_key(domain, selector_prefix)
+        logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
 
-    if dns_provider == "none":
-        logger.info(
-            "DNS_PROVIDER=none -- auto-rotation disabled, exiting (run `postern mta show-dns` for the DKIM TXT to publish)"
-        )
+    dkim_enabled = dns_provider != "none" and mta_active
+
+    if not dkim_enabled and not cert_renewal:
+        logger.info("DNS_PROVIDER=none and CERT_RENEWAL=false -- nothing to do, exiting")
         sys.exit(0)
 
-    run_rotation_loop(domain, selector_prefix)
+    run_combined_loop(domain, selector_prefix, dkim_enabled=dkim_enabled, cert_enabled=cert_renewal)
 
 
 if __name__ == "__main__":

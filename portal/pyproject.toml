@@ -16,6 +16,9 @@ dependencies = [
     "docker>=7.1",
     "typer>=0.15",
     "dnspython>=2.6",
+    # cryptography is a runtime dep for postern.cert.inspect (cert SAN/expiry
+    # parsing, used by `postern cert show` and the renewal state machine).
+    "cryptography>=42",
 ]
 
 [dependency-groups]
@@ -27,11 +30,6 @@ dev = [
     "ty>=0.0.29",
     "yapf>=0.43",
     "asgi-lifespan>=2.1.0",
-    # cryptography lands in dev (not e2e) because tests/test_certs_unit.py
-    # is a docker-free unit test of the e2e cert-generation helper -- the
-    # dep belongs with the rest of the unit-test deps so the unit job can
-    # collect and run it without pulling the full e2e group.
-    "cryptography>=42",
 ]
 e2e = [
     {include-group = "dev"},

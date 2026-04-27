@@ -53,7 +53,15 @@ These are load-bearing. Changing any of them without understanding the chain wil
 - **DKIM key sharing.** `postern-mta-data` is mounted rw on mta, provisioner, and portal. The portal's `postern mta show-dns` reads `<selector>.txt` and state.json; `postern mta rotate-dkim` writes the `.rotate-dkim` trigger file there. The provisioner is the only writer of `state.json` (see `rotation.write_state` docstring) — the rw portal mount is for trigger files only. No HTTP listener.
 - **Trigger files mirror the reconciler pattern.** [portal/src/postern/mta/rotation.py](portal/src/postern/mta/rotation.py) defines two: `.rotate-dkim` (portal CLI -> provisioner) and `.reload-opendkim` (provisioner -> mta). Existence is the signal; consumer deletes after handling. Same race acceptance as `.reconcile-now` at [reconciler.py:163](portal/src/postern/reconciler.py#L163): double-trigger may collapse, which is fine because the state machine is idempotent.
 - **MTA-STS policy is served by nginx**, not by mta. The `mta-sts.<domain>` server block at [nginx/etc/conf.d/mta-sts.conf](nginx/etc/conf.d/mta-sts.conf) is load-bearing for the MTA-STS standard (RFC 8461 §3.3 mandates HTTPS with a publicly-trusted CA). Outbound MTA-STS enforcement (consuming recipient policies) is via `postfix-mta-sts-resolver` running inside mta.
-- **`postern-dns` (the libdns wrapper) lives in the provisioner only.** The DNS provider API token is in the provisioner's env (`DNS_PROVIDER` plus libdns-native env vars like `CLOUDFLARE_API_TOKEN`). The mta image does not have it and cannot publish/retire DNS records.
+- **`postern-dns` (the libdns wrapper) lives in the provisioner only.** The DNS provider API token is in the provisioner's env (`DNS_PROVIDER` plus libdns-native env vars like `CLOUDFLARE_API_TOKEN`). The mta image does not have it and cannot publish/retire DNS records. The same provisioner also ships `lego` for ACME DNS-01 cert renewal (see [provisioner/Dockerfile](provisioner/Dockerfile)); both binaries share the same provider env vars.
+- **Two TLS cert deployment modes.** BYO certs (default, host `/etc/letsencrypt` bind-mount, base [compose.yaml](compose.yaml)) or auto-renewal ([compose.cert.yaml](compose.cert.yaml) override + `with-cert-renewal` profile + `CERT_RENEWAL=true`). Don't conflate them — running both leads to two writers fighting over the same paths. The `postern-letsencrypt` named volume is populated by the provisioner under auto-renewal; it is empty in BYO mode.
+- **Wildcard cert SAN list is exactly `{<domain>, *.<domain>}`.** Adding subdomain SANs (`mail.<domain>`, `mta-sts.<domain>`, etc.) leaks them to Certificate Transparency logs and defeats the whole reason we use a wildcard. The `postern cert verify` command pins this; `postern_provisioner.cert.expected_sans_for` returns this set; `[postern.cert.inspect.CertInfo.sans_match](portal/src/postern/cert/inspect.py)` enforces exact-set equality.
+- **Cert state machine** is `NO_CERT → ISSUING → ISSUED_PENDING_INSTALL → INSTALLED → RENEWING → ISSUED_PENDING_INSTALL → INSTALLED`. `FAILED` is non-terminal (60-min hold-off then retry the prior pre-FAILED state). `last_issued_iso` is recorded BEFORE calling Lego to defend LE rate limits even on partial-failure paths. 24-hour rate-limit guard on top, with `CERT_FORCE_REISSUE=true` operator override. Persisted at `/etc/letsencrypt/state.json`.
+- **Atomic cert install uses symlink-flip, not directory rename.** `os.replace` on a non-empty directory returns `ENOTEMPTY`. [postern_provisioner.install](portal/src/postern_provisioner/install.py) writes to `live/<domain>.<timestamp>/` then `os.replace`s a sibling temp symlink into `live/<domain>`. Concurrent readers see either old or new — never torn.
+- **Cert renewal trigger files** mirror the DKIM rotation pattern: `.renew-cert` (portal CLI → provisioner, on the cert volume) and `.reload-mta-tls` (provisioner → mta, on `postern-mta-data`). Existence is the signal; consumer deletes after handling. Idempotent state machines tolerate double-trigger collapse.
+- **First-issuance bootstrap via `depends_on: condition: service_healthy`.** Under [compose.cert.yaml](compose.cert.yaml), nginx and mta wait on the provisioner's healthcheck ([healthcheck.py](portal/src/postern_provisioner/healthcheck.py)), which only flips healthy when (a) DKIM has a key, AND (b) if `CERT_RENEWAL=true`, cert state shows `INSTALLED`. `service_healthy` gates startup only; once dependents are running, provisioner becoming unhealthy doesn't stop them. Provisioner uses `restart: unless-stopped` (not `restart: "no"`) when cert renewal is on, so transient outages self-heal.
+- **`DNS_PROVIDER` is shared by DKIM rotation and cert renewal.** Same env var; same provider account. Each subsystem has its own enable flag (`with-mta` profile membership for DKIM, `CERT_RENEWAL=true` for cert renewal).
+- **nginx user is in gid 110 (opendkim)** ([nginx/Dockerfile](nginx/Dockerfile)) so it can read `privkey.pem` written 0640 by the provisioner under auto-renewal. Same gid as mta and provisioner.
 
 ## Where things live
 
@@ -84,7 +92,7 @@ mta/
 
 provisioner/
     Dockerfile       # libdns-wrapped Go binary + Python state-machine driver
-    entrypoint.py    # Generates initial DKIM key; runs rotation state machine if DNS_PROVIDER set
+    entrypoint.py    # Generates initial DKIM key; runs DKIM + cert state machines if DNS_PROVIDER / CERT_RENEWAL set
     postern-dns/     # Go module: txt-set / txt-delete via libdns providers
 ```
 
@@ -147,7 +155,11 @@ Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcomm
 - Don't drop `MTA_REQUIRE_DNSSEC=true` from production deployments where it can be set. Without DNSSEC, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access — defeating most of what the rest of the security configuration buys you.
 - Don't put `/var/spool/postfix` (the Postfix queue) on tmpfs. Mail in flight is lost on container restart.
 - Don't set `milter_default_action = accept` in [mta/etc/main.cf.tmpl](mta/etc/main.cf.tmpl). If opendkim is down, mail must queue, not escape unsigned.
-- Don't change opendkim's UID/GID away from 110 in either [mta/Dockerfile](mta/Dockerfile) or [provisioner/Dockerfile](provisioner/Dockerfile) without changing both. The shared volume permissions depend on them matching.
+- Don't change opendkim's UID/GID away from 110 in either [mta/Dockerfile](mta/Dockerfile) or [provisioner/Dockerfile](provisioner/Dockerfile) without changing both. The shared volume permissions depend on them matching. nginx is also in this group ([nginx/Dockerfile](nginx/Dockerfile)) so it can read the wildcard cert's privkey.pem.
+- Don't add subdomain SANs (mail., mta-sts., etc.) to the wildcard cert. The exact-set match `{<domain>, *.<domain>}` is load-bearing for CT-leak hygiene.
+- Don't run a host-side certbot when [compose.cert.yaml](compose.cert.yaml) is active. Two writers on `/etc/letsencrypt` will fight.
+- Don't `os.replace` a non-empty directory expecting atomic semantics. Use the symlink-flip pattern in [postern_provisioner.install](portal/src/postern_provisioner/install.py).
+- Don't run two provisioner replicas under auto-renewal. Lego's account storage isn't concurrency-safe.
 
 ## Useful commands
 

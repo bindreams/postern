@@ -117,8 +117,11 @@ def wait_for_state(timeout_s: int = 120) -> dict:
 
 
 # Postmap helpers ======================================================================================================
+# Alpine's postfix is built without Berkeley DB (`hash:` and `btree:` map types
+# are NOT compiled in -- see `postconf -m`); lmdb is the supported in-process
+# key-value backend on this distro. Function name kept for git-history continuity.
 def postmap_hash(path: Path) -> None:
-    subprocess.run(["postmap", f"hash:{path}"], check=True)
+    subprocess.run(["postmap", f"lmdb:{path}"], check=True)
 
 
 # DNS verification =====================================================================================================
@@ -261,7 +264,7 @@ def main() -> NoReturn:
     logger.info("rotation state: %s", state.get("state"))
 
     # Render configs.
-    transport_override_block = ("transport_maps = hash:/etc/postfix/transport\n" if e2e_transport_override else "")
+    transport_override_block = ("transport_maps = lmdb:/etc/postfix/transport\n" if e2e_transport_override else "")
     render_template(
         "main.cf.tmpl",
         Path("/etc/postfix/main.cf"),

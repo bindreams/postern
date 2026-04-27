@@ -38,7 +38,7 @@ services:
       MTA_SUBMIT_CIDR: 172.30.42.0/29
       SMTP_FROM: noreply@postern.test
       # Two-space-separated postfix transport table. The trailing newline matters:
-      # `postmap` builds the hash from this file. Both domains route to the
+      # `postmap` builds the lmdb file from this. Both domains route to the
       # IPAM-pinned mailpit IP so Postfix never does a DNS lookup. See file header.
       MTA_E2E_TRANSPORT_OVERRIDE: |
         postern.test  smtp:[172.30.99.10]:1025

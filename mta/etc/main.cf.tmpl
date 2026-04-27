@@ -39,8 +39,8 @@ smtp_host_lookup = dns
 # Local-delivery scope -------------------------------------------------------------------------------------------------
 # Only the four named addresses are accepted at SMTP RCPT TO. They are virtual-aliased
 # to MTA_ADMIN_EMAIL by /etc/postfix/virtual; nothing is delivered locally.
-local_recipient_maps = hash:/etc/postfix/local_recipients
-virtual_alias_maps = hash:/etc/postfix/virtual
+local_recipient_maps = lmdb:/etc/postfix/local_recipients
+virtual_alias_maps = lmdb:/etc/postfix/virtual
 mailbox_command =
 
 # SRS envelope-sender rewriting ----------------------------------------------------------------------------------------

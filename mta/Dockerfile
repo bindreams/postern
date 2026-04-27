@@ -12,7 +12,7 @@ RUN mkdir -p /var/lib/opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
 	&& chown opendkim:opendkim /var/lib/opendkim \
 	&& apk add --no-cache \
-		postfix postfix-doc postfix-hash \
+		postfix postfix-doc \
 		opendkim opendkim-utils \
 		ca-certificates tzdata \
 		python3 py3-pip py3-dnspython \

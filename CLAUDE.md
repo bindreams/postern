@@ -42,6 +42,18 @@ These are load-bearing. Changing any of them without understanding the chain wil
 - **E2e nginx auth rate limit diverges from production on purpose.** [portal/tests/e2e/nginx.conf](portal/tests/e2e/nginx.conf) uses `rate=600r/m, burst=20`; production [nginx/etc/nginx.conf](nginx/etc/nginx.conf) uses `rate=10r/m, burst=5`. The divergence exists because all e2e tests share a single source IP and the production rate exhausts the bucket mid-suite (GitHub issue #7). The boundary is pinned by `test_login_rate_limit_has_suite_burst_headroom` in [portal/tests/e2e/test_tunnel.py](portal/tests/e2e/test_tunnel.py); if you tighten the e2e rate, expect that test (and then the rest of the suite) to fail. If you add a new auth `location` to the e2e config, mirror the burst there too — it must stay `>= 20`.
 - **Shadowsocks build context is the repo root, not `./shadowsocks/`.** [shadowsocks/Dockerfile](shadowsocks/Dockerfile) `COPY`s from `external/v2ray-plugin/` and `external/shadowsocks-rust/`, which live outside the Dockerfile's directory. Build with `docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .` from the repo root. A `docker build ./shadowsocks/` command will fail.
 - **Portal build context is also the repo root, not `./portal/`.** [portal/Dockerfile](portal/Dockerfile) `COPY`s `LICENSE.md` from the repo root for AGPL §5(a) compliance and uses `portal/`-prefixed paths for its own sources. [compose.yaml](compose.yaml) and [portal/tests/e2e/e2e.compose.yaml](portal/tests/e2e/e2e.compose.yaml) both set `context:` accordingly. A `docker build ./portal/` command will fail.
+- **mta and provisioner build context is also the repo root.** Both [mta/Dockerfile](mta/Dockerfile) and [provisioner/Dockerfile](provisioner/Dockerfile) `COPY portal/src/postern/mta /usr/lib/python3.13/site-packages/postern_mta` so the DKIM rendering / verification logic is shared between portal CLI, mta entrypoint, and provisioner entrypoint. Compose's `build:` does **not** detect cross-service file deps — when [portal/src/postern/mta/dns.py](portal/src/postern/mta/dns.py) changes, both `docker compose build mta provisioner` must re-run.
+- **The mta and provisioner are split deliberately.** The mta holds the DKIM signing key and is exposed on public port 25. The provisioner holds the DNS provider API token and has zero inbound listeners. A Postfix RCE on port 25 cannot escalate to DNS-record hijack because the credentials live in a different container. Do **not** "consolidate for simplicity."
+- **mta is intentionally non-distroless and non-read-only.** The runtime is `dhi.io/alpine-base:3.23` (busybox + Python 3). Postfix and OpenDKIM write to many paths during normal operation (`postmap`-compiled `*.db`, `/etc/resolv.conf`, queue management). The portal's `read_only: true` pattern is dropped here; security comes from `cap_drop: [ALL]` plus a minimal `cap_add` set ([compose.yaml](compose.yaml) `mta:`).
+- **opendkim runs as UID/GID 110:110 in both mta and provisioner**, pinned in both Dockerfiles ([mta/Dockerfile](mta/Dockerfile) and [provisioner/Dockerfile](provisioner/Dockerfile) call `addgroup -g 110 -S opendkim && adduser -u 110 -S -G opendkim`). The provisioner runs as this user (compose `user: "110:110"`) so files it writes to the shared `postern-mta-data` volume are readable by mta's opendkim. Do not let Alpine package version drift change this.
+- **`mynetworks` is scoped to the `mta-submit` /29 subnet only** ([mta/etc/main.cf.tmpl](mta/etc/main.cf.tmpl); IPAM-fixed `172.30.42.0/29` in [compose.yaml](compose.yaml) `mta-submit:`), not the shared `default` bridge. Only the `portal` joins `mta-submit`. Adding any other service to `mta-submit` would let it relay through mta without authentication. If a future feature genuinely needs to submit, add SASL or use a separate network.
+- **`milter_default_action = tempfail`** ([mta/etc/main.cf.tmpl](mta/etc/main.cf.tmpl)). If opendkim is down, mail queues rather than going out unsigned. An unsigned outbound from this MTA defeats DMARC `p=reject` and is worse than delayed delivery. Don't change to `accept` "for resilience."
+- **DANE outbound requires the local Unbound resolver** in the mta container. `smtp_tls_security_level = dane` is a silent no-op without DNSSEC validation. The mta entrypoint writes `/etc/resolv.conf` to point at `127.0.0.1:53` (Unbound). Removing Unbound silently degrades outbound TLS to `may`.
+- **Postfix queue lives in the `postern-mta-queue` named volume.** Putting it on tmpfs would lose deferred mail on every container restart — including greylist-deferred OTPs that are about to retry. tmpfs for the queue is wrong even at low volume.
+- **DKIM key sharing.** `postern-mta-data` is mounted rw on mta and provisioner, ro on portal. The portal's `postern mta show-dns` reads `<selector>.txt` directly via this read-only mount. No HTTP listener.
+- **Trigger files mirror the reconciler pattern.** [portal/src/postern/mta/rotation.py](portal/src/postern/mta/rotation.py) defines two: `.rotate-dkim` (portal CLI -> provisioner) and `.reload-opendkim` (provisioner -> mta). Existence is the signal; consumer deletes after handling. Same race acceptance as `.reconcile-now` at [reconciler.py:163](portal/src/postern/reconciler.py#L163): double-trigger may collapse, which is fine because the state machine is idempotent.
+- **MTA-STS policy is served by nginx**, not by mta. The `mta-sts.<domain>` server block at [nginx/etc/conf.d/mta-sts.conf](nginx/etc/conf.d/mta-sts.conf) is load-bearing for the MTA-STS standard (RFC 8461 §3.3 mandates HTTPS with a publicly-trusted CA). Outbound MTA-STS enforcement (consuming recipient policies) is via `postfix-mta-sts-resolver` running inside mta.
+- **`postern-dns` (the libdns wrapper) lives in the provisioner only.** The DNS provider API token is in the provisioner's env (`MTA_DNS_PROVIDER` plus libdns-native env vars like `CLOUDFLARE_API_TOKEN`). The mta image does not have it and cannot publish/retire DNS records.
 
 ## Where things live
 
@@ -55,10 +67,25 @@ portal/src/postern/
     ss_config.py     # Shadowsocks server/client JSON generation
     reconciler.py    # Background loop, container CRUD, image-change detection, cleanup
     cli.py           # typer-based admin CLI (entry point: `postern`)
+    mta/             # Built-in MTA support (also COPYed into mta + provisioner images)
+        dns.py       # DNS record rendering + verification
+        dkim.py      # DKIM key file helpers (read pubkey, list selectors)
+        rotation.py  # Rotation state machine schema, persistence, triggers
+        dnssec.py    # DNSSEC AD-bit checking via external validating resolvers
     routes/login.py      # /login, /login/verify, /logout
     routes/dashboard.py  # /, /connection/{id}/config, /healthz
     models.py        # User, Connection, OtpCode, Session dataclasses
     templates/       # Jinja2 templates
+
+mta/
+    Dockerfile       # Postfix + opendkim + Unbound + postsrsd + mta-sts-resolver
+    entrypoint.py    # Renders configs, waits for state.json, verifies DNS, exec's postfix
+    etc/             # string.Template config templates
+
+provisioner/
+    Dockerfile       # libdns-wrapped Go binary + Python state-machine driver
+    entrypoint.py    # Generates initial DKIM key; runs rotation state machine if MTA_DNS_PROVIDER set
+    postern-dns/     # Go module: txt-set / txt-delete via libdns providers
 ```
 
 ## Vendored code
@@ -116,6 +143,11 @@ Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcomm
 - Don't add shell-form `RUN`, `CMD`, or `HEALTHCHECK` in the runtime stage of [portal/Dockerfile](portal/Dockerfile), and don't use `[CMD-SHELL ...]` for the portal in compose. The runtime is distroless. Use Python (`python -c '...'`) or move shell work to the build stage.
 - Don't drop `init: true` (compose) or `init=True` (`containers.run` kwarg) when adding a new service or container launch. Every container in this repo runs with tini at PID 1 — see the **PID 1 is `tini`** invariant.
 - Don't write commit subjects that don't follow Conventional Commits 1.0.0 — applies to humans, AI agents, and Renovate equally.
+- Don't put the DNS provider API token in any container other than the provisioner. The mta is exposed on public port 25; cross-container credential sharing defeats the split-container attack-surface argument.
+- Don't drop `MTA_REQUIRE_DNSSEC=true` from production deployments where it can be set. Without DNSSEC, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access — defeating most of what the rest of the security configuration buys you.
+- Don't put `/var/spool/postfix` (the Postfix queue) on tmpfs. Mail in flight is lost on container restart.
+- Don't set `milter_default_action = accept` in [mta/etc/main.cf.tmpl](mta/etc/main.cf.tmpl). If opendkim is down, mail must queue, not escape unsigned.
+- Don't change opendkim's UID/GID away from 110 in either [mta/Dockerfile](mta/Dockerfile) or [provisioner/Dockerfile](provisioner/Dockerfile) without changing both. The shared volume permissions depend on them matching.
 
 ## Useful commands
 
@@ -123,7 +155,7 @@ Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcomm
 # Build the per-connection tunnel image (compose doesn't build this one)
 docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
 
-# Build and run the full stack
+# Build and run the full stack (includes mta + provisioner via COMPOSE_PROFILES=with-mta in .env)
 docker compose up -d --build
 
 # Run the admin CLI
@@ -131,12 +163,21 @@ docker compose exec portal postern user list
 docker compose exec portal postern user add "Name" email@example.com
 docker compose exec portal postern connection add email@example.com "label"
 
+# Built-in MTA admin
+docker compose exec portal postern mta show-dns          # canonical DNS records to publish
+docker compose exec portal postern mta verify-dns        # check DNS state matches
+docker compose exec portal postern mta dnssec-status     # check AD bit on the sending domain
+docker compose exec portal postern mta rotate-dkim       # request a rotation step
+docker compose exec portal postern mta rotation-status   # show rotation state machine
+
 # Manual reconcile trigger (bypasses the 60s poll)
 docker compose exec portal postern reconcile
 
 # Tail logs
 docker compose logs -f portal
 docker compose logs -f nginx
+docker compose logs -f mta
+docker compose logs -f provisioner
 
 # Shell into the shadowsocks image (ENTRYPOINT execs ssserver -- override to get a shell)
 docker run --rm -it --init --entrypoint sh local/shadowsocks-server

@@ -203,6 +203,78 @@ Why these specific choices:
 - **Forwarding-only inbound.** Postern doesn't host an inbox. The four named addresses (postmaster, abuse, tls-rpt, the bounce local-part) virtual-alias to `MTA_ADMIN_EMAIL`; everything else is rejected at SMTP RCPT TO with no backscatter.
 - **DNSSEC at the sending domain.** Without it, your DKIM/MTA-STS records can be tampered with upstream of any consumer. With it, tampering breaks the signature chain. The default `MTA_REQUIRE_DNSSEC=auto` infers your domain's signing status at startup and enforces the AD-bit check when applicable, so this protection is on by default for any operator whose registrar supports DNSSEC.
 
+## Testing the stack
+
+### Hermetic e2e suite
+
+The `e2e_mta` suite under [portal/tests/e2e/](../portal/tests/e2e/) boots the production `mta` + `provisioner` images alongside a mailpit "recipient MTA" — no real DNS, no port-25 outbound. It verifies DKIM signing + verification, postmaster forwarding, milter tempfail behavior, and a handful of architectural invariants (opendkim UID/GID, internal-network flag, Postfix listener health). Runs on every PR. See [CONTRIBUTING.md §End-to-end tests](../CONTRIBUTING.md#end-to-end-tests) for the bring-up command.
+
+The hermetic suite is a working reference for `MTA_VERIFY_DNS=false` + `MTA_DNS_PROVIDER=none` deployments.
+
+### Real-infra test-domain setup
+
+The `e2e_mta_real` suite ([portal/tests/e2e/test_mta_real.py](../portal/tests/e2e/test_mta_real.py)) exercises the libdns wrapper and the full DNS-verification pipeline against real public DNS. It's maintainer-only: tests fail loudly if the env is missing.
+
+To run, you need a domain you control with **all** the following pre-configured (these are static — only the DKIM TXT changes during a test):
+
+- `MX  10 mail.<domain>` at the apex
+- `A  <some-ip>` for `mail.<domain>` (any reachable IP — the value only needs to satisfy `_check_a`)
+- `A  <some-ip>` for `mta-sts.<domain>`
+- `<reverse-of-A>  PTR  mail.<domain>.` (only if you set `server_ip` when calling verify; the test fixture leaves it unset)
+- `TXT  "v=spf1 mx -all"` at the apex
+- `TXT  "v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:<admin>; ruf=mailto:<admin>"` at `_dmarc.<domain>`
+- `TXT  "v=STSv1; id=<unix-ts>"` at `_mta-sts.<domain>`
+- `TXT  "v=TLSRPTv1; rua=mailto:<admin>"` at `_smtp._tls.<domain>`
+- A publicly-trusted-CA HTTPS endpoint at `https://mta-sts.<domain>/.well-known/mta-sts.txt` serving:
+  ```
+  version: STSv1
+  mode: enforce
+  mx: mail.<domain>
+  max_age: 86400
+  ```
+- DNSSEC enabled at the registrar (only if testing with `MTA_TEST_REQUIRE_DNSSEC=true`).
+
+Required env vars (each missing one produces a fail-loud message pointing back here):
+
+| Var                                | Notes                                                                                                                                                                                                                                                                            | Default                  |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `MTA_TEST_DOMAIN`                  | The fully-configured test domain.                                                                                                                                                                                                                                                | (required)               |
+| `MTA_TEST_ADMIN_EMAIL`             | An external mailbox for DMARC/TLS-RPT reports.                                                                                                                                                                                                                                   | `postmaster@example.org` |
+| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.                                                                                                                                                                               | (required)               |
+| Provider creds                     | Provider-native env: `CLOUDFLARE_API_TOKEN` for cloudflare; `AWS_REGION` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` for route53; `GANDI_API_TOKEN`; `DO_AUTH_TOKEN`; etc. (See [provisioner/postern-dns/main.go](../provisioner/postern-dns/main.go) for the full mapping.) | (required)               |
+| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Wait between `txt-set` and the public-resolver query.                                                                                                                                                                                                                            | `60`                     |
+| `MTA_TEST_REQUIRE_DNSSEC`          | Pass `require_dnssec=True` to `verify()`.                                                                                                                                                                                                                                        | `false`                  |
+| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle for `test_dnssec_status_detects_signed_domain`.                                                                                                                                                                                                         | `iana.org`               |
+
+Run:
+
+```bash
+docker build -f provisioner/Dockerfile -t local/postern-provisioner .
+cd portal
+uv run pytest -m e2e_mta_real -v --timeout=300
+```
+
+In CI: the `e2e-mta-real` job in [.github/workflows/test.yaml](../.github/workflows/test.yaml) runs on push-to-main and workflow*dispatch when the maintainer has populated the corresponding `vars.MTA_TEST*\*`repo variables and`secrets.<provider>` repo secrets.
+
+### Outbound suite (VPS-only)
+
+The `e2e_mta_outbound` suite ([portal/tests/e2e/test_mta_outbound.py](../portal/tests/e2e/test_mta_outbound.py)) does end-to-end OTP delivery over real outbound port 25 to a real recipient mailbox (polled via IMAP). Not run on GHA hosted runners (port 25 blocked); run locally on a VPS that allows outbound 25:
+
+```bash
+export MTA_TEST_DOMAIN=mta-test.example.com
+export MTA_TEST_ADMIN_EMAIL=admin@something-else.example.com
+export MTA_TEST_DNS_PROVIDER=cloudflare
+export CLOUDFLARE_API_TOKEN=...
+export MTA_TEST_RECIPIENT_EMAIL=test-mailbox@maintainer.example.com
+export MTA_TEST_RECIPIENT_IMAP_HOST=imap.maintainer.example.com
+export MTA_TEST_RECIPIENT_IMAP_USER=test-mailbox
+export MTA_TEST_RECIPIENT_IMAP_PASS=...
+export POSTERN_E2E_TLS_DIR=/etc/letsencrypt/live/${MTA_TEST_DOMAIN}
+uv run pytest -m e2e_mta_outbound -v --timeout=600
+```
+
+A follow-up issue tracks adding a self-hosted GHA runner labeled `port25-ok` for this suite.
+
 ## Limitations / planned follow-ups
 
 - **Ed25519 DKIM secondary keys** (RFC 8463). RSA-2048 is universally supported; a secondary Ed25519 key would help with newer receivers but isn't blocking.

@@ -3,6 +3,11 @@
 The split exists because pytest treats conftest.py specially -- importing from it
 across files in the same directory is fragile. Putting the utilities in a regular
 module sidesteps that.
+
+The compose primitives (``compose``, ``compose_exec``) accept ``project`` and
+``files`` kwargs so the same helpers can drive a second compose project (the MTA
+overlay; see ``_mta_helpers.py``). The defaults preserve the original
+single-project behaviour for ``test_tunnel.py``.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from pathlib import Path
 TESTS_E2E_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = TESTS_E2E_DIR.parents[2]
 COMPOSE_FILE = TESTS_E2E_DIR / "e2e.compose.yaml"
+COMPOSE_FILES: tuple[Path, ...] = (COMPOSE_FILE, )
 PROJECT = "postern-e2e"
 
 PORTAL_BASE_URL = "https://postern.test:8443"
@@ -23,16 +29,31 @@ MAILPIT_BASE_URL = "http://localhost:8025"
 
 
 # Compose primitives ===================================================================================================
-def compose(*args: str) -> list[str]:
-    return ["docker", "compose", "-p", PROJECT, "-f", str(COMPOSE_FILE), *args]
+def compose(
+    *args: str,
+    project: str = PROJECT,
+    files: tuple[Path, ...] = COMPOSE_FILES,
+) -> list[str]:
+    file_args: list[str] = []
+    for f in files:
+        file_args.extend(("-f", str(f)))
+    return ["docker", "compose", "-p", project, *file_args, *args]
 
 
 def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, capture_output=True, text=True, **kwargs)
 
 
-def compose_exec(*cmd: str) -> subprocess.CompletedProcess:
-    return run(compose("exec", "-T", "portal", *cmd))
+def compose_exec(
+    *cmd: str,
+    service: str = "portal",
+    project: str = PROJECT,
+    files: tuple[Path, ...] = COMPOSE_FILES,
+    stdin: str | None = None,
+) -> subprocess.CompletedProcess:
+    if stdin is not None:
+        return run(compose("exec", "-T", service, *cmd, project=project, files=files), input=stdin)
+    return run(compose("exec", "-T", service, *cmd, project=project, files=files))
 
 
 def postern_cli(*args: str) -> subprocess.CompletedProcess:

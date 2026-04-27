@@ -60,6 +60,8 @@ timeout = 30
 markers = [
     "e2e: end-to-end tests that spin up the full compose stack (slow, requires docker; opt in with -m e2e)",
     "e2e_mta: end-to-end tests for the built-in MTA stack (slow, requires docker; opt in with -m e2e_mta)",
+    "e2e_mta_real: real-infra MTA tests; requires MTA_TEST_DOMAIN + libdns provider creds (fail loudly if missing). Opt out with `-m 'not e2e_mta_real'`",
+    "e2e_mta_outbound: real port-25 outbound delivery tests; requires receivable test mailbox + unblocked outbound 25. Opt out with `-m 'not e2e_mta_outbound'`",
 ]
 
 [tool.ty.rules]

@@ -3,12 +3,13 @@
 FROM dhi.io/golang:1-alpine3.23-dev AS go-build
 WORKDIR /src/postern-dns
 COPY provisioner/postern-dns/go.mod ./
-# go.sum is generated on first build below (versions are pinned in go.mod;
-# Renovate tracks upgrades). The Go toolchain verifies downloads against
-# sum.golang.org regardless of whether a local go.sum is present.
-RUN go mod download
 COPY provisioner/postern-dns/main.go ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
+# `-mod=mod` lets `go build` resolve and add go.sum entries on demand. The
+# Go toolchain still verifies every downloaded module against sum.golang.org;
+# the local go.sum just gets populated as a side effect of the build. The
+# repo doesn't ship a go.sum because the deps are pinned in go.mod and
+# Renovate tracks upgrades there.
+RUN CGO_ENABLED=0 go build -mod=mod -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 
 FROM dhi.io/alpine-base:3.23-dev AS build
 # All privileged setup happens in the -dev stage (the runtime stage at

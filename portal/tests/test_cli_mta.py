@@ -18,6 +18,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SECRET_KEY", "test-secret-not-the-placeholder")
     monkeypatch.setenv("DOMAIN", "postern.test")
     monkeypatch.setenv("MTA_ADMIN_EMAIL", "admin@elsewhere.example")
+    # Explicit `false` keeps the existing tests deterministic: no auto-detect probe runs,
+    # no `dnssec.check` is invoked unless a test mocks it.
     monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "false")
     keydir = tmp_path / "opendkim"
     keydir.mkdir()
@@ -58,10 +60,98 @@ def test_show_dns_includes_dkim_pubkey_when_keys_present(env: Path, runner: CliR
 
 
 # verify-dns ===========================================================================================================
+def _seed_dkim_state(env: Path, *, selector: str = "postern-2026-04") -> None:
+    """Seed enough rotation state and DKIM key files to get past the 'no keys' guard."""
+    (env / f"{selector}.txt").write_text(f'{selector}._domainkey IN TXT ( "v=DKIM1; k=rsa; " "p=ABC123XYZ" )')
+    (env / f"{selector}.private").write_text("dummy")
+    rotation.write_state(rotation.RotationState(state="STABLE", active_selectors=[selector]), keydir=env)
+
+
 def test_verify_dns_fails_when_no_keys_yet(env: Path, runner: CliRunner):
     result = runner.invoke(app, ["mta", "verify-dns"])
     assert result.exit_code == 1
     assert "no DKIM keys yet" in result.output or "no DKIM keys yet" in result.stderr
+
+
+def test_verify_dns_auto_signed_passes_with_enforce_outcome(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "auto")
+    _seed_dkim_state(env)
+    with patch("postern.mta.dnssec.check", return_value=[]) as mock_check, \
+         patch("postern.mta.dns.verify", return_value=[]) as mock_verify:
+        result = runner.invoke(app, ["mta", "verify-dns"])
+    assert result.exit_code == 0, result.output
+    mock_check.assert_called_once_with("postern.test")
+    # Consensus is the truth source; mta_dns.verify must NOT redo the AD-bit check.
+    assert mock_verify.call_args.kwargs["require_dnssec"] is False
+    assert "auto-detect resolved to enforce" in result.output
+
+
+def test_verify_dns_auto_unsigned_passes_with_skip_outcome(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "auto")
+    _seed_dkim_state(env)
+    failures = ["DNSSEC postern.test: insufficient consensus."]
+    with patch("postern.mta.dnssec.check", return_value=failures), \
+         patch("postern.mta.dns.verify", return_value=[]) as mock_verify:
+        result = runner.invoke(app, ["mta", "verify-dns"])
+    assert result.exit_code == 0, result.output
+    assert mock_verify.call_args.kwargs["require_dnssec"] is False
+    assert "auto-detect resolved to skip" in result.output
+
+
+def test_verify_dns_explicit_true_consensus_passes(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "true")
+    _seed_dkim_state(env)
+    with patch("postern.mta.dnssec.check", return_value=[]), \
+         patch("postern.mta.dns.verify", return_value=[]) as mock_verify:
+        result = runner.invoke(app, ["mta", "verify-dns"])
+    assert result.exit_code == 0, result.output
+    assert mock_verify.call_args.kwargs["require_dnssec"] is False
+    # The auto-detect outcome line is for "auto" only.
+    assert "auto-detect resolved" not in result.output
+
+
+def test_verify_dns_explicit_true_consensus_fails(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "true")
+    _seed_dkim_state(env)
+    failures = ["DNSSEC postern.test: insufficient consensus (AD bit set on 0 of 3)."]
+    with patch("postern.mta.dnssec.check", return_value=failures), \
+         patch("postern.mta.dns.verify", return_value=[]):
+        result = runner.invoke(app, ["mta", "verify-dns"])
+    assert result.exit_code == 1
+    combined = result.output + (result.stderr or "")
+    assert "insufficient consensus" in combined
+
+
+def test_verify_dns_false_skips_dnssec_check(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "false")
+    _seed_dkim_state(env)
+    with patch("postern.mta.dnssec.check") as mock_check, \
+         patch("postern.mta.dns.verify", return_value=[]) as mock_verify:
+        result = runner.invoke(app, ["mta", "verify-dns"])
+    assert result.exit_code == 0, result.output
+    mock_check.assert_not_called()
+    assert mock_verify.call_args.kwargs["require_dnssec"] is False
+    assert "auto-detect resolved" not in result.output
 
 
 # rotate-dkim ==========================================================================================================
@@ -102,10 +192,12 @@ def test_rotation_status_renders_active_selectors(env: Path, runner: CliRunner):
 
 # dnssec-status ========================================================================================================
 def test_dnssec_status_passes_when_check_returns_no_failures(env: Path, runner: CliRunner):
+    # Default fixture sets MTA_REQUIRE_DNSSEC=false, so the parity line is suppressed.
     with patch("postern.mta.dnssec.check", return_value=[]):
         result = runner.invoke(app, ["mta", "dnssec-status"])
     assert result.exit_code == 0, result.output
     assert "signed and validating" in result.output
+    assert "MTA_REQUIRE_DNSSEC=auto" not in result.output
 
 
 def test_dnssec_status_exits_1_on_failures(env: Path, runner: CliRunner):
@@ -114,3 +206,42 @@ def test_dnssec_status_exits_1_on_failures(env: Path, runner: CliRunner):
     assert result.exit_code == 1
     combined = result.output + (result.stderr or "")
     assert "AD bit not set" in combined
+
+
+def test_dnssec_status_auto_signed_includes_parity_line(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "auto")
+    with patch("postern.mta.dnssec.check", return_value=[]):
+        result = runner.invoke(app, ["mta", "dnssec-status"])
+    assert result.exit_code == 0, result.output
+    assert "signed and validating" in result.output
+    assert "MTA_REQUIRE_DNSSEC=auto, this would be enforced at startup" in result.output
+
+
+def test_dnssec_status_auto_unsigned_includes_parity_line(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "auto")
+    with patch("postern.mta.dnssec.check", return_value=["DNSSEC postern.test: AD bit not set"]):
+        result = runner.invoke(app, ["mta", "dnssec-status"])
+    # Still exits 1 on unsigned (mirrors the existing "fail loudly" behavior).
+    assert result.exit_code == 1
+    combined = result.output + (result.stderr or "")
+    assert "MTA_REQUIRE_DNSSEC=auto, this would be skipped at startup" in combined
+
+
+def test_dnssec_status_explicit_true_does_not_print_parity_line(
+    env: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("MTA_REQUIRE_DNSSEC", "true")
+    with patch("postern.mta.dnssec.check", return_value=[]):
+        result = runner.invoke(app, ["mta", "dnssec-status"])
+    assert result.exit_code == 0, result.output
+    assert "MTA_REQUIRE_DNSSEC=auto" not in result.output

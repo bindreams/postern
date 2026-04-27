@@ -16,8 +16,10 @@ from postern.ss_config import generate_password
 app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
 connection_app = typer.Typer(name="connection", help="Manage connections")
+mta_app = typer.Typer(name="mta", help="Manage the built-in MTA")
 app.add_typer(user_app)
 app.add_typer(connection_app)
+app.add_typer(mta_app)
 
 
 def _settings() -> Settings:
@@ -218,6 +220,108 @@ def reconcile() -> None:
     """
     trigger = _trigger_reconcile(_settings())
     typer.echo(f"Reconcile triggered: {trigger}")
+
+
+# MTA commands =========================================================================================================
+@mta_app.command("show-dns")
+def mta_show_dns() -> None:
+    """Print the DNS records the deployer must publish for the built-in MTA."""
+    from postern.mta import dkim as mta_dkim
+    from postern.mta import dns as mta_dns
+    from postern.mta import rotation
+    settings = _settings()
+
+    state = rotation.read_state()
+    pubkeys: dict[str, str] = {}
+    for selector in state.active_selectors:
+        try:
+            pubkeys[selector] = mta_dkim.read_local_pubkey(selector)
+        except mta_dkim.DkimKeyNotFoundError as e:
+            typer.echo(f"warning: {e}", err=True)
+
+    records = mta_dns.expected_records(
+        settings.domain,
+        pubkeys,
+        admin_email=settings.mta_admin_email,
+    )
+    for label, lines in records.items():
+        for line in lines:
+            typer.echo(f"{label}\t{line}")
+
+
+@mta_app.command("verify-dns")
+def mta_verify_dns_cmd() -> None:
+    """Resolve and check every required DNS record. Exits 1 if any fail."""
+    from postern.mta import dkim as mta_dkim
+    from postern.mta import dns as mta_dns
+    from postern.mta import rotation
+    settings = _settings()
+
+    state = rotation.read_state()
+    pubkeys: dict[str, str] = {}
+    for selector in state.active_selectors:
+        try:
+            pubkeys[selector] = mta_dkim.read_local_pubkey(selector)
+        except mta_dkim.DkimKeyNotFoundError as e:
+            typer.echo(f"FAIL: {e}", err=True)
+            raise typer.Exit(1)
+
+    if not pubkeys:
+        typer.echo(
+            "FAIL: no DKIM keys yet -- has the provisioner generated the first keypair? "
+            "Bring up the stack with `docker compose up -d` first.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    failures = mta_dns.verify(
+        settings.domain,
+        pubkeys,
+        admin_email=settings.mta_admin_email,
+        require_dnssec=settings.mta_require_dnssec,
+    )
+    if failures:
+        for f in failures:
+            typer.echo(f"FAIL: {f}", err=True)
+        raise typer.Exit(1)
+    typer.echo("All DNS records verified.")
+
+
+@mta_app.command("rotate-dkim")
+def mta_rotate_dkim() -> None:
+    """Trigger a manual DKIM rotation step. Writes a trigger file the provisioner watches."""
+    from postern.mta import rotation
+    path = rotation.trigger_rotation()
+    typer.echo(f"Rotation requested: {path}. The provisioner advances the state machine on its next poll.")
+
+
+@mta_app.command("rotation-status")
+def mta_rotation_status() -> None:
+    """Show current DKIM rotation state."""
+    from postern.mta import rotation
+    state = rotation.read_state()
+    typer.echo(f"State: {state.state}")
+    typer.echo(f"Schema version: {state.schema_version}")
+    typer.echo(f"Active selectors: {', '.join(state.active_selectors) or '(none)'}")
+    if state.retiring_selector:
+        typer.echo(f"Retiring selector: {state.retiring_selector}")
+    typer.echo(f"Last rotation: {state.last_rotation_iso or '(never)'}")
+    typer.echo(f"Next rotation due: {state.next_rotation_iso or '(unscheduled)'}")
+    if state.consecutive_failures:
+        typer.echo(f"Consecutive failures: {state.consecutive_failures}")
+
+
+@mta_app.command("dnssec-status")
+def mta_dnssec_status() -> None:
+    """Check whether the sending domain is DNSSEC-signed (uses external validating resolvers)."""
+    from postern.mta import dnssec
+    settings = _settings()
+    failures = dnssec.check(settings.domain)
+    if failures:
+        for f in failures:
+            typer.echo(f"FAIL: {f}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"DNSSEC: {settings.domain} is signed and validating.")
 
 
 if __name__ == "__main__":

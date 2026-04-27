@@ -23,6 +23,12 @@ async def send_otp_email(to: str, code: str, settings: Settings) -> bool:
         f"If you did not request this code, ignore this email."
     )
 
+    # Built-in mta presents a cert for `mail.<domain>` but the portal connects via
+    # docker-DNS hostname `mta`. The `mta-submit` network is internal-only with
+    # mynetworks scoping, so skipping cert verification on this hop is safe.
+    # External relays keep strict validation.
+    validate_certs = settings.smtp_host != "mta"
+
     try:
         await aiosmtplib.send(
             msg,
@@ -32,6 +38,7 @@ async def send_otp_email(to: str, code: str, settings: Settings) -> bool:
             password=settings.smtp_password or None,
             use_tls=settings.smtp_port == 465,
             start_tls=settings.smtp_port == 587,
+            validate_certs=validate_certs,
         )
         return True
     except Exception:

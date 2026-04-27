@@ -248,6 +248,24 @@ wheels = [
 ]
 
 [[package]]
+name = "dkimpy"
+version = "1.1.8"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "dnspython" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f0/6f/84e91828186bbfcedd7f9385ef5e0d369632444195c20e08951b7ffe0481/dkimpy-1.1.8.tar.gz", hash = "sha256:b5f60fb47bbf5d8d762f134bcea0c388eba6b498342a682a21f1686545094b77", size = 66979, upload-time = "2024-07-04T22:16:38.321Z" }
+
+[[package]]
+name = "dnspython"
+version = "2.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/8b/57666417c0f90f08bcafa776861060426765fdb422eb10212086fb811d26/dnspython-2.8.0.tar.gz", hash = "sha256:181d3c6996452cb1189c4046c61599b84a5a86e099562ffde77d26984ff26d0f", size = 368251, upload-time = "2025-09-07T18:58:00.022Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/5a/18ad964b0086c6e62e2e7500f7edc89e3faa45033c71c1893d34eed2b2de/dnspython-2.8.0-py3-none-any.whl", hash = "sha256:01d9bbc4a2d76bf0db7c1f729812ded6d912bd318d3b1cf81d30c0f845dbf3af", size = 331094, upload-time = "2025-09-07T18:57:58.071Z" },
+]
+
+[[package]]
 name = "docker"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -473,6 +491,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiosmtplib" },
     { name = "aiosqlite" },
+    { name = "dnspython" },
     { name = "docker" },
     { name = "fastapi" },
     { name = "jinja2" },
@@ -496,6 +515,7 @@ dev = [
 e2e = [
     { name = "asgi-lifespan" },
     { name = "cryptography" },
+    { name = "dkimpy" },
     { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -508,6 +528,7 @@ e2e = [
 requires-dist = [
     { name = "aiosmtplib", specifier = ">=3.0" },
     { name = "aiosqlite", specifier = ">=0.21" },
+    { name = "dnspython", specifier = ">=2.6" },
     { name = "docker", specifier = ">=7.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "jinja2", specifier = ">=3.1" },
@@ -531,6 +552,7 @@ dev = [
 e2e = [
     { name = "asgi-lifespan", specifier = ">=2.1.0" },
     { name = "cryptography", specifier = ">=42" },
+    { name = "dkimpy", specifier = ">=1.1" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.25" },

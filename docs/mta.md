@@ -64,7 +64,7 @@ certbot certonly --standalone --cert-name mta-sts.<your-domain>   -d mta-sts.<yo
 
 Postern bind-mounts `/etc/letsencrypt` into the nginx and mta containers; whichever layout you pick must place the certs at the standard paths (`/etc/letsencrypt/live/<host>/fullchain.pem` etc).
 
-### 4. DNSSEC on your sending domain (strongly recommended)
+### 4. DNSSEC on your sending domain (strongly recommended; auto-detected)
 
 Without DNSSEC, MTA-STS and DKIM records can be silently tampered with by anyone with upstream-DNS access. For a privacy-motivated VPN portal this is the single most impactful security control after eliminating the third-party relay.
 
@@ -80,7 +80,11 @@ dig +dnssec DS <your-domain>
 # expect: a signed RRset, AD flag set
 ```
 
-In `.env` set `MTA_REQUIRE_DNSSEC=true` so the mta refuses to start if the AD bit isn't set on lookups.
+`MTA_REQUIRE_DNSSEC` is a tri-state with default `auto`:
+
+- `auto` (default) — at startup, the mta probes whether your sending domain is DNSSEC-signed. If yes, the AD-bit check is enforced (mta refuses to start if the AD bit is missing). If no, the startup check is skipped, but Unbound continues to validate at runtime for DANE on outbound TLS. Most operators want this.
+- `true` — always require. The mta refuses to start when the AD bit is missing, even on unsigned domains. Use this for fail-closed production where an unsigned-domain misconfiguration must be caught loudly.
+- `false` — skip the startup check entirely. Use only for dev / CI.
 
 ### 5. An external mailbox for technical reports
 
@@ -197,7 +201,7 @@ Why these specific choices:
 - **MTA-STS enforce mode.** Recipient MTA-STS policies are honored via postfix-mta-sts-resolver. Outbound TLS is then either DANE-validated, MTA-STS-enforced, or opportunistic — strictest available.
 - **`milter_default_action = tempfail`.** If opendkim is down, mail queues. Sending unsigned mail from an MTA whose entire purpose is auth-aligned outbound would defeat DMARC `p=reject`.
 - **Forwarding-only inbound.** Postern doesn't host an inbox. The four named addresses (postmaster, abuse, tls-rpt, the bounce local-part) virtual-alias to `MTA_ADMIN_EMAIL`; everything else is rejected at SMTP RCPT TO with no backscatter.
-- **DNSSEC at the sending domain.** Without it, your DKIM/MTA-STS records can be tampered with upstream of any consumer. With it, tampering breaks the signature chain.
+- **DNSSEC at the sending domain.** Without it, your DKIM/MTA-STS records can be tampered with upstream of any consumer. With it, tampering breaks the signature chain. The default `MTA_REQUIRE_DNSSEC=auto` infers your domain's signing status at startup and enforces the AD-bit check when applicable, so this protection is on by default for any operator whose registrar supports DNSSEC.
 
 ## Limitations / planned follow-ups
 

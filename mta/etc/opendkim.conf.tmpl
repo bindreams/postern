@@ -1,0 +1,15 @@
+Syslog                  yes
+LogWhy                  yes
+UMask                   002
+Mode                    sv
+Socket                  inet:8891@127.0.0.1
+PidFile                 /var/run/opendkim/opendkim.pid
+UserID                  opendkim:opendkim
+SignatureAlgorithm      rsa-sha256
+Canonicalization        relaxed/simple
+RequireSafeKeys         no
+KeyTable                refile:/etc/opendkim/KeyTable
+SigningTable            refile:/etc/opendkim/SigningTable
+ExternalIgnoreList      refile:/etc/opendkim/TrustedHosts
+InternalHosts           refile:/etc/opendkim/TrustedHosts
+Domain                  ${DOMAIN}

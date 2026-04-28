@@ -17,7 +17,7 @@ jobs:
           enable-cache: true
       - run: uv sync --all-extras
         working-directory: portal
-      - run: uv run pytest -m "not e2e and not e2e_mta" --timeout=30
+      - run: uv run pytest -m "not e2e and not e2e_mta and not e2e_mta_real and not e2e_mta_outbound" --timeout=30
         working-directory: portal
 
   e2e:
@@ -83,3 +83,124 @@ jobs:
         run: |
           docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml logs --no-color
           docker ps -a --filter label=postern.managed=true
+
+  e2e-mta:
+    name: End-to-end MTA tests (hermetic)
+    runs-on: ubuntu-latest
+    env:
+      POSTERN_E2E_TLS_DIR: /tmp/postern-e2e-mta-tls-placeholder
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add postern.test to /etc/hosts (for the host-side pytest client)
+        run: echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
+
+      - name: Log in to Docker Hardened Images registry
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Bake e2e + e2e-mta together so the mta and provisioner images are built
+      # alongside the existing portal/nginx/ssclient. Shared cache scope `e2e`
+      # so unchanged portal layers reuse the artifacts produced by the parallel
+      # e2e job (buildx's content-addressable cache deduplicates across scopes,
+      # but staying in one scope is simpler).
+      - name: Build e2e + e2e-mta compose images
+        uses: docker/bake-action@v5
+        with:
+          workdir: portal/tests/e2e
+          files: |
+            e2e.compose.yaml
+            e2e-mta.compose.yaml
+          load: true
+          set: |
+            *.cache-from=type=gha,scope=e2e
+            *.cache-to=type=gha,mode=max,scope=e2e
+
+      - run: uv sync --group e2e
+        working-directory: portal
+
+      - run: uv run pytest -m e2e_mta -v --timeout=180
+        working-directory: portal
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -p postern-e2e-mta \
+            -f portal/tests/e2e/e2e.compose.yaml \
+            -f portal/tests/e2e/e2e-mta.compose.yaml \
+            logs --no-color
+          docker compose -p postern-e2e-mta \
+            -f portal/tests/e2e/e2e.compose.yaml \
+            -f portal/tests/e2e/e2e-mta.compose.yaml \
+            ps -a
+
+  e2e-mta-real:
+    name: End-to-end MTA tests (real DNS provider + libdns)
+    runs-on: ubuntu-latest
+    # Serialize across all PRs and main pushes: every run uses the same fixed
+    # `postern-e2e-test` DKIM selector on the maintainer's test zone, so two
+    # concurrent runs would race on publish/cleanup. cancel-in-progress=false
+    # makes new runs wait rather than killing the in-flight one mid-cleanup.
+    concurrency:
+      group: e2e-mta-real
+      cancel-in-progress: false
+    env:
+      MTA_TEST_DOMAIN: ${{ vars.MTA_TEST_DOMAIN }}
+      MTA_TEST_DNS_PROVIDER: ${{ vars.MTA_TEST_DNS_PROVIDER }}
+      MTA_TEST_DNS_PROPAGATION_SECONDS: ${{ vars.MTA_TEST_DNS_PROPAGATION_SECONDS || '60' }}
+      MTA_TEST_DNSSEC_DOMAIN: ${{ vars.MTA_TEST_DNSSEC_DOMAIN || 'iana.org' }}
+      # Provider-specific creds. Only the one matching MTA_TEST_DNS_PROVIDER
+      # is consumed at runtime; the rest are no-ops if unset.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      GANDI_API_TOKEN: ${{ secrets.GANDI_API_TOKEN }}
+      DO_AUTH_TOKEN: ${{ secrets.DO_AUTH_TOKEN }}
+      OVH_ENDPOINT: ${{ secrets.OVH_ENDPOINT }}
+      OVH_APPLICATION_KEY: ${{ secrets.OVH_APPLICATION_KEY }}
+      OVH_APPLICATION_SECRET: ${{ secrets.OVH_APPLICATION_SECRET }}
+      OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+      HETZNER_API_TOKEN: ${{ secrets.HETZNER_API_TOKEN }}
+      LINODE_TOKEN: ${{ secrets.LINODE_TOKEN }}
+      NAMECHEAP_API_KEY: ${{ secrets.NAMECHEAP_API_KEY }}
+      NAMECHEAP_API_USER: ${{ secrets.NAMECHEAP_API_USER }}
+      NAMECHEAP_CLIENT_IP: ${{ secrets.NAMECHEAP_CLIENT_IP }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hardened Images registry
+        uses: docker/login-action@v3
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Build the provisioner image (real-infra tests use `docker run --rm` against it)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: provisioner/Dockerfile
+          tags: local/postern-provisioner
+          load: true
+          cache-from: type=gha,scope=e2e
+          cache-to: type=gha,mode=max,scope=e2e
+
+      - run: uv sync --group e2e
+        working-directory: portal
+
+      - run: uv run pytest -m e2e_mta_real -v --timeout=300
+        working-directory: portal

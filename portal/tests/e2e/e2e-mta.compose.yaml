@@ -1,0 +1,170 @@
+## E2E test overlay for the built-in MTA stack.
+##
+## Layered on top of e2e.compose.yaml under a separate compose project name
+## (postern-e2e-mta) so the two e2e stacks don't collide on volume/network IDs.
+## All named resources are renamed with -mta suffixes; the project's published
+## host ports (127.0.0.1:8443 for nginx, 127.0.0.1:8025 for mailpit) are
+## inherited from the base, so a developer must `compose down` the postern-e2e
+## project before running this one.
+##
+## Manual bring-up:
+##   docker compose -p postern-e2e-mta \
+##     -f portal/tests/e2e/e2e.compose.yaml \
+##     -f portal/tests/e2e/e2e-mta.compose.yaml \
+##     build
+##   POSTERN_E2E_TLS_DIR=$(uv run python portal/tests/e2e/_certs.py /tmp/postern-e2e-mta-tls) \
+##     docker compose -p postern-e2e-mta -f portal/tests/e2e/e2e.compose.yaml -f portal/tests/e2e/e2e-mta.compose.yaml up -d --wait
+##
+## Why an IP in MTA_E2E_TRANSPORT_OVERRIDE rather than the hostname `mailpit`:
+## the mta entrypoint rewrites /etc/resolv.conf to point at local Unbound on
+## 127.0.0.1, which has no upstream DNS in CI. The bracketed IP `smtp:[<ip>]`
+## skips MX and A lookups in Postfix, so Unbound never gets queried. mailpit
+## is pinned to a static IP via IPAM below.
+
+services:
+  mta:
+    build:
+      context: ../../..
+      dockerfile: mta/Dockerfile
+    image: local/postern-mta
+    container_name: postern-e2e-mta-mta
+    hostname: mail.postern.test
+    environment:
+      DOMAIN: postern.test
+      MTA_VERIFY_DNS: "false"
+      MTA_REQUIRE_DNSSEC: "false"
+      MTA_DNS_PROVIDER: "none"
+      MTA_ADMIN_EMAIL: admin@elsewhere.test
+      MTA_SUBMIT_CIDR: 172.30.42.0/29
+      SMTP_FROM: noreply@postern.test
+      # Two-space-separated postfix transport table. The trailing newline matters:
+      # `postmap` builds the lmdb file from this. Both domains route to the
+      # IPAM-pinned mailpit IP so Postfix never does a DNS lookup. See file header.
+      MTA_E2E_TRANSPORT_OVERRIDE: |
+        postern.test  smtp:[172.30.99.10]:1025
+        elsewhere.test  smtp:[172.30.99.10]:1025
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+      - postern-mta-queue:/var/spool/postfix
+      # The wildcard *.postern.test SAN in _certs.py covers mail.postern.test,
+      # so the same TLS dir works at both letsencrypt paths.
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set by the e2e_certs fixture (see conftest.py) or exported manually}
+        target: /etc/letsencrypt/live/postern.test
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set by the e2e_certs fixture (see conftest.py) or exported manually}
+        target: /etc/letsencrypt/live/mail.postern.test
+      # Override the production unbound template with one that knows postern.test
+      # and elsewhere.test authoritatively. Required because the entrypoint
+      # rewrites /etc/resolv.conf -> 127.0.0.1 (Unbound), and CI runners can't
+      # reach root nameservers. See the file header in unbound.e2e-mta.conf.tmpl.
+      - type: bind
+        read_only: true
+        source: ./unbound.e2e-mta.conf.tmpl
+        target: /usr/local/share/mta-templates/unbound.conf.tmpl
+    # Add `mta-submit` as a unique alias on the mta-submit network only, so
+    # portal -> `mta-submit:587` deterministically resolves to the mta-submit
+    # IP. With both networks shared, plain `mta` resolves to BOTH IPs and the
+    # client may pick the default-network one -- which fails Postfix's
+    # mynetworks check (mynetworks = 172.30.42.0/29 only).
+    networks:
+      default:
+      mta-submit:
+        aliases: [mta-submit]
+    depends_on:
+      provisioner:
+        condition: service_completed_successfully
+    healthcheck:
+      # Probe both inbound (25) and submission (587) listeners. Provisioner must
+      # finish its initial keypair before the entrypoint exec's postfix; that's
+      # gated by the depends_on above, so retries=30 (90s) is generous headroom.
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - |
+          import socket
+          for p in (25, 587):
+              s = socket.create_connection(("127.0.0.1", p), 3)
+              s.close()
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    init: true
+
+  provisioner:
+    build:
+      context: ../../..
+      dockerfile: provisioner/Dockerfile
+    image: local/postern-provisioner
+    container_name: postern-e2e-mta-provisioner
+    user: "110:110"
+    environment:
+      DOMAIN: postern.test
+      MTA_DNS_PROVIDER: "none"
+      MTA_DKIM_SELECTOR_PREFIX: postern
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+    networks: [default]
+    init: true
+    restart: "no"
+
+  portal:
+    environment:
+      # Use the mta-submit-only alias so the connection comes from 172.30.42.x
+      # (in mynetworks). See the `aliases` block on the mta service above.
+      SMTP_HOST: mta-submit
+      SMTP_PORT: "587"
+      SMTP_FROM: noreply@postern.test
+    # Mirror production: read-only mount of the DKIM keydir so the test fixtures
+    # can read state.json and <selector>.txt via `compose exec portal python -c ...`
+    # (the portal is distroless, but `python` is available).
+    volumes:
+      - postern-mta-data:/var/lib/opendkim:ro
+    networks: [default, mta-submit]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+      mta:
+        condition: service_healthy
+
+  mailpit:
+    networks:
+      default:
+        ipv4_address: 172.30.99.10
+
+networks:
+  default:
+    name: postern-e2e-mta-default
+    ipam:
+      config:
+        - subnet: 172.30.99.0/24
+  e2e-tunnel-entry:
+    name: e2e-tunnel-entry-mta
+  e2e-shadowsocks:
+    name: e2e-shadowsocks-mta
+  mta-submit:
+    name: mta-submit-mta-e2e
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.42.0/29
+
+volumes:
+  postern-e2e-data:
+    name: postern-e2e-mta-portal-data
+  postern-mta-data:
+    name: postern-e2e-mta-dkim-data
+  postern-mta-queue:
+    name: postern-e2e-mta-postfix-queue

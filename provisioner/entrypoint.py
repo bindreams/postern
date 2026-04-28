@@ -381,15 +381,14 @@ def main() -> NoReturn:
     dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
     cert_renewal = _bool_env("CERT_RENEWAL", False)
 
-    # DKIM init runs whenever a DKIM keydir exists (i.e. when MTA is configured)
-    # OR when DNS_PROVIDER is set non-none. Cert-only deployments without MTA
-    # should NOT generate a DKIM key they'll never use.
-    mta_active = (KEYDIR / "state.json").exists() or dns_provider != "none"
-    if mta_active and dns_provider != "none":
-        state = ensure_initial_key(domain, selector_prefix)
-        logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
+    # DKIM init is unconditional (matches the pre-cert-renewal behaviour).
+    # The mta container blocks startup waiting for state.json regardless of
+    # DNS_PROVIDER, so we always emit a key. Cost is a few KB on the
+    # postern-mta-data volume even in cert-only deployments without mta.
+    state = ensure_initial_key(domain, selector_prefix)
+    logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
 
-    dkim_enabled = dns_provider != "none" and mta_active
+    dkim_enabled = dns_provider != "none"
 
     if not dkim_enabled and not cert_renewal:
         logger.info("DNS_PROVIDER=none and CERT_RENEWAL=false -- nothing to do, exiting")

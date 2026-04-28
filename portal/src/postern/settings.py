@@ -1,6 +1,6 @@
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -39,7 +39,16 @@ class Settings(BaseSettings):
     mta_dkim_selector_prefix: str = "postern"
     mta_admin_email: str = ""
     mta_dkim_rotation_days: int = 180
-    mta_dns_provider: str = "none"
+
+    # DNS provider (shared by DKIM rotation and cert renewal) ==========================================================
+    dns_provider: str = "none"
+
+    # Cert renewal =====================================================================================================
+    cert_renewal: bool = False
+    cert_acme_email: str = ""
+    cert_acme_directory: str = "https://acme-v02.api.letsencrypt.org/directory"
+    cert_renewal_days_before_expiry: int = 30
+    cert_force_reissue: bool = False
 
     @field_validator("secret_key")
     @classmethod
@@ -57,3 +66,16 @@ class Settings(BaseSettings):
         # Imported lazily to keep module-load cheap and avoid any chance of a cycle.
         from postern.mta.dnssec import parse_setting
         return parse_setting(v)
+
+    @model_validator(mode="after")
+    def _check_cert_settings(self) -> Self:
+        if self.cert_renewal:
+            if self.dns_provider == "none":
+                raise ValueError("CERT_RENEWAL=true requires DNS_PROVIDER to be set")
+            if not self.cert_acme_email:
+                raise ValueError("CERT_RENEWAL=true requires CERT_ACME_EMAIL")
+            if "@example." in self.cert_acme_email:
+                raise ValueError("CERT_ACME_EMAIL cannot be an example.com / example.org address")
+        if self.cert_renewal_days_before_expiry < 1:
+            raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
+        return self

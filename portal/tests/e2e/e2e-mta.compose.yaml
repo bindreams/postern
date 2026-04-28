@@ -33,7 +33,7 @@ services:
       DOMAIN: postern.test
       MTA_VERIFY_DNS: "false"
       MTA_REQUIRE_DNSSEC: "false"
-      MTA_DNS_PROVIDER: "none"
+      DNS_PROVIDER: "none"
       MTA_ADMIN_EMAIL: admin@elsewhere.test
       MTA_SUBMIT_CIDR: 172.30.42.0/29
       SMTP_FROM: noreply@postern.test
@@ -106,7 +106,7 @@ services:
     user: "110:110"
     environment:
       DOMAIN: postern.test
-      MTA_DNS_PROVIDER: "none"
+      DNS_PROVIDER: "none"
       MTA_DKIM_SELECTOR_PREFIX: postern
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]

@@ -82,7 +82,7 @@ def _generate_test_pubkey_b64() -> str:
 def _provider_env_dict(env: dict[str, str]) -> list[str]:
     """Render `-e KEY=VAL` args for `docker run` based on the resolved env."""
     pass_through = (
-        "MTA_DNS_PROVIDER",
+        "DNS_PROVIDER",
         "CLOUDFLARE_API_TOKEN",
         "AWS_REGION",
         "AWS_ACCESS_KEY_ID",
@@ -104,9 +104,9 @@ def _provider_env_dict(env: dict[str, str]) -> list[str]:
         v = env.get(k) if k in env else os.environ.get(k, "").strip()
         if v:
             args.extend(("-e", f"{k}={v}"))
-    # MTA_DNS_PROVIDER comes from the test fixture as MTA_TEST_DNS_PROVIDER;
-    # postern-dns reads MTA_DNS_PROVIDER. Bridge the name here.
-    args.extend(("-e", f"MTA_DNS_PROVIDER={env['MTA_TEST_DNS_PROVIDER']}"))
+    # DNS_PROVIDER comes from the test fixture as MTA_TEST_DNS_PROVIDER;
+    # postern-dns reads DNS_PROVIDER. Bridge the name here.
+    args.extend(("-e", f"DNS_PROVIDER={env['MTA_TEST_DNS_PROVIDER']}"))
     return args
 
 
@@ -119,7 +119,7 @@ def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess
     default (CLAUDE.md global rule about explicit-safety).
 
     --entrypoint postern-dns: the image's ENTRYPOINT is the rotation-state
-    Python driver, which requires DOMAIN/MTA_DNS_PROVIDER and starts the full
+    Python driver, which requires DOMAIN/DNS_PROVIDER and starts the full
     state machine. We just want the libdns wrapper, so we bypass the
     entrypoint and exec the binary directly.
     """

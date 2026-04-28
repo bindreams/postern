@@ -34,6 +34,7 @@ logger = logging.getLogger("entrypoint")
 KEYDIR = Path("/var/lib/opendkim")
 STATE_PATH = KEYDIR / "state.json"
 RELOAD_TRIGGER = KEYDIR / ".reload-opendkim"
+TLS_RELOAD_TRIGGER = KEYDIR / ".reload-mta-tls"
 TEMPLATE_DIR = Path("/usr/local/share/mta-templates")
 
 
@@ -231,23 +232,38 @@ def start_opendkim() -> subprocess.Popen:
 
 # Reload watcher (background) ==========================================================================================
 async def reload_watcher(opendkim_proc: subprocess.Popen, poll_seconds: float = 5.0) -> None:
-    """Watch for .reload-opendkim trigger; on detection, HUP opendkim and re-render tables."""
+    """Dispatch trigger files to handlers.
+
+    .reload-opendkim   provisioner -> mta: HUP opendkim, re-render KeyTable/SigningTable
+    .reload-mta-tls    provisioner -> mta: postfix reload (after a cert install)
+
+    Existence is the signal; consumer deletes after handling. Same idempotent-state
+    assumption as the DKIM rotation `.rotate-dkim` trigger.
+    """
     while True:
         await asyncio.sleep(poll_seconds)
-        if not RELOAD_TRIGGER.exists():
-            continue
-        try:
-            state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-            regenerate_opendkim_tables(state)
-            opendkim_proc.send_signal(signal.SIGHUP)
-            logger.info("opendkim reloaded after rotation")
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning("reload trigger present but reload failed: %s", e)
-        finally:
+        if RELOAD_TRIGGER.exists():
             try:
-                RELOAD_TRIGGER.unlink()
-            except OSError:
-                pass
+                state = json.loads(STATE_PATH.read_text(encoding="utf-8"))
+                regenerate_opendkim_tables(state)
+                opendkim_proc.send_signal(signal.SIGHUP)
+                logger.info("opendkim reloaded after rotation")
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning("reload-opendkim trigger present but reload failed: %s", e)
+            finally:
+                try:
+                    RELOAD_TRIGGER.unlink()
+                except OSError:
+                    pass
+        if TLS_RELOAD_TRIGGER.exists():
+            try:
+                subprocess.run(["postfix", "reload"], check=False)
+                logger.info("postfix reloaded after cert renewal")
+            finally:
+                try:
+                    TLS_RELOAD_TRIGGER.unlink()
+                except OSError:
+                    pass
 
 
 # Main =================================================================================================================

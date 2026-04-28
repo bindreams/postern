@@ -17,9 +17,11 @@ app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
 connection_app = typer.Typer(name="connection", help="Manage connections")
 mta_app = typer.Typer(name="mta", help="Manage the built-in MTA")
+cert_app = typer.Typer(name="cert", help="Manage TLS certificates (auto-renewal mode)")
 app.add_typer(user_app)
 app.add_typer(connection_app)
 app.add_typer(mta_app)
+app.add_typer(cert_app)
 
 
 def _settings() -> Settings:
@@ -349,6 +351,151 @@ def mta_dnssec_status() -> None:
         typer.echo(f"With MTA_REQUIRE_DNSSEC=auto, this would be {verb} at startup.")
     if not signed:
         raise typer.Exit(1)
+
+
+# Cert subcommands =====================================================================================================
+def _cert_renewal_active(settings: Settings) -> bool:
+    """Detect whether auto-renewal is wired into this deployment.
+
+    True iff CERT_RENEWAL=true AND the cert volume is mounted (state.json
+    is reachable, even if absent). False in BYO-certs mode.
+    """
+    if not settings.cert_renewal:
+        return False
+    from postern.cert import state as cert_state
+    return cert_state.DEFAULT_CERTDIR.exists()
+
+
+@cert_app.command("show")
+def cert_show() -> None:
+    """Show cert path, issuer, expiry, SAN list. Works in BYO and auto-renewal modes."""
+    from postern.cert import inspect as cert_inspect
+    from postern.cert import state as cert_state
+    settings = _settings()
+    fullchain = cert_state.DEFAULT_CERTDIR / "live" / settings.domain / "fullchain.pem"
+    if not fullchain.exists():
+        state = cert_state.read_state()
+        typer.echo(f"no cert installed yet (state: {state.state})", err=True)
+        raise typer.Exit(1)
+    info = cert_inspect.read_cert(fullchain)
+    typer.echo(f"path:      {fullchain}")
+    typer.echo(f"issuer:    {info.issuer}")
+    typer.echo(f"sans:      {', '.join(info.sans)}")
+    typer.echo(f"not_before: {info.not_before.isoformat()}")
+    typer.echo(f"not_after:  {info.not_after.isoformat()}")
+    typer.echo(f"days_left:  {info.days_until_expiry():.1f}")
+    state_path = cert_state.state_path()
+    if state_path.exists():
+        state = cert_state.read_state()
+        typer.echo(f"state:     {state.state}")
+        if state.last_issued_iso:
+            typer.echo(f"last_issued: {state.last_issued_iso}")
+
+
+@cert_app.command("verify")
+def cert_verify() -> None:
+    """Verify the deployed cert is valid, has the right SANs, and matches what nginx is serving.
+
+    Five checks: file parseable; SANs == {<domain>, *.<domain>}; nginx-served cert
+    matches on-disk; CAA record (if any) allows the issuer; state.json (if present)
+    is consistent with on-disk cert.
+    """
+    import socket
+    import ssl
+
+    from postern.cert import inspect as cert_inspect
+    from postern.cert import state as cert_state
+    settings = _settings()
+    fullchain = cert_state.DEFAULT_CERTDIR / "live" / settings.domain / "fullchain.pem"
+    failures: list[str] = []
+
+    # (1) parse
+    try:
+        info = cert_inspect.read_cert(fullchain)
+    except (FileNotFoundError, ValueError) as e:
+        typer.echo(f"FAIL: cannot parse cert at {fullchain}: {e}", err=True)
+        raise typer.Exit(1)
+
+    # (2) SAN list -- defends CT-leak hygiene
+    expected_sans = {settings.domain, f"*.{settings.domain}"}
+    if not info.sans_match(expected_sans):
+        failures.append(f"SAN mismatch: expected {expected_sans}, got {set(info.sans)}")
+
+    # (3) what nginx is serving (the portal container connects to nginx by name; not localhost)
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE  # we just want to read the cert
+        with socket.create_connection(("nginx", 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=settings.domain) as ssock:
+                served = ssock.getpeercert(binary_form=True)
+        served_serial = cert_inspect.x509.load_der_x509_certificate(served).serial_number
+        if served_serial != info.serial:
+            failures.append(
+                f"cert nginx is serving (serial {served_serial}) does not match on-disk cert (serial {info.serial})"
+            )
+    except (OSError, ssl.SSLError) as e:
+        failures.append(f"could not connect to nginx:443 for cert verification: {e}")
+
+    # (4) CAA RRset (best-effort: only fail if CAA exists and excludes the issuer)
+    try:
+        import dns.exception
+        import dns.resolver
+        ans = dns.resolver.resolve(settings.domain, "CAA")
+        issuers = {r.value.decode() if isinstance(r.value, bytes) else r.value for r in ans}
+        # Anchor on the URL; LE production = letsencrypt.org, staging = letsencrypt.org as well
+        # so a CAA record with letsencrypt.org should accept either.
+        expected_issuer = "letsencrypt.org"
+        if not any(expected_issuer in i for i in issuers):
+            failures.append(f"CAA record exists for {settings.domain} but doesn't include {expected_issuer}: {issuers}")
+    except (dns.exception.DNSException, ImportError):
+        # No CAA record is fine; CAA is opt-in.
+        pass
+
+    # (5) state.json consistency, if present
+    state_path = cert_state.state_path()
+    if state_path.exists():
+        state = cert_state.read_state()
+        if state.state == "INSTALLED" and set(state.sans) != set(info.sans):
+            failures.append(f"state.json sans {set(state.sans)} disagree with on-disk sans {set(info.sans)}")
+
+    if failures:
+        for f in failures:
+            typer.echo(f"FAIL: {f}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"cert OK: SANs={info.sans}, days_left={info.days_until_expiry():.1f}")
+
+
+@cert_app.command("renew")
+def cert_renew() -> None:
+    """Trigger immediate renewal. Works only in auto-renewal mode."""
+    settings = _settings()
+    if not _cert_renewal_active(settings):
+        typer.echo(
+            "cert auto-renewal is not enabled in this deployment "
+            "(set CERT_RENEWAL=true and add compose.cert.yaml to COMPOSE_FILE)",
+            err=True,
+        )
+        raise typer.Exit(1)
+    from postern.cert import state as cert_state
+    path = cert_state.trigger_renewal()
+    typer.echo(f"trigger written: {path}")
+
+
+@cert_app.command("renewal-status")
+def cert_renewal_status() -> None:
+    """Show the cert renewal state machine."""
+    from postern.cert import state as cert_state
+    state = cert_state.read_state()
+    typer.echo(f"state:                {state.state}")
+    typer.echo(f"sans:                 {', '.join(state.sans) if state.sans else '(none)'}")
+    typer.echo(f"not_after:            {state.not_after_iso or '(none)'}")
+    typer.echo(f"last_issued:          {state.last_issued_iso or '(none)'}")
+    typer.echo(f"last_attempt:         {state.last_attempt_iso or '(none)'}")
+    typer.echo(f"consecutive_failures: {state.consecutive_failures}")
+    typer.echo(f"acme_directory:       {state.acme_directory or '(none)'}")
+    if state.state == "FAILED":
+        typer.echo(f"last_failed_state:    {state.last_failed_state}")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ services:
       DOMAIN: ${MTA_TEST_DOMAIN}
       MTA_VERIFY_DNS: "true"
       MTA_REQUIRE_DNSSEC: ${MTA_TEST_REQUIRE_DNSSEC:-false}
-      MTA_DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER:?MTA_TEST_DNS_PROVIDER must be set for the real-mode overlay}
+      DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER:?MTA_TEST_DNS_PROVIDER must be set for the real-mode overlay}
       MTA_ADMIN_EMAIL: ${MTA_TEST_ADMIN_EMAIL:?MTA_TEST_ADMIN_EMAIL must be set}
       MTA_SUBMIT_CIDR: 172.30.42.0/29
       SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
@@ -97,7 +97,7 @@ services:
     user: "110:110"
     environment:
       DOMAIN: ${MTA_TEST_DOMAIN}
-      MTA_DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER}
+      DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER}
       MTA_DKIM_SELECTOR_PREFIX: postern
       CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
       AWS_REGION: ${AWS_REGION:-}

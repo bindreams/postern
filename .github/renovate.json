@@ -33,6 +33,16 @@
       "datasourceTemplate": "git-refs",
       "versioningTemplate": "loose",
       "depNameTemplate": "{{packageName}}"
+    },
+    {
+      "description": "Lego ACME client baked into the provisioner image via `go install`. `go install ...@vX.Y.Z` is not picked up by default Renovate Go-module rules.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^provisioner/Dockerfile$/"],
+      "matchStrings": [
+        "go install -trimpath -ldflags=\"-s -w\" github\\.com/go-acme/lego/v4/cmd/lego@(?<currentValue>v\\S+)"
+      ],
+      "datasourceTemplate": "go",
+      "depNameTemplate": "github.com/go-acme/lego/v4"
     }
   ],
   "hostRules": [

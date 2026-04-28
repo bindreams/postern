@@ -142,7 +142,7 @@ def test_provisioner_generates_initial_state_json(mta_e2e_stack):
 
 
 def test_provisioner_exits_cleanly_when_dns_provider_none(mta_e2e_stack):
-    """With MTA_DNS_PROVIDER=none, the provisioner exits 0 after the initial
+    """With DNS_PROVIDER=none, the provisioner exits 0 after the initial
     keypair is generated. The container is ``restart: 'no'`` so it stays
     exited; mta's ``depends_on`` condition relies on this exit semantics."""
     cid = get_container_id("provisioner")

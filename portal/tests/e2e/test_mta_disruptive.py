@@ -38,10 +38,13 @@ def _disrupted_opendkim(mta_e2e_stack):
     (and re-spawns opendkim). state.json + key files survive on the volume,
     so the new entrypoint reuses them.
     """
-    # Kill the opendkim process. We can't use `pkill -f opendkim` because the
-    # running shell's argv contains "opendkim" via -c and would signal-suicide.
-    # Read PIDs from /proc directly: scan /proc/*/comm for "opendkim" and kill
-    # those PIDs. The shell's /proc/SELF/comm is "sh", so it won't be killed.
+    # Kill the opendkim process. The container default user (root) can't kill
+    # it -- the compose `cap_drop: [ALL]` strips CAP_KILL, so root cannot
+    # signal processes owned by other users. opendkim runs as the `opendkim`
+    # user (UID 110), so we exec the kill as that user; a process can always
+    # signal its own.
+    # We read /proc/*/comm (not pkill -f) so the shell's argv -- which
+    # contains "opendkim" via -c -- doesn't trigger signal-suicide.
     kill_script = (
         "for p in /proc/[0-9]*; do "
         "  pid=${p##*/}; "
@@ -53,7 +56,7 @@ def _disrupted_opendkim(mta_e2e_stack):
         "done"
     )
     kill_result = subprocess.run(
-        compose_mta("exec", "-T", "mta", "sh", "-c", kill_script),
+        compose_mta("exec", "-T", "--user", "opendkim", "mta", "sh", "-c", kill_script),
         capture_output=True,
         text=True,
         check=False,

@@ -16,11 +16,10 @@ RUN mkdir -p /var/lib/opendkim \
 		opendkim opendkim-utils \
 		ca-certificates tzdata \
 		python3 py3-pip py3-dnspython \
-		py3-yaml py3-aiohttp py3-aiodns \
 		unbound \
 		postsrsd \
 		netcat-openbsd \
-	&& pip install --no-deps --break-system-packages postfix-mta-sts-resolver
+	&& pip install --break-system-packages postfix-mta-sts-resolver
 
 # Runtime stage: locked-down DHI image. Postfix's master needs root; the compose
 # file leaves USER unset so the container runs as the image default. Capabilities

@@ -213,8 +213,11 @@ def start_mta_sts_daemon() -> subprocess.Popen:
 
 
 def start_opendkim() -> subprocess.Popen:
+    # `-l` forces logging to stderr; the alternative is syslog, but nothing in
+    # the container reads syslog, so without `-l` we'd silently swallow every
+    # opendkim message including signing failures.
     return subprocess.Popen(
-        ["opendkim", "-f", "-x", "/etc/opendkim/opendkim.conf"],
+        ["opendkim", "-f", "-l", "-x", "/etc/opendkim/opendkim.conf"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )

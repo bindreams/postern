@@ -55,14 +55,12 @@ def _disrupted_opendkim(mta_e2e_stack):
         "  fi; "
         "done"
     )
-    kill_result = subprocess.run(
+    subprocess.run(
         compose_mta("exec", "-T", "--user", "opendkim", "mta", "sh", "-c", kill_script),
         capture_output=True,
         text=True,
         check=False,
     )
-    print(f"opendkim kill stdout: {kill_result.stdout!r}")  # noqa: T201
-    print(f"opendkim kill stderr: {kill_result.stderr!r}")  # noqa: T201
     # Verify opendkim is actually dead. Without this, an environment where
     # something respawns opendkim would silently invalidate the test.
     deadline = time.monotonic() + 5.0

@@ -91,7 +91,13 @@ def regenerate_opendkim_tables(state: dict) -> None:
     # Older selectors stay verifiable via the KeyTable but no longer sign.
     signing_selector = selectors[-1]
     signingtable = f"*@{domain} {signing_selector}._domainkey.{domain}\n"
-    trustedhosts = "127.0.0.1\nlocalhost\n"
+    # opendkim only signs mail from sources in TrustedHosts (treated as
+    # "internal"); everything else is verify-only. The portal submits from the
+    # mta-submit subnet, which must be listed here or every outbound message
+    # leaves unsigned. MTA_SUBMIT_CIDR is the same env the main.cf rendering
+    # consumes for `mynetworks`.
+    submit_cidr = os.environ.get("MTA_SUBMIT_CIDR", "172.30.42.0/29").strip()
+    trustedhosts = f"127.0.0.1\nlocalhost\n{submit_cidr}\n"
     Path("/etc/opendkim/KeyTable").write_text(keytable + "\n", encoding="utf-8")
     Path("/etc/opendkim/SigningTable").write_text(signingtable, encoding="utf-8")
     Path("/etc/opendkim/TrustedHosts").write_text(trustedhosts, encoding="utf-8")

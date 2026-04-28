@@ -9,6 +9,10 @@ inet_protocols = ipv4
 mynetworks = 127.0.0.0/8 [::1]/128 ${MTA_SUBMIT_CIDR}
 mydestination =
 
+# No syslog daemon in the (intentionally minimal) container; route postfix
+# logs through postlogd to stdout so `docker compose logs mta` surfaces them.
+maillog_file = /dev/stdout
+
 compatibility_level = 3.6
 
 smtpd_helo_required = yes

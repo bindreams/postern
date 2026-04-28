@@ -367,24 +367,18 @@ def mta_test_env() -> dict[str, str]:
         )
     base.update(_require_env(*provider_envs))
     base.setdefault(
-        "MTA_TEST_ADMIN_EMAIL",
-        os.environ.get("MTA_TEST_ADMIN_EMAIL", "").strip() or "postmaster@example.org"
-    )
-    base.setdefault(
         "MTA_TEST_DNS_PROPAGATION_SECONDS",
         os.environ.get("MTA_TEST_DNS_PROPAGATION_SECONDS", "60").strip(),
-    )
-    base.setdefault(
-        "MTA_TEST_REQUIRE_DNSSEC",
-        os.environ.get("MTA_TEST_REQUIRE_DNSSEC", "false").strip().lower(),
     )
     return base
 
 
 @pytest.fixture(scope="session")
 def mta_test_outbound_env(mta_test_env: dict[str, str]) -> dict[str, str]:
-    """Layered on ``mta_test_env``; adds IMAP poller creds for outbound tests."""
+    """Layered on ``mta_test_env``; adds the env required by the outbound stack
+    (DMARC reporting + DNSSEC posture + IMAP poller creds)."""
     extra = _require_env(
+        "MTA_TEST_ADMIN_EMAIL",
         "MTA_TEST_RECIPIENT_EMAIL",
         "MTA_TEST_RECIPIENT_IMAP_HOST",
         "MTA_TEST_RECIPIENT_IMAP_USER",
@@ -392,5 +386,9 @@ def mta_test_outbound_env(mta_test_env: dict[str, str]) -> dict[str, str]:
     )
     out = dict(mta_test_env)
     out.update(extra)
+    out.setdefault(
+        "MTA_TEST_REQUIRE_DNSSEC",
+        os.environ.get("MTA_TEST_REQUIRE_DNSSEC", "false").strip().lower(),
+    )
     out.setdefault("MTA_TEST_RECIPIENT_IMAP_PORT", os.environ.get("MTA_TEST_RECIPIENT_IMAP_PORT", "993").strip())
     return out

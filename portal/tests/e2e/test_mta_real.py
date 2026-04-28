@@ -4,26 +4,34 @@ Marker (``e2e_mta_real``) is added by ``conftest.pytest_collection_modifyitems``
 These tests fail loudly when env is missing (per the project's "fail loudly"
 rule); opt out with ``pytest -m 'not e2e_mta_real'``.
 
-What runs without env:
-- ``test_dnssec_status_detects_signed_domain`` (defaults to iana.org)
+Scope: pin only the boundaries that talk to actual public infra and cannot be
+exercised by the hermetic ``e2e_mta`` suite. Specifically:
 
-What needs maintainer-supplied env (validated by ``mta_test_env`` fixture):
-- ``MTA_TEST_DOMAIN`` -- a domain the maintainer controls. Required to have a
-  set of static baseline DNS records pre-published; see docs/mta.md.
-- ``MTA_TEST_DNS_PROVIDER`` + provider-native creds (e.g. ``CLOUDFLARE_API_TOKEN``).
+- ``test_libdns_provider_round_trip`` -- the libdns wrapper actually publishes
+  and retires TXT records via the configured provider. Needs a domain the
+  maintainer controls + provider creds.
+- ``test_dnssec_status_detects_signed_domain`` -- the DNSSEC AD-bit checker
+  recognises a signed zone. Needs only public internet access (defaults to
+  ``iana.org``); runs even on PRs from forks.
+
+Out of scope here: end-to-end ``mta_dns.verify()`` against fully-configured
+baseline records. That requires the maintainer to publish MX / SPF / DMARC /
+MTA-STS / TLS-RPT records out-of-band AND stand up an HTTPS endpoint with a
+publicly-trusted cert at ``mta-sts.<domain>``. That much infrastructure setup
+is incompatible with a CI job that runs on every PR; it belongs in the
+``e2e_mta_outbound`` (maintainer-only, VPS) tier.
 
 Tests do not boot a compose stack: they invoke ``postern-dns`` via ``docker run
 --rm`` against the ``local/postern-provisioner`` image (built by CI before
-running pytest), and call ``postern.mta.dns`` / ``postern.mta.dnssec`` from the
-host. Resolver isolation: every ``dns.resolver.Resolver`` instance uses
-``configure=False`` with explicit upstreams (1.1.1.1 + 8.8.8.8) and ``cache=None``.
+running pytest), and call ``postern.mta.dnssec`` from the host. Resolver
+isolation: every ``dns.resolver.Resolver`` instance uses ``configure=False``
+with explicit upstreams (1.1.1.1 + 8.8.8.8) and ``cache=None``.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import re
 import subprocess
 import time
 from collections.abc import Iterator
@@ -33,7 +41,6 @@ import dns.resolver
 import pytest
 
 # postern is installed via `uv sync` in CI; locally it must be available too.
-from postern.mta import dns as mta_dns
 from postern.mta import dnssec as mta_dnssec
 
 logger = logging.getLogger(__name__)
@@ -256,74 +263,6 @@ def test_libdns_provider_round_trip(
     re_seen = _resolve_txt_eventually(fqdn, expected_substring=pubkey, timeout=propagation + 60)
     assert re_seen is not None and any(pubkey in t
                                        for t in re_seen), (f"re-published DKIM TXT did not propagate: {re_seen!r}")
-
-
-def test_mta_dns_verify_passes_with_published_records(
-    mta_test_env: dict[str, str],
-    published_dkim_record: tuple[str, str, str],
-):
-    """Full operator-facing pipeline: with all baseline records pre-published
-    + the ephemeral DKIM TXT, ``postern.mta.dns.verify()`` returns no failures.
-
-    Verifies MX, A (mail.<domain>, mta-sts.<domain>), SPF, DMARC, MTA-STS
-    HTTPS policy fetch, TLS-RPT, and DKIM. PTR failures are filtered out --
-    reverse DNS on shared/VPS infrastructure (e.g. seedbox provider rDNS) is
-    not part of the DNS-zone setup the maintainer controls, so the test asserts
-    only on records the maintainer publishes via their DNS provider.
-    """
-    domain = mta_test_env["MTA_TEST_DOMAIN"]
-    admin_email = mta_test_env["MTA_TEST_ADMIN_EMAIL"]
-    require_dnssec = mta_test_env["MTA_TEST_REQUIRE_DNSSEC"] == "true"
-    selector, _fqdn, pubkey = published_dkim_record
-
-    failures = mta_dns.verify(
-        domain,
-        dkim_pubkey_by_selector={selector: pubkey},
-        admin_email=admin_email,
-        require_dnssec=require_dnssec,
-        resolver=_fresh_resolver(),
-    )
-    failures = [f for f in failures if not f.startswith("PTR ")]
-    assert failures == [], (
-        "mta_dns.verify reported failures against fully-configured test domain:\n  " + "\n  ".join(failures)
-    )
-
-
-def test_mta_dns_verify_reports_missing_dkim_but_others_pass(
-    mta_test_env: dict[str, str],
-    published_dkim_record: tuple[str, str, str],
-):
-    """Combined positive + negative: the published selector resolves cleanly,
-    AND a bogus selector reports the canonical 'no TXT record' failure with
-    no other entries. Pins the operator-facing failure-message contract while
-    proving the resolver path is functional (rules out 'all DNS broken' as
-    the passing condition).
-    """
-    domain = mta_test_env["MTA_TEST_DOMAIN"]
-    admin_email = mta_test_env["MTA_TEST_ADMIN_EMAIL"]
-    selector, _fqdn, pubkey = published_dkim_record
-
-    bogus = "nonexistent-selector-9999"
-    failures = mta_dns.verify(
-        domain,
-        dkim_pubkey_by_selector={selector: pubkey, bogus: "fake-pubkey-not-in-dns"},
-        admin_email=admin_email,
-        require_dnssec=False,
-        resolver=_fresh_resolver(),
-    )
-    # PTR failures are infrastructure-level on shared VPS IPs and not part of
-    # the zone-setup contract this test pins. See R2 docstring.
-    failures = [f for f in failures if not f.startswith("PTR ")]
-    expected_pat = re.compile(rf"^DKIM {re.escape(bogus)}\._domainkey\.{re.escape(domain)}: no TXT record$")
-    matching = [f for f in failures if expected_pat.match(f)]
-    other = [f for f in failures if not expected_pat.match(f)]
-    assert matching, (
-        f"expected exactly one failure matching {expected_pat.pattern!r}, none found.\n"
-        f"failures: {failures!r}"
-    )
-    assert not other, (
-        f"baseline records or published DKIM also failed (resolver path may be broken):\n  " + "\n  ".join(other)
-    )
 
 
 def test_dnssec_status_detects_signed_domain():

@@ -213,38 +213,24 @@ The hermetic suite is a working reference for `MTA_VERIFY_DNS=false` + `MTA_DNS_
 
 ### Real-infra test-domain setup
 
-The `e2e_mta_real` suite ([portal/tests/e2e/test_mta_real.py](../portal/tests/e2e/test_mta_real.py)) exercises the libdns wrapper and the full DNS-verification pipeline against real public DNS. It's maintainer-only: tests fail loudly if the env is missing.
+The `e2e_mta_real` suite ([portal/tests/e2e/test_mta_real.py](../portal/tests/e2e/test_mta_real.py)) covers the two boundaries the hermetic suite cannot exercise:
 
-To run, you need a domain you control with **all** the following pre-configured (these are static — only the DKIM TXT changes during a test):
+1. **libdns round-trip** (`test_libdns_provider_round_trip`) — the provisioner's Go binary actually publishes and retires a TXT record via the configured provider, and the change becomes visible via public resolvers. Pins the libdns wrapper against API breakage.
+2. **DNSSEC AD-bit detection** (`test_dnssec_status_detects_signed_domain`) — `postern.mta.dnssec.check()` returns clean against a known-signed zone (default `iana.org`).
 
-- `MX  10 mail.<domain>` at the apex
-- `A  <some-ip>` for `mail.<domain>` (any reachable IP — the value only needs to satisfy `_check_a`)
-- `A  <some-ip>` for `mta-sts.<domain>`
-- `<reverse-of-A>  PTR  mail.<domain>.` (only if you set `server_ip` when calling verify; the test fixture leaves it unset)
-- `TXT  "v=spf1 mx -all"` at the apex
-- `TXT  "v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:<admin>; ruf=mailto:<admin>"` at `_dmarc.<domain>`
-- `TXT  "v=STSv1; id=<unix-ts>"` at `_mta-sts.<domain>`
-- `TXT  "v=TLSRPTv1; rua=mailto:<admin>"` at `_smtp._tls.<domain>`
-- A publicly-trusted-CA HTTPS endpoint at `https://mta-sts.<domain>/.well-known/mta-sts.txt` serving:
-  ```
-  version: STSv1
-  mode: enforce
-  mx: mail.<domain>
-  max_age: 86400
-  ```
-- DNSSEC enabled at the registrar (only if testing with `MTA_TEST_REQUIRE_DNSSEC=true`).
+End-to-end `mta_dns.verify()` against fully-configured baseline records (MX/SPF/DMARC/MTA-STS/TLS-RPT + a publicly-trusted MTA-STS HTTPS endpoint) is intentionally **not** in this tier. That much zone setup is incompatible with a CI job that runs on every PR; the full pipeline is exercised by the `e2e_mta_outbound` (VPS-only) suite.
+
+To run the libdns round-trip you need a domain you control + provider creds. The test publishes and retires a single TXT record (`postern-e2e-test._domainkey.<domain>`) — no other records are required, and nothing else on the zone is touched.
 
 Required env vars (each missing one produces a fail-loud message pointing back here):
 
-| Var                                | Notes                                                                                                                                                                                                                                                                            | Default                  |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `MTA_TEST_DOMAIN`                  | The fully-configured test domain.                                                                                                                                                                                                                                                | (required)               |
-| `MTA_TEST_ADMIN_EMAIL`             | An external mailbox for DMARC/TLS-RPT reports.                                                                                                                                                                                                                                   | `postmaster@example.org` |
-| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.                                                                                                                                                                               | (required)               |
-| Provider creds                     | Provider-native env: `CLOUDFLARE_API_TOKEN` for cloudflare; `AWS_REGION` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` for route53; `GANDI_API_TOKEN`; `DO_AUTH_TOKEN`; etc. (See [provisioner/postern-dns/main.go](../provisioner/postern-dns/main.go) for the full mapping.) | (required)               |
-| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Wait between `txt-set` and the public-resolver query.                                                                                                                                                                                                                            | `60`                     |
-| `MTA_TEST_REQUIRE_DNSSEC`          | Pass `require_dnssec=True` to `verify()`.                                                                                                                                                                                                                                        | `false`                  |
-| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle for `test_dnssec_status_detects_signed_domain`.                                                                                                                                                                                                         | `iana.org`               |
+| Var                                | Notes                                                                                                                                                                                                                                                                            | Default    |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- |
+| `MTA_TEST_DOMAIN`                  | A domain you control. Only the `postern-e2e-test._domainkey.<domain>` TXT is published/retired during the test.                                                                                                                                                                  | (required) |
+| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.                                                                                                                                                                               | (required) |
+| Provider creds                     | Provider-native env: `CLOUDFLARE_API_TOKEN` for cloudflare; `AWS_REGION` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` for route53; `GANDI_API_TOKEN`; `DO_AUTH_TOKEN`; etc. (See [provisioner/postern-dns/main.go](../provisioner/postern-dns/main.go) for the full mapping.) | (required) |
+| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Wait between `txt-set` and the public-resolver query.                                                                                                                                                                                                                            | `60`       |
+| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle for `test_dnssec_status_detects_signed_domain`. No env required for the default.                                                                                                                                                                        | `iana.org` |
 
 Run:
 

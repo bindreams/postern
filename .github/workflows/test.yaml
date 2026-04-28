@@ -154,10 +154,8 @@ jobs:
       cancel-in-progress: false
     env:
       MTA_TEST_DOMAIN: ${{ vars.MTA_TEST_DOMAIN }}
-      MTA_TEST_ADMIN_EMAIL: ${{ vars.MTA_TEST_ADMIN_EMAIL }}
       MTA_TEST_DNS_PROVIDER: ${{ vars.MTA_TEST_DNS_PROVIDER }}
       MTA_TEST_DNS_PROPAGATION_SECONDS: ${{ vars.MTA_TEST_DNS_PROPAGATION_SECONDS || '60' }}
-      MTA_TEST_REQUIRE_DNSSEC: ${{ vars.MTA_TEST_REQUIRE_DNSSEC || 'false' }}
       MTA_TEST_DNSSEC_DOMAIN: ${{ vars.MTA_TEST_DNSSEC_DOMAIN || 'iana.org' }}
       # Provider-specific creds. Only the one matching MTA_TEST_DNS_PROVIDER
       # is consumed at runtime; the rest are no-ops if unset.

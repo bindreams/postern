@@ -96,19 +96,19 @@ POSTERN_E2E_TLS_DIR=$(uv run python tests/e2e/_certs.py /tmp/postern-e2e-mta-tls
 
 #### MTA real-infra suite (`e2e_mta_real`, maintainer-only)
 
-A third suite exercises real DNS provider integration (libdns publish/retire round-trip, full `verify-dns` against published baseline records, DNSSEC AD-bit detection). Tests fail loudly when the env is missing — there are no silent skips. Opt out with `pytest -m "not e2e_mta_real"`.
+A third suite covers two boundaries the hermetic suite cannot exercise: the libdns wrapper actually publishes and retires a TXT record via the configured provider, and the DNSSEC AD-bit checker recognises a signed zone. Tests fail loudly when the env is missing — there are no silent skips. Opt out with `pytest -m "not e2e_mta_real"`.
+
+End-to-end `verify-dns` against fully-configured baseline records (MX/SPF/DMARC/MTA-STS/TLS-RPT + a publicly-trusted MTA-STS HTTPS endpoint) is intentionally **not** in this tier — that much zone setup is incompatible with a CI job that runs on every PR; it lives in the outbound (VPS-only) suite below.
 
 Required env (the per-test missing-env messages also point here):
 
-| Var                                | Notes                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MTA_TEST_DOMAIN`                  | A domain you control, with all baseline records pre-published (MX, A for `mail.<domain>`, A for `mta-sts.<domain>`, SPF, DMARC `p=reject; adkim=s; aspf=s`, MTA-STS TXT, TLS-RPT TXT) AND a publicly-trusted-CA HTTPS endpoint at `https://mta-sts.<domain>/.well-known/mta-sts.txt` serving the standard policy file. |
-| `MTA_TEST_ADMIN_EMAIL`             | An external mailbox for DMARC/TLS-RPT reporting (default `postmaster@example.org`).                                                                                                                                                                                                                                    |
-| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.                                                                                                                                                                                                                     |
-| Provider creds                     | e.g. `CLOUDFLARE_API_TOKEN` for cloudflare.                                                                                                                                                                                                                                                                            |
-| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Default `60`; bump higher for slow providers.                                                                                                                                                                                                                                                                          |
-| `MTA_TEST_REQUIRE_DNSSEC`          | `true`/`false`; default `false`.                                                                                                                                                                                                                                                                                       |
-| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle (default `iana.org`).                                                                                                                                                                                                                                                                         |
+| Var                                | Notes                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `MTA_TEST_DOMAIN`                  | A domain you control. Only the `postern-e2e-test._domainkey.<domain>` TXT is published/retired during the test. |
+| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.              |
+| Provider creds                     | e.g. `CLOUDFLARE_API_TOKEN` for cloudflare.                                                                     |
+| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Default `60`; bump higher for slow providers.                                                                   |
+| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle (default `iana.org`).                                                                  |
 
 Run:
 

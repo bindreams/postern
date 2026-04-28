@@ -1,9 +1,12 @@
-Syslog                  yes
+# Container-friendly defaults: log to stderr (no syslog daemon in the image),
+# PID file in /tmp (always writable, no need to pre-create /var/run/opendkim).
+Syslog                  no
+SyslogSuccess           yes
 LogWhy                  yes
 UMask                   002
 Mode                    sv
 Socket                  inet:8891@127.0.0.1
-PidFile                 /var/run/opendkim/opendkim.pid
+PidFile                 /tmp/opendkim.pid
 UserID                  opendkim:opendkim
 SignatureAlgorithm      rsa-sha256
 Canonicalization        relaxed/simple

@@ -1,6 +1,6 @@
 module github.com/bindreams/postern/provisioner/postern-dns
 
-go 1.23
+go 1.23.0
 
 require (
 	github.com/libdns/cloudflare v0.1.3
@@ -8,10 +8,10 @@ require (
 	github.com/libdns/gandi v1.0.2
 	github.com/libdns/hetzner v0.0.1
 	github.com/libdns/libdns v0.2.3
-	github.com/libdns/linode v0.5.0
+	github.com/libdns/linode v0.4.1
 	github.com/libdns/namecheap v0.1.0
-	github.com/libdns/ovh v0.0.4
-	github.com/libdns/route53 v1.5.4
+	github.com/libdns/ovh v0.0.3
+	github.com/libdns/route53 v1.5.1
 )
 
 require (
@@ -30,17 +30,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.3 // indirect
 	github.com/aws/smithy-go v1.20.3 // indirect
 	github.com/digitalocean/godo v1.41.0 // indirect
-	github.com/go-resty/resty/v2 v2.7.0 // indirect
-	github.com/golang/protobuf v1.5.3 // indirect
-	github.com/google/go-querystring v1.0.0 // indirect
+	github.com/go-resty/resty/v2 v2.16.5 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
-	github.com/linode/linodego v1.23.0 // indirect
+	github.com/linode/linodego v1.56.0 // indirect
 	github.com/ovh/go-ovh v1.6.0 // indirect
-	golang.org/x/net v0.22.0 // indirect
-	golang.org/x/oauth2 v0.18.0 // indirect
-	golang.org/x/text v0.14.0 // indirect
-	google.golang.org/appengine v1.6.7 // indirect
-	google.golang.org/protobuf v1.31.0 // indirect
+	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/oauth2 v0.30.0 // indirect
+	golang.org/x/text v0.28.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
 

@@ -38,22 +38,23 @@ def _disrupted_opendkim(mta_e2e_stack):
     (and re-spawns opendkim). state.json + key files survive on the volume,
     so the new entrypoint reuses them.
     """
-    # Aggressive: kill every opendkim process by full-command-line match. The
-    # image's `pkill opendkim` (basename match) misses processes whose argv[0]
-    # was rewritten or that linger as zombies; -f matches the full cmdline so
-    # nothing escapes.
-    mta_exec("sh", "-c", "pkill -9 -f opendkim || killall -9 opendkim || true")
+    # Kill every opendkim process. We avoid `pkill -f opendkim` because the
+    # shell that runs pkill itself contains "opendkim" in its argv and would
+    # signal-suicide (returncode 137). Instead match the leading binary path
+    # `/usr/sbin/opendkim` which only the actual daemon has.
+    mta_exec("sh", "-c", "pkill -9 -f '^/usr/sbin/opendkim ' || killall -9 opendkim || true")
     # Verify opendkim is actually dead. Without this, an environment where
     # something respawns opendkim would silently invalidate the test.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         result = subprocess.run(
-            compose_mta("exec", "-T", "mta", "sh", "-c", "pgrep -f opendkim | grep -v grep || true"),
+            compose_mta("exec", "-T", "mta", "sh", "-c", "pgrep -f '^/usr/sbin/opendkim '"),
             capture_output=True,
             text=True,
             check=False,
         )
-        if not result.stdout.strip():
+        # pgrep returns 1 when no match; we want no match.
+        if result.returncode == 1 and not result.stdout.strip():
             break
         time.sleep(0.2)
     else:
@@ -67,17 +68,45 @@ def _disrupted_opendkim(mta_e2e_stack):
             "opendkim is still running after pkill -9 -f -- the test cannot verify "
             "milter tempfail behaviour. Last pgrep output: " + result.stdout.strip() + "\nFull `ps -ef`:\n" + ps_dump
         )
-    # Also verify port 8891 is closed (the milter socket).
-    probe = subprocess.run(
-        compose_mta("exec", "-T", "mta", "sh", "-c", "nc -z -w 1 127.0.0.1 8891 && echo OPEN || echo CLOSED"),
+    # Also kill anything still bound to the milter port (8891). opendkim may
+    # leave forked worker processes whose argv doesn't match the binary path,
+    # or there may be a brief socket-close race; `fuser -k` resolves both
+    # deterministically.
+    subprocess.run(
+        compose_mta("exec", "-T", "mta", "sh", "-c", "fuser -k 8891/tcp 2>/dev/null || true"),
         capture_output=True,
         text=True,
         check=False,
     )
-    if "OPEN" in probe.stdout:
+    # Wait for the port to actually be closed.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        probe = subprocess.run(
+            compose_mta("exec", "-T", "mta", "sh", "-c", "nc -z -w 1 127.0.0.1 8891 && echo OPEN || echo CLOSED"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if "CLOSED" in probe.stdout:
+            break
+        time.sleep(0.2)
+    else:
+        ps_dump = subprocess.run(
+            compose_mta("exec", "-T", "mta", "ps", "-ef"),
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        ss_dump = subprocess.run(
+            compose_mta("exec", "-T", "mta", "ss", "-tlnp"),
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
         raise AssertionError(
             "127.0.0.1:8891 is still accepting connections after killing opendkim "
-            "-- milter is reachable, the test cannot prove tempfail behaviour."
+            "and fuser -k -- milter is reachable, the test cannot prove tempfail "
+            f"behaviour.\nFull `ps -ef`:\n{ps_dump}\n`ss -tlnp`:\n{ss_dump}"
         )
     try:
         yield

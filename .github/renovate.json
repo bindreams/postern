@@ -2,6 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "automerge": true,
+  "minimumReleaseAge": "7 days",
   "semanticCommits": "enabled",
   "registryAliases": {
     "dhi.io": "dhi.io"

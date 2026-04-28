@@ -192,8 +192,11 @@ def start_unbound() -> subprocess.Popen:
 
 
 def start_postsrsd() -> subprocess.Popen:
+    # postsrsd 2.x uses `-C <file>` for the config file (lowercase `-c` is the
+    # chroot directory). Earlier versions accepted `-c` for both -- update if
+    # the Alpine package downgrades.
     return subprocess.Popen(
-        ["postsrsd", "-c", "/etc/postsrsd.conf"],
+        ["postsrsd", "-C", "/etc/postsrsd.conf"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )

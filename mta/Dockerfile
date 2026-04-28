@@ -16,6 +16,7 @@ RUN mkdir -p /var/lib/opendkim \
 		opendkim opendkim-utils \
 		ca-certificates tzdata \
 		python3 py3-pip py3-dnspython \
+		py3-yaml py3-aiohttp py3-aiodns \
 		unbound \
 		postsrsd \
 		netcat-openbsd \

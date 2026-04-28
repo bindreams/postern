@@ -67,7 +67,15 @@ services:
         read_only: true
         source: ./unbound.e2e-mta.conf.tmpl
         target: /usr/local/share/mta-templates/unbound.conf.tmpl
-    networks: [default, mta-submit]
+    # Add `mta-submit` as a unique alias on the mta-submit network only, so
+    # portal -> `mta-submit:587` deterministically resolves to the mta-submit
+    # IP. With both networks shared, plain `mta` resolves to BOTH IPs and the
+    # client may pick the default-network one -- which fails Postfix's
+    # mynetworks check (mynetworks = 172.30.42.0/29 only).
+    networks:
+      default:
+      mta-submit:
+        aliases: [mta-submit]
     depends_on:
       provisioner:
         condition: service_completed_successfully
@@ -112,7 +120,9 @@ services:
 
   portal:
     environment:
-      SMTP_HOST: mta
+      # Use the mta-submit-only alias so the connection comes from 172.30.42.x
+      # (in mynetworks). See the `aliases` block on the mta service above.
+      SMTP_HOST: mta-submit
       SMTP_PORT: "587"
       SMTP_FROM: noreply@postern.test
     # Mirror production: read-only mount of the DKIM keydir so the test fixtures

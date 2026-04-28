@@ -200,8 +200,10 @@ def start_postsrsd() -> subprocess.Popen:
 
 
 def start_mta_sts_daemon() -> subprocess.Popen:
+    # The pip package `postfix-mta-sts-resolver` installs entry points named
+    # `mta-sts-daemon` and `mta-sts-query` (no `postfix-` prefix).
     return subprocess.Popen(
-        ["postfix-mta-sts-daemon", "-c", "/etc/mta-sts-daemon.yml"],
+        ["mta-sts-daemon", "-c", "/etc/mta-sts-daemon.yml"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )

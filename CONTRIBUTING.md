@@ -74,6 +74,69 @@ POSTERN_E2E_TLS_DIR=$(uv run python tests/e2e/_certs.py /tmp/postern-e2e-tls) \
   docker compose -p postern-e2e -f tests/e2e/e2e.compose.yaml up -d --build --wait
 ```
 
+#### MTA e2e suite (hermetic)
+
+A separate suite under marker `e2e_mta` boots the production `mta` + `provisioner` images alongside a mailpit "recipient MTA" (no real DNS, no port-25 outbound). Opt in:
+
+```bash
+cd portal
+uv sync --group e2e
+uv run pytest -m e2e_mta -v --timeout=180
+```
+
+The compose project name is `postern-e2e-mta` (separate from `postern-e2e`). Both projects publish nginx on `127.0.0.1:8443` and mailpit on `127.0.0.1:8025`; only one project can be up at a time on the same host. Manual bring-up:
+
+```bash
+POSTERN_E2E_TLS_DIR=$(uv run python tests/e2e/_certs.py /tmp/postern-e2e-mta-tls) \
+  docker compose -p postern-e2e-mta \
+    -f tests/e2e/e2e.compose.yaml \
+    -f tests/e2e/e2e-mta.compose.yaml \
+    up -d --build --wait
+```
+
+#### MTA real-infra suite (`e2e_mta_real`, maintainer-only)
+
+A third suite covers two boundaries the hermetic suite cannot exercise: the libdns wrapper actually publishes and retires a TXT record via the configured provider, and the DNSSEC AD-bit checker recognises a signed zone. Tests fail loudly when the env is missing — there are no silent skips. Opt out with `pytest -m "not e2e_mta_real"`.
+
+End-to-end `verify-dns` against fully-configured baseline records (MX/SPF/DMARC/MTA-STS/TLS-RPT + a publicly-trusted MTA-STS HTTPS endpoint) is intentionally **not** in this tier — that much zone setup is incompatible with a CI job that runs on every PR; it lives in the outbound (VPS-only) suite below.
+
+Required env (the per-test missing-env messages also point here):
+
+| Var                                | Notes                                                                                                           |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `MTA_TEST_DOMAIN`                  | A domain you control. Only the `postern-e2e-test._domainkey.<domain>` TXT is published/retired during the test. |
+| `MTA_TEST_DNS_PROVIDER`            | One of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`.              |
+| Provider creds                     | e.g. `CLOUDFLARE_API_TOKEN` for cloudflare.                                                                     |
+| `MTA_TEST_DNS_PROPAGATION_SECONDS` | Default `60`; bump higher for slow providers.                                                                   |
+| `MTA_TEST_DNSSEC_DOMAIN`           | The DNSSEC-status oracle (default `iana.org`).                                                                  |
+
+Run:
+
+```bash
+cd portal
+docker build -f ../provisioner/Dockerfile -t local/postern-provisioner ..
+uv run pytest -m e2e_mta_real -v --timeout=300
+```
+
+#### MTA outbound suite (`e2e_mta_outbound`, VPS-only)
+
+End-to-end OTP delivery through the real-mode mta to a real test mailbox over port 25. **Not run on GitHub-hosted runners** (port 25 is blocked); run locally on a VPS:
+
+```bash
+export MTA_TEST_DOMAIN=mta-test.example.com
+export MTA_TEST_ADMIN_EMAIL=admin@something-else.example.com
+export MTA_TEST_DNS_PROVIDER=cloudflare
+export CLOUDFLARE_API_TOKEN=...
+export MTA_TEST_RECIPIENT_EMAIL=test-mailbox@maintainer.example.com
+export MTA_TEST_RECIPIENT_IMAP_HOST=imap.maintainer.example.com
+export MTA_TEST_RECIPIENT_IMAP_USER=test-mailbox
+export MTA_TEST_RECIPIENT_IMAP_PASS=...
+export POSTERN_E2E_TLS_DIR=/etc/letsencrypt/live/${MTA_TEST_DOMAIN}
+uv run pytest -m e2e_mta_outbound -v --timeout=600
+```
+
+A follow-up issue tracks adding a self-hosted GHA runner labeled `port25-ok` so this suite can run in CI.
+
 ## Running the stack locally
 
 ```bash

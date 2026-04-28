@@ -92,7 +92,13 @@ def regenerate_opendkim_tables(state: dict) -> None:
     # Older selectors stay verifiable via the KeyTable but no longer sign.
     signing_selector = selectors[-1]
     signingtable = f"*@{domain} {signing_selector}._domainkey.{domain}\n"
-    trustedhosts = "127.0.0.1\nlocalhost\n"
+    # opendkim only signs mail from sources in TrustedHosts (treated as
+    # "internal"); everything else is verify-only. The portal submits from the
+    # mta-submit subnet, which must be listed here or every outbound message
+    # leaves unsigned. MTA_SUBMIT_CIDR is the same env the main.cf rendering
+    # consumes for `mynetworks`.
+    submit_cidr = os.environ.get("MTA_SUBMIT_CIDR", "172.30.42.0/29").strip()
+    trustedhosts = f"127.0.0.1\nlocalhost\n{submit_cidr}\n"
     Path("/etc/opendkim/KeyTable").write_text(keytable + "\n", encoding="utf-8")
     Path("/etc/opendkim/SigningTable").write_text(signingtable, encoding="utf-8")
     Path("/etc/opendkim/TrustedHosts").write_text(trustedhosts, encoding="utf-8")
@@ -118,8 +124,11 @@ def wait_for_state(timeout_s: int = 120) -> dict:
 
 
 # Postmap helpers ======================================================================================================
+# Alpine's postfix is built without Berkeley DB (`hash:` and `btree:` map types
+# are NOT compiled in -- see `postconf -m`); lmdb is the supported in-process
+# key-value backend on this distro. Function name kept for git-history continuity.
 def postmap_hash(path: Path) -> None:
-    subprocess.run(["postmap", f"hash:{path}"], check=True)
+    subprocess.run(["postmap", f"lmdb:{path}"], check=True)
 
 
 # DNS verification =====================================================================================================
@@ -190,24 +199,32 @@ def start_unbound() -> subprocess.Popen:
 
 
 def start_postsrsd() -> subprocess.Popen:
+    # postsrsd 2.x uses `-C <file>` for the config file (lowercase `-c` is the
+    # chroot directory). Earlier versions accepted `-c` for both -- update if
+    # the Alpine package downgrades.
     return subprocess.Popen(
-        ["postsrsd", "-c", "/etc/postsrsd.conf"],
+        ["postsrsd", "-C", "/etc/postsrsd.conf"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
 
 
 def start_mta_sts_daemon() -> subprocess.Popen:
+    # The pip package `postfix-mta-sts-resolver` installs entry points named
+    # `mta-sts-daemon` and `mta-sts-query` (no `postfix-` prefix).
     return subprocess.Popen(
-        ["postfix-mta-sts-daemon", "-c", "/etc/mta-sts-daemon.yml"],
+        ["mta-sts-daemon", "-c", "/etc/mta-sts-daemon.yml"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
 
 
 def start_opendkim() -> subprocess.Popen:
+    # `-l` forces logging to stderr; the alternative is syslog, but nothing in
+    # the container reads syslog, so without `-l` we'd silently swallow every
+    # opendkim message including signing failures.
     return subprocess.Popen(
-        ["opendkim", "-f", "-x", "/etc/opendkim/opendkim.conf"],
+        ["opendkim", "-f", "-l", "-x", "/etc/opendkim/opendkim.conf"],
         stdout=sys.stdout,
         stderr=sys.stderr,
     )
@@ -277,7 +294,7 @@ def main() -> NoReturn:
     logger.info("rotation state: %s", state.get("state"))
 
     # Render configs.
-    transport_override_block = ("transport_maps = hash:/etc/postfix/transport\n" if e2e_transport_override else "")
+    transport_override_block = ("transport_maps = lmdb:/etc/postfix/transport\n" if e2e_transport_override else "")
     render_template(
         "main.cf.tmpl",
         Path("/etc/postfix/main.cf"),

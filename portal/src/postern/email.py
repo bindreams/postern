@@ -24,10 +24,14 @@ async def send_otp_email(to: str, code: str, settings: Settings) -> bool:
     )
 
     # Built-in mta presents a cert for `mail.<domain>` but the portal connects via
-    # docker-DNS hostname `mta`. The `mta-submit` network is internal-only with
-    # mynetworks scoping, so skipping cert verification on this hop is safe.
-    # External relays keep strict validation.
-    validate_certs = settings.smtp_host != "mta"
+    # the docker-DNS service name `mta` (or a network-scoped alias on the
+    # internal-only `mta-submit` network). The mta-submit network is internal
+    # with mynetworks scoping, so skipping cert verification on this hop is
+    # safe; external relays keep strict validation. The list includes
+    # `mta-submit` because the e2e overlay aliases mta on that network only to
+    # avoid docker-DNS round-robining the connection through the default
+    # network -- which would fail Postfix's mynetworks check.
+    validate_certs = settings.smtp_host not in ("mta", "mta-submit")
 
     try:
         await aiosmtplib.send(

@@ -1,0 +1,162 @@
+## E2E real-mode overlay for outbound delivery tests.
+##
+## Layered on top of e2e.compose.yaml (NOT e2e-mta.compose.yaml). Project name
+## is `postern-e2e-mta-real`. This is the maintainer-only path: requires real
+## DNS provider creds + a publicly-trusted TLS cert at /etc/letsencrypt/live/
+## + unblocked outbound port 25 + a receivable test mailbox.
+##
+## Manual bring-up on a VPS:
+##   export MTA_TEST_DOMAIN=mta-test.example.com
+##   export MTA_TEST_ADMIN_EMAIL=admin@something-else.example.com
+##   export MTA_TEST_DNS_PROVIDER=cloudflare
+##   export CLOUDFLARE_API_TOKEN=...
+##   export POSTERN_E2E_TLS_DIR=/etc/letsencrypt/live/${MTA_TEST_DOMAIN}
+##   docker compose -p postern-e2e-mta-real \
+##     -f portal/tests/e2e/e2e.compose.yaml \
+##     -f portal/tests/e2e/e2e-mta-real.compose.yaml \
+##     build
+##   docker compose -p postern-e2e-mta-real -f ... -f ... up -d --wait
+
+services:
+  mta:
+    build:
+      context: ../../..
+      dockerfile: mta/Dockerfile
+    image: local/postern-mta
+    container_name: postern-e2e-mta-real-mta
+    hostname: mail.${MTA_TEST_DOMAIN:?MTA_TEST_DOMAIN must be set for the real-mode overlay}
+    environment:
+      DOMAIN: ${MTA_TEST_DOMAIN}
+      MTA_VERIFY_DNS: "true"
+      MTA_REQUIRE_DNSSEC: ${MTA_TEST_REQUIRE_DNSSEC:-false}
+      DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER:?MTA_TEST_DNS_PROVIDER must be set for the real-mode overlay}
+      MTA_ADMIN_EMAIL: ${MTA_TEST_ADMIN_EMAIL:?MTA_TEST_ADMIN_EMAIL must be set}
+      MTA_SUBMIT_CIDR: 172.30.42.0/29
+      SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
+      # NO MTA_E2E_TRANSPORT_OVERRIDE -- delivery uses real DNS + real outbound 25.
+      # Provider creds are passed through via env_file from the test runner's shell.
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      GANDI_API_TOKEN: ${GANDI_API_TOKEN:-}
+      DO_AUTH_TOKEN: ${DO_AUTH_TOKEN:-}
+      OVH_ENDPOINT: ${OVH_ENDPOINT:-}
+      OVH_APPLICATION_KEY: ${OVH_APPLICATION_KEY:-}
+      OVH_APPLICATION_SECRET: ${OVH_APPLICATION_SECRET:-}
+      OVH_CONSUMER_KEY: ${OVH_CONSUMER_KEY:-}
+      HETZNER_API_TOKEN: ${HETZNER_API_TOKEN:-}
+      LINODE_TOKEN: ${LINODE_TOKEN:-}
+      NAMECHEAP_API_KEY: ${NAMECHEAP_API_KEY:-}
+      NAMECHEAP_API_USER: ${NAMECHEAP_API_USER:-}
+      NAMECHEAP_CLIENT_IP: ${NAMECHEAP_CLIENT_IP:-}
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
+    security_opt: ["no-new-privileges:true"]
+    ports:
+      - "25:25/tcp"
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+      - postern-mta-queue:/var/spool/postfix
+      # Real-mode requires a real Let's Encrypt cert chain at this path.
+      # POSTERN_E2E_TLS_DIR should point at the maintainer's `live/<domain>/`
+      # directory (or a copy of it).
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set for the real-mode overlay}
+        target: /etc/letsencrypt/live/${MTA_TEST_DOMAIN}
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR}
+        target: /etc/letsencrypt/live/mail.${MTA_TEST_DOMAIN}
+    networks: [default, mta-submit]
+    depends_on:
+      provisioner:
+        condition: service_started
+    healthcheck:
+      test:
+        - "CMD"
+        - "python3"
+        - "-c"
+        - |
+          import socket
+          for p in (25, 587):
+              s = socket.create_connection(("127.0.0.1", p), 3)
+              s.close()
+      interval: 5s
+      timeout: 5s
+      retries: 36  # ~3 minutes; provisioner may need to publish DNS first
+    init: true
+
+  provisioner:
+    build:
+      context: ../../..
+      dockerfile: provisioner/Dockerfile
+    image: local/postern-provisioner
+    container_name: postern-e2e-mta-real-provisioner
+    user: "110:110"
+    environment:
+      DOMAIN: ${MTA_TEST_DOMAIN}
+      DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER}
+      MTA_DKIM_SELECTOR_PREFIX: postern
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      GANDI_API_TOKEN: ${GANDI_API_TOKEN:-}
+      DO_AUTH_TOKEN: ${DO_AUTH_TOKEN:-}
+      OVH_ENDPOINT: ${OVH_ENDPOINT:-}
+      OVH_APPLICATION_KEY: ${OVH_APPLICATION_KEY:-}
+      OVH_APPLICATION_SECRET: ${OVH_APPLICATION_SECRET:-}
+      OVH_CONSUMER_KEY: ${OVH_CONSUMER_KEY:-}
+      HETZNER_API_TOKEN: ${HETZNER_API_TOKEN:-}
+      LINODE_TOKEN: ${LINODE_TOKEN:-}
+      NAMECHEAP_API_KEY: ${NAMECHEAP_API_KEY:-}
+      NAMECHEAP_API_USER: ${NAMECHEAP_API_USER:-}
+      NAMECHEAP_CLIENT_IP: ${NAMECHEAP_CLIENT_IP:-}
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs: [/tmp]
+    volumes:
+      - postern-mta-data:/var/lib/opendkim
+    networks: [default]
+    init: true
+    restart: unless-stopped  # NOT "no" -- the rotation loop runs continuously here
+
+  portal:
+    environment:
+      SMTP_HOST: mta
+      SMTP_PORT: "587"
+      SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
+      DOMAIN: ${MTA_TEST_DOMAIN}
+    volumes:
+      - postern-mta-data:/var/lib/opendkim:ro
+    networks: [default, mta-submit]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+      mta:
+        condition: service_healthy
+
+networks:
+  default:
+    name: postern-e2e-mta-real-default
+  e2e-tunnel-entry:
+    name: e2e-tunnel-entry-mta-real
+  e2e-shadowsocks:
+    name: e2e-shadowsocks-mta-real
+  mta-submit:
+    name: mta-submit-mta-real
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.42.0/29
+
+volumes:
+  postern-e2e-data:
+    name: postern-e2e-mta-real-portal-data
+  postern-mta-data:
+    name: postern-e2e-mta-real-dkim-data
+  postern-mta-queue:
+    name: postern-e2e-mta-real-postfix-queue

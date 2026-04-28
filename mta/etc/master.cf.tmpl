@@ -33,3 +33,7 @@ virtual    unix  -       n       n       -       -       virtual
 lmtp       unix  -       -       n       -       -       lmtp
 anvil      unix  -       -       n       -       1       anvil
 scache     unix  -       -       n       -       1       scache
+# postlogd reads from the postlog socket and writes to maillog_file (set in
+# main.cf). Without this, `maillog_file = /dev/stdout` aborts startup with
+# "missing 'postlog' service in master.cf".
+postlog    unix-dgram n  -       n       -       1       postlogd

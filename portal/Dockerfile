@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM dhi.io/python:3.13-alpine3.23-dev AS build
+FROM dhi.io/python:3.14-alpine3.23-dev AS build
 COPY --from=ghcr.io/astral-sh/uv:0.11.8 /uv /bin/uv
 WORKDIR /app
 COPY portal/pyproject.toml portal/uv.lock ./
@@ -10,7 +10,7 @@ COPY portal/src/ src/
 RUN uv sync --frozen --no-dev --link-mode=copy
 RUN mkdir /data
 
-FROM dhi.io/python:3.13-alpine3.23
+FROM dhi.io/python:3.14-alpine3.23
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
 LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"

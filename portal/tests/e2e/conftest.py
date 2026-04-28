@@ -152,13 +152,12 @@ def mta_e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
     try:
         yield
     finally:
-        # Dump mta + provisioner logs BEFORE down -v so CI failure-log steps see
-        # Postfix delivery attempts, opendkim signatures, provisioner state etc.
-        # The CI failure-log step runs after fixture teardown -- by then `compose
-        # down -v` has wiped everything -- so we have to surface logs here.
-        for service in ("mta", "provisioner"):
-            print(f"\n===== {service} logs (mta_e2e_stack teardown) =====", flush=True)
-            subprocess.run(compose_mta("logs", "--no-color", "--timestamps", service), check=False)
+        # In CI, leave the project running so the workflow's "Dump compose logs
+        # on failure" step can grab postfix / opendkim / provisioner logs --
+        # without this, `compose down -v` wipes the project before the dump
+        # step runs and operators see an empty container list.
+        if os.environ.get("CI") == "true":
+            return
         subprocess.run(compose_mta("down", "-v", "--timeout", "30"), check=False)
 
 

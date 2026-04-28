@@ -38,17 +38,34 @@ def _disrupted_opendkim(mta_e2e_stack):
     (and re-spawns opendkim). state.json + key files survive on the volume,
     so the new entrypoint reuses them.
     """
-    # Kill every opendkim process. We avoid `pkill -f opendkim` because the
-    # shell that runs pkill itself contains "opendkim" in its argv and would
-    # signal-suicide (returncode 137). Instead match the leading binary path
-    # `/usr/sbin/opendkim` which only the actual daemon has.
-    mta_exec("sh", "-c", "pkill -9 -f '^/usr/sbin/opendkim ' || killall -9 opendkim || true")
+    # Kill the opendkim process. We can't use `pkill -f opendkim` because the
+    # running shell's argv contains "opendkim" via -c and would signal-suicide.
+    # Read PIDs from /proc directly: scan /proc/*/comm for "opendkim" and kill
+    # those PIDs. The shell's /proc/SELF/comm is "sh", so it won't be killed.
+    kill_script = (
+        "for p in /proc/[0-9]*; do "
+        "  pid=${p##*/}; "
+        "  comm=$(cat $p/comm 2>/dev/null); "
+        "  if [ \"$comm\" = opendkim ]; then "
+        "    echo killing pid=$pid comm=$comm; "
+        "    kill -9 $pid; "
+        "  fi; "
+        "done"
+    )
+    kill_result = subprocess.run(
+        compose_mta("exec", "-T", "mta", "sh", "-c", kill_script),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    print(f"opendkim kill stdout: {kill_result.stdout!r}")  # noqa: T201
+    print(f"opendkim kill stderr: {kill_result.stderr!r}")  # noqa: T201
     # Verify opendkim is actually dead. Without this, an environment where
     # something respawns opendkim would silently invalidate the test.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         result = subprocess.run(
-            compose_mta("exec", "-T", "mta", "sh", "-c", "pgrep -f '^/usr/sbin/opendkim '"),
+            compose_mta("exec", "-T", "mta", "pgrep", "-x", "opendkim"),
             capture_output=True,
             text=True,
             check=False,
@@ -68,17 +85,8 @@ def _disrupted_opendkim(mta_e2e_stack):
             "opendkim is still running after pkill -9 -f -- the test cannot verify "
             "milter tempfail behaviour. Last pgrep output: " + result.stdout.strip() + "\nFull `ps -ef`:\n" + ps_dump
         )
-    # Also kill anything still bound to the milter port (8891). opendkim may
-    # leave forked worker processes whose argv doesn't match the binary path,
-    # or there may be a brief socket-close race; `fuser -k` resolves both
-    # deterministically.
-    subprocess.run(
-        compose_mta("exec", "-T", "mta", "sh", "-c", "fuser -k 8891/tcp 2>/dev/null || true"),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # Wait for the port to actually be closed.
+    # Confirm port 8891 (milter) actually closed. With opendkim PID gone the
+    # listening socket is closed by the kernel; allow a brief race window.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:
         probe = subprocess.run(
@@ -97,16 +105,10 @@ def _disrupted_opendkim(mta_e2e_stack):
             text=True,
             check=False,
         ).stdout
-        ss_dump = subprocess.run(
-            compose_mta("exec", "-T", "mta", "ss", "-tlnp"),
-            capture_output=True,
-            text=True,
-            check=False,
-        ).stdout
         raise AssertionError(
             "127.0.0.1:8891 is still accepting connections after killing opendkim "
-            "and fuser -k -- milter is reachable, the test cannot prove tempfail "
-            f"behaviour.\nFull `ps -ef`:\n{ps_dump}\n`ss -tlnp`:\n{ss_dump}"
+            "-- milter is reachable, the test cannot prove tempfail behaviour.\n"
+            f"Full `ps -ef`:\n{ps_dump}"
         )
     try:
         yield

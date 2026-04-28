@@ -44,9 +44,13 @@ virtual_alias_maps = lmdb:/etc/postfix/virtual
 mailbox_command =
 
 # SRS envelope-sender rewriting ----------------------------------------------------------------------------------------
-sender_canonical_maps = tcp:127.0.0.1:10001
+# PostSRSd 2.x exposes a single socketmap on port 10003 with two lookup tables:
+# `forward` (rewrites outbound envelope sender) and `reverse` (rewrites bounce
+# envelope recipient back to the original). The 1.x dual-port (forward-port
+# 10001 / reverse-port 10002) interface is no longer supported.
+sender_canonical_maps = socketmap:inet:127.0.0.1:10003:forward
 sender_canonical_classes = envelope_sender
-recipient_canonical_maps = tcp:127.0.0.1:10002
+recipient_canonical_maps = socketmap:inet:127.0.0.1:10003:reverse
 recipient_canonical_classes = envelope_recipient
 
 # OpenDKIM milter -- tempfail (queue) instead of accept (send unsigned). An unsigned

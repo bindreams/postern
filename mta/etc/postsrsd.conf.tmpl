@@ -1,9 +1,16 @@
-domain = ${DOMAIN}
-secrets-file = /var/lib/opendkim/postsrsd-secret
-forward-port = 10001
-reverse-port = 10002
-listen-address = 127.0.0.1
-chroot-dir =
+# PostSRSd 2.x config (Alpine 3.23 ships postsrsd 2.0.11). The 1.x keys
+# (forward-port/reverse-port/listen-address/hash-min-length/domain=...) are
+# all gone in 2.x; use the socketmap interface and quoted string values.
+domains = { "${DOMAIN}" }
+secrets-file = "/var/lib/opendkim/postsrsd-secret"
+socketmap = inet:127.0.0.1:10003
+# Disable chroot + drop-privileges: the mta container runs in a minimal,
+# read-only-rootfs profile; chrooting to /var/lib/postsrsd would also need
+# us to provision that directory. Single-process container; the security
+# stays in cap_drop+no-new-privileges from compose.
+chroot-dir = ""
+unprivileged-user = ""
+syslog = off
 hash-length = 4
-hash-min-length = 4
-always-rewrite = no
+hash-minimum = 4
+always-rewrite = off

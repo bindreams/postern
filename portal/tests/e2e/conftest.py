@@ -152,6 +152,13 @@ def mta_e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
     try:
         yield
     finally:
+        # Dump mta + provisioner logs BEFORE down -v so CI failure-log steps see
+        # Postfix delivery attempts, opendkim signatures, provisioner state etc.
+        # The CI failure-log step runs after fixture teardown -- by then `compose
+        # down -v` has wiped everything -- so we have to surface logs here.
+        for service in ("mta", "provisioner"):
+            print(f"\n===== {service} logs (mta_e2e_stack teardown) =====", flush=True)
+            subprocess.run(compose_mta("logs", "--no-color", "--timestamps", service), check=False)
         subprocess.run(compose_mta("down", "-v", "--timeout", "30"), check=False)
 
 

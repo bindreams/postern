@@ -145,7 +145,13 @@ jobs:
   e2e-mta-real:
     name: End-to-end MTA tests (real DNS provider + libdns)
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' }}
+    # Serialize across all PRs and main pushes: every run uses the same fixed
+    # `postern-e2e-test` DKIM selector on the maintainer's test zone, so two
+    # concurrent runs would race on publish/cleanup. cancel-in-progress=false
+    # makes new runs wait rather than killing the in-flight one mid-cleanup.
+    concurrency:
+      group: e2e-mta-real
+      cancel-in-progress: false
     env:
       MTA_TEST_DOMAIN: ${{ vars.MTA_TEST_DOMAIN }}
       MTA_TEST_ADMIN_EMAIL: ${{ vars.MTA_TEST_ADMIN_EMAIL }}

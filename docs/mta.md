@@ -254,7 +254,7 @@ cd portal
 uv run pytest -m e2e_mta_real -v --timeout=300
 ```
 
-In CI: the `e2e-mta-real` job in [.github/workflows/test.yaml](../.github/workflows/test.yaml) runs on push-to-main and workflow*dispatch when the maintainer has populated the corresponding `vars.MTA_TEST*\*`repo variables and`secrets.<provider>` repo secrets.
+In CI: the `e2e-mta-real` job in [.github/workflows/test.yaml](../.github/workflows/test.yaml) runs on every PR and on push-to-main once the maintainer has populated the corresponding `vars.MTA_TEST_*` repo variables and `secrets.<provider>_*` repo secrets. Fork PRs see no secrets (GitHub default) and fail loud on the missing-env assertion — that's expected. The job has `concurrency: e2e-mta-real` so PRs serialize on the shared `postern-e2e-test` DKIM selector instead of racing on publish/cleanup.
 
 ### Outbound suite (VPS-only)
 

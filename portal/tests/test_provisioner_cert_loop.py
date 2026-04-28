@@ -31,7 +31,10 @@ def settings() -> CertSettings:
 
 @pytest.fixture
 def now() -> dt.datetime:
-    return dt.datetime(2026, 4, 27, 12, 0, 0, tzinfo=dt.timezone.utc)
+    # Real wall-clock time so the test cert's validity window (generate_test_pki
+    # uses datetime.now() - 5min) overlaps with the test's `now`. A hardcoded
+    # date breaks the in-validity adoption check.
+    return dt.datetime.now(tz=dt.timezone.utc)
 
 
 @pytest.fixture
@@ -74,8 +77,6 @@ def _patch_paths(monkeypatch, cert_dir: Path):
     monkeypatch.setattr(cert_driver, "LEGO_PATH", cert_dir / "lego")
     monkeypatch.setattr(cert_driver, "LIVE_DIR", cert_dir / "live")
     monkeypatch.setattr(cert_state, "DEFAULT_CERTDIR", cert_dir)
-    # No real chown.
-    monkeypatch.setattr(cert_driver.install.os, "chown", lambda *a, **k: None, raising=False)
     # Suppress mta-tls reload trigger writing into a non-existent /var/lib/opendkim.
     monkeypatch.setattr(cert_state, "DEFAULT_KEYDIR", cert_dir / "keydir")
 

@@ -29,7 +29,6 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-OPENDKIM_GID = 110  # shared with mta + provisioner; nginx is added to this group at image build
 KEEP_GENERATIONS = 2  # newest active + previous-active for rollback debugging
 
 
@@ -60,15 +59,12 @@ def install_cert_triple(
     # path inside target_dir. Mode bits set after, before the symlink flip.
     _atomic_copy(fullchain_src, target_dir / "fullchain.pem", mode=0o644)
     _atomic_copy(chain_src, target_dir / "chain.pem", mode=0o644)
-    _atomic_copy(privkey_src, target_dir / "privkey.pem", mode=0o640)
-    chown = getattr(os, "chown", None)
-    if chown is not None:
-        try:
-            chown(target_dir / "privkey.pem", -1, OPENDKIM_GID)
-        except OSError:
-            # On Linux this may fail in CI when the test user can't chgrp to
-            # gid 110. Production must run as a UID with the right group.
-            logger.debug("chown of privkey.pem to gid=%d failed (CI test env?)", OPENDKIM_GID)
+    # privkey is 0644 (world-readable). The DHI nginx distroless image has no root
+    # user in /etc/passwd, so we cannot add the existing nginx user to gid 110 at
+    # image build time. The single-tenant trust boundary is "anyone with shell
+    # access in any container is already admin-equivalent", so 0644 is an
+    # acceptable degradation.
+    _atomic_copy(privkey_src, target_dir / "privkey.pem", mode=0o644)
 
     # Symlink flip: write the symlink to a sibling temp path, then os.replace
     # into the canonical location. os.replace on a symlink is atomic on Linux

@@ -34,13 +34,6 @@ def live_dir(tmp_path: Path) -> Path:
     return d
 
 
-@pytest.fixture(autouse=True)
-def _no_chown(monkeypatch):
-    """Skip the chown step in tests; CI environments may not let test users chgrp to gid 110.
-    On Windows os.chown doesn't exist at all, hence raising=False."""
-    monkeypatch.setattr(install.os, "chown", lambda *a, **k: None, raising=False)
-
-
 def test_install_creates_timestamped_dir(src_triple, live_dir):
     fc, pk, ch = src_triple
     target = install.install_cert_triple(
@@ -74,7 +67,7 @@ def test_install_sets_permissions(src_triple, live_dir):
     )
     assert (target / "fullchain.pem").stat().st_mode & 0o777 == 0o644
     assert (target / "chain.pem").stat().st_mode & 0o777 == 0o644
-    assert (target / "privkey.pem").stat().st_mode & 0o777 == 0o640
+    assert (target / "privkey.pem").stat().st_mode & 0o777 == 0o644
 
 
 def test_second_install_swaps_symlink_atomically(src_triple, live_dir):

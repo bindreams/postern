@@ -47,7 +47,6 @@ def test_show_with_existing_cert(env, tmp_path):
     scratch = tmp_path / "scratch"
     generate_test_pki(scratch, hostname="postern.test")
     (env / "live").mkdir()
-    setattr(install.os, "chown", lambda *a, **k: None)
     install.install_cert_triple(
         fullchain_src=scratch / "fullchain.pem",
         privkey_src=scratch / "privkey.pem",

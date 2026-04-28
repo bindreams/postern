@@ -5,7 +5,7 @@ go 1.23
 require (
 	github.com/libdns/cloudflare v0.1.3
 	github.com/libdns/digitalocean dfa7af5c2e31
-	github.com/libdns/gandi v1.0.4
+	github.com/libdns/gandi v1.1.0
 	github.com/libdns/hetzner v0.0.5
 	github.com/libdns/libdns v0.2.3
 	github.com/libdns/linode v0.4.5

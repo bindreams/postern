@@ -110,6 +110,11 @@ def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess
     reach the provider's API endpoint. We don't mount the docker socket or pass
     other capabilities -- network access is the only deviation from the safe
     default (CLAUDE.md global rule about explicit-safety).
+
+    --entrypoint postern-dns: the image's ENTRYPOINT is the rotation-state
+    Python driver, which requires DOMAIN/MTA_DNS_PROVIDER and starts the full
+    state machine. We just want the libdns wrapper, so we bypass the
+    entrypoint and exec the binary directly.
     """
     cmd = [
         "docker",
@@ -117,9 +122,10 @@ def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess
         "--rm",
         "--network",
         "bridge",
+        "--entrypoint",
+        "postern-dns",
         *_provider_env_dict(env),
         "local/postern-provisioner",
-        "postern-dns",
         *args,
     ]
     return subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)

@@ -11,6 +11,7 @@ this file does not declare ``pytestmark``.
 from __future__ import annotations
 
 import subprocess
+import time
 
 import pytest
 
@@ -37,7 +38,47 @@ def _disrupted_opendkim(mta_e2e_stack):
     (and re-spawns opendkim). state.json + key files survive on the volume,
     so the new entrypoint reuses them.
     """
-    mta_exec("pkill", "-9", "opendkim")
+    # Aggressive: kill every opendkim process by full-command-line match. The
+    # image's `pkill opendkim` (basename match) misses processes whose argv[0]
+    # was rewritten or that linger as zombies; -f matches the full cmdline so
+    # nothing escapes.
+    mta_exec("sh", "-c", "pkill -9 -f opendkim || killall -9 opendkim || true")
+    # Verify opendkim is actually dead. Without this, an environment where
+    # something respawns opendkim would silently invalidate the test.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            compose_mta("exec", "-T", "mta", "sh", "-c", "pgrep -f opendkim | grep -v grep || true"),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if not result.stdout.strip():
+            break
+        time.sleep(0.2)
+    else:
+        ps_dump = subprocess.run(
+            compose_mta("exec", "-T", "mta", "ps", "-ef"),
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+        raise AssertionError(
+            "opendkim is still running after pkill -9 -f -- the test cannot verify "
+            "milter tempfail behaviour. Last pgrep output: " + result.stdout.strip() + "\nFull `ps -ef`:\n" + ps_dump
+        )
+    # Also verify port 8891 is closed (the milter socket).
+    probe = subprocess.run(
+        compose_mta("exec", "-T", "mta", "sh", "-c", "nc -z -w 1 127.0.0.1 8891 && echo OPEN || echo CLOSED"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if "OPEN" in probe.stdout:
+        raise AssertionError(
+            "127.0.0.1:8891 is still accepting connections after killing opendkim "
+            "-- milter is reachable, the test cannot prove tempfail behaviour."
+        )
     try:
         yield
     finally:

@@ -14,6 +14,7 @@ import re
 
 import pytest
 
+from ._helpers import run
 from ._mta_helpers import (
     docker_inspect,
     get_container_id,
@@ -57,16 +58,23 @@ def test_otp_email_is_dkim_signed(
     active_selector,
 ):
     """Login flow → mailpit receives the OTP message; the DKIM-Signature header is
-    present, signs `d=postern.test`, and uses the active selector."""
+    present, signs `d=postern.test`, and uses the active selector.
+
+    Reads the raw RFC 5322 source (not mailpit's parsed Headers dict, which
+    may not surface every header in this version) and parses the
+    DKIM-Signature line directly.
+    """
+    import email as _email_mod  # stdlib
+
     email = "dkim-signed@postern.test"
     fresh_mta_user("DKIM Signed Test", email)
     _request_otp(portal_mta_client, email)
 
     msg = mailpit_mta_client.latest_to(email, timeout=30)
-    headers = msg.get("Headers") or {}
-    sig_values = headers.get("DKIM-Signature") or headers.get("Dkim-Signature") or []
-    assert sig_values, f"no DKIM-Signature header on mailpit message; headers were {sorted(headers)!r}"
-    sig = sig_values[0]
+    raw = mailpit_mta_client.get_raw_source(msg["ID"])
+    parsed = _email_mod.message_from_bytes(raw)
+    sig = parsed.get("DKIM-Signature")
+    assert sig, f"no DKIM-Signature header on mailpit message; raw header keys were {parsed.keys()!r}"
     assert "v=1" in sig, f"DKIM-Signature missing v=1: {sig!r}"
 
     fields = {k.strip(): v.strip() for kv in sig.split(";") if "=" in kv for k, v in [kv.split("=", 1)]}
@@ -145,12 +153,20 @@ def test_provisioner_exits_cleanly_when_dns_provider_none(mta_e2e_stack):
 
 
 def test_postmaster_forwards_to_admin_email(mta_e2e_stack, mailpit_mta_client):
-    """sendmail postmaster@postern.test (from inside mta) -> mailpit shows the
-    message addressed to admin@elsewhere.test, exercising:
+    """sendmail postmaster@postern.test (from inside mta) -> mailpit receives a
+    message ultimately delivered to admin@elsewhere.test, exercising:
       - virtual_alias_maps (postmaster -> admin)
       - transport_maps (elsewhere.test -> [172.30.99.10]:1025)
       - SRS envelope-sender rewriting (postsrsd via sender_canonical_maps)
+
+    The header `To:` is left as `postmaster@postern.test` (mailpit indexes by
+    that); the proof of forwarding is the postfix log line `to=<admin@...>,
+    orig_to=<postmaster@...>` plus the message reaching mailpit at all (Postfix
+    would otherwise reject postmaster@postern.test since it's not in
+    local_recipient_maps and not in mydestination).
     """
+    import time as _time
+
     payload = (
         "From: probe@postern.test\r\n"
         "To: postmaster@postern.test\r\n"
@@ -162,9 +178,26 @@ def test_postmaster_forwards_to_admin_email(mta_e2e_stack, mailpit_mta_client):
     # leading-dot lines (we don't have any but this matches sendmail conventions).
     mta_exec("sendmail", "-i", "postmaster@postern.test", stdin=payload)
 
-    # Wait for postfix to push the message via smtp:[mailpit-ip]:1025 -> mailpit.
-    msg = mailpit_mta_client.latest_to("admin@elsewhere.test", timeout=30)
+    # Wait for the message to reach mailpit. We poll by header To: which mailpit
+    # parses out of the RFC 5322 source.
+    msg = mailpit_mta_client.latest_to("postmaster@postern.test", timeout=30)
     assert msg["ID"], "mailpit message has no ID"
+
+    # Confirm Postfix actually rewrote the envelope recipient via virtual_alias.
+    # The rewrite happens before delivery, so the postfix log line for this
+    # transaction includes `to=<admin@elsewhere.test>, orig_to=<postmaster@...>`.
+    deadline = _time.monotonic() + 10
+    found = False
+    while _time.monotonic() < deadline:
+        logs = run(["docker", "logs", "--tail", "200", get_container_id("mta")]).stdout
+        if "to=<admin@elsewhere.test>" in logs and "orig_to=<postmaster@postern.test>" in logs:
+            found = True
+            break
+        _time.sleep(0.5)
+    assert found, (
+        "postfix did not log the virtual_alias rewrite "
+        "(expected `to=<admin@elsewhere.test>, orig_to=<postmaster@postern.test>` in mta logs)"
+    )
 
 
 def test_mta_listens_on_smtp_and_submission_ports(mta_e2e_stack):

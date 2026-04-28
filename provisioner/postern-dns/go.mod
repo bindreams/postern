@@ -9,7 +9,7 @@ require (
 	github.com/libdns/hetzner v0.0.5
 	github.com/libdns/libdns v0.2.3
 	github.com/libdns/linode v0.5.0
-	github.com/libdns/namecheap v0.0.0-20240319070834-0aa3a76b18f3
+	github.com/libdns/namecheap v0.1.0
 	github.com/libdns/ovh v0.0.4
 	github.com/libdns/route53 v1.5.4
 )

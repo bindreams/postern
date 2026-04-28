@@ -54,19 +54,23 @@ def portal_mta_exec(*cmd: str, stdin: str | None = None) -> subprocess.Completed
     return compose_mta_exec(*cmd, service="portal", stdin=stdin)
 
 
-# DKIM volume access (via portal :ro mount; portal is distroless, so use python -c) ====================================
+# DKIM volume access (read via the mta container) ======================================================================
 def read_dkim_volume_file(path: str) -> str:
-    """Read a file under ``/var/lib/opendkim/`` via the portal's read-only mount.
+    """Read a file under ``/var/lib/opendkim/`` via the mta container.
 
-    The portal is distroless: no ``cat``, no ``sh``. We use ``python -c`` which
-    is available because the portal's runtime is the dhi.io python image.
+    We read from mta (not portal) because:
+    - state.json is written by the provisioner via tempfile.mkstemp -> mode 0600,
+      owned by opendkim (110:110). The portal runs as the unprivileged
+      ``nonroot`` user (UID 65532) and cannot read 0600 files even through the
+      :ro mount.
+    - The mta container's runtime is alpine-base-dev (busybox + cat). Running
+      as the image default user (root in -dev), it can read any file regardless
+      of mode.
     """
     if not path.startswith("/var/lib/opendkim/") and not path.startswith("var/lib/opendkim/"):
         # Accept relative names like "state.json" or "<selector>.txt".
         path = f"/var/lib/opendkim/{path.lstrip('/')}"
-    py = ("import sys\n"
-          f"sys.stdout.write(open({path!r}, encoding='utf-8').read())\n")
-    return portal_mta_exec("python", "-c", py).stdout
+    return mta_exec("cat", path).stdout
 
 
 def get_provisioner_state() -> dict:
@@ -78,10 +82,12 @@ def get_provisioner_state() -> dict:
 def get_container_id(service: str) -> str:
     """Resolve a service name to its container ID for `docker inspect`.
 
-    Uses ``compose ps -q <service>`` so we don't have to guess the
-    ``<project>-<service>-N`` naming Compose uses internally.
+    Uses ``compose ps -aq <service>`` (-a to include exited containers) so we
+    don't have to guess the ``<project>-<service>-N`` naming Compose uses
+    internally. The provisioner is ``restart: 'no'`` and intentionally exits
+    after generating the keypair, so it's "exited" by the time tests inspect it.
     """
-    cid = run(compose_mta("ps", "-q", service)).stdout.strip()
+    cid = run(compose_mta("ps", "-aq", service)).stdout.strip()
     if not cid:
         raise AssertionError(f"no container for service {service!r} in project {PROJECT_MTA}")
     return cid.splitlines()[0]

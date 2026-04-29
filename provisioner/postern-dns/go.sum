@@ -32,6 +32,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/digitalocean/godo v1.41.0 h1:WYy7MIVVhTMZUNB+UA3irl2V9FyDJeDttsifYyn7jYA=
 github.com/digitalocean/godo v1.41.0/go.mod h1:p7dOjjtSBqCTUksqtA5Fd3uaKs9kyTq2xcz76ulEJRU=
+github.com/digitalocean/godo v1.148.0 h1:th91q+6bZY+Slgs9eZxBupa2+aUUYn1qT7gPICFmtPA=
+github.com/digitalocean/godo v1.148.0/go.mod h1:tYeiWY5ZXVpU48YaFv0M5irUFHXGorZpDNm7zzdWMzM=
 github.com/go-resty/resty/v2 v2.16.5 h1:hBKqmWrr7uRc3euHVqmh1HTHcKn99Smr7o5spptdhTM=
 github.com/go-resty/resty/v2 v2.16.5/go.mod h1:hkJtXbA2iKHzJheXYvQ8snQES5ZLGKMwQ07xAwp/fiA=
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
@@ -43,6 +45,10 @@ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX
 github.com/google/go-querystring v1.0.0/go.mod h1:odCYkC5MyYFN7vkCjXpyrEuKhc/BUO6wN/zVPAxq5ck=
 github.com/google/go-querystring v1.1.0 h1:AnCroh3fv4ZBgVIf1Iwtovgjaw/GiKJo8M8yD/fhyJ8=
 github.com/google/go-querystring v1.1.0/go.mod h1:Kcdr2DB4koayq7X8pmAG4sNG59So17icRSOU623lUBU=
+github.com/hashicorp/go-cleanhttp v0.5.2 h1:035FKYIWjmULyFRBKPs8TBQoi0x6d9G4xc9neXJWAZQ=
+github.com/hashicorp/go-cleanhttp v0.5.2/go.mod h1:kO/YDlP8L1346E6Sodw+PrpBSV4/SoxCXGY6BqNFT48=
+github.com/hashicorp/go-retryablehttp v0.7.7 h1:C8hUCYzor8PIfXHa4UrZkU4VvK8o9ISHxT2Q8+VepXU=
+github.com/hashicorp/go-retryablehttp v0.7.7/go.mod h1:pkQpWZeYWskR+D1tR2O5OcBFOxfA7DoAO6xtkuQnHTk=
 github.com/jarcoal/httpmock v1.4.1 h1:0Ju+VCFuARfFlhVXFc2HxlcQkfB+Xq12/EotHko+x2A=
 github.com/jarcoal/httpmock v1.4.1/go.mod h1:ftW1xULwo+j0R0JJkJIIi7UKigZUXCLLanykgjwBXL0=
 github.com/jmespath/go-jmespath v0.4.0 h1:BEgLn5cpjn8UN1mAw4NjwDrS35OdebyEtFe+9YPoQUg=
@@ -53,6 +59,8 @@ github.com/libdns/cloudflare v0.1.3 h1:XPFa2f3Mm/3FDNwl9Ki2bfAQJ0Cm5GQB0e8PQVy25
 github.com/libdns/cloudflare v0.1.3/go.mod h1:XbvSCSMcxspwpSialM3bq0LsS3/Houy9WYxW8Ok8b6M=
 github.com/libdns/digitalocean v0.0.0-20230728223659-4f9064657aea h1:IGlMNZCUp8Ho7NYYorpP5ZJgg2mFXARs6eHs/pSqFkA=
 github.com/libdns/digitalocean v0.0.0-20230728223659-4f9064657aea/go.mod h1:B2TChhOTxvBflpRTHlguXWtwa1Ha5WI6JkB6aCViM+0=
+github.com/libdns/digitalocean v0.0.0-20250606071607-dfa7af5c2e31 h1:raIuvxYVJtZ60hREOOL3MS2AS3xA0W2G3grPQ4rGTeo=
+github.com/libdns/digitalocean v0.0.0-20250606071607-dfa7af5c2e31/go.mod h1:hde/tjNiPFe1lLaf2TtaCAYgJ9j/SGLhaQMpgZlF6e0=
 github.com/libdns/gandi v1.0.2 h1:1Ts8UpI1x5PVKpOjKC7Dn4+EObndz9gm6vdZnloHSKQ=
 github.com/libdns/gandi v1.0.2/go.mod h1:hxpbQKcQFgQrTS5lV4tAgn6QoL6HcCnoBJaW5nOW4Sk=
 github.com/libdns/hetzner v0.0.1 h1:WsmcsOKnfpKmzwhfyqhGQEIlEeEaEUvb7ezoJgBKaqU=

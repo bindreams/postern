@@ -4,10 +4,10 @@ go 1.23.0
 
 require (
 	github.com/libdns/cloudflare v0.1.3
-	github.com/libdns/digitalocean v0.0.0-20230728223659-4f9064657aea
+	github.com/libdns/digitalocean v0.0.0-20250606071607-dfa7af5c2e31
 	github.com/libdns/gandi v1.0.2
 	github.com/libdns/hetzner v0.0.1
-	github.com/libdns/libdns v0.2.3
+	github.com/libdns/libdns v1.0.0
 	github.com/libdns/linode v0.4.1
 	github.com/libdns/namecheap v0.1.0
 	github.com/libdns/ovh v0.0.3
@@ -29,15 +29,18 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.26.4 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.30.3 // indirect
 	github.com/aws/smithy-go v1.20.3 // indirect
-	github.com/digitalocean/godo v1.41.0 // indirect
+	github.com/digitalocean/godo v1.148.0 // indirect
 	github.com/go-resty/resty/v2 v2.16.5 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
+	github.com/hashicorp/go-retryablehttp v0.7.7 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/linode/linodego v1.56.0 // indirect
 	github.com/ovh/go-ovh v1.6.0 // indirect
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/time v0.6.0 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 )
 

@@ -1,13 +1,13 @@
 module github.com/bindreams/postern/provisioner/postern-dns
 
-go 1.23.0
+go 1.24
 
 require (
 	github.com/libdns/cloudflare v0.1.3
 	github.com/libdns/digitalocean v0.0.0-20230728223659-4f9064657aea
-	github.com/libdns/gandi v1.0.2
+	github.com/libdns/gandi v1.1.0
 	github.com/libdns/hetzner v0.0.1
-	github.com/libdns/libdns v0.2.3
+	github.com/libdns/libdns v1.1.0
 	github.com/libdns/linode v0.4.1
 	github.com/libdns/namecheap v0.1.0
 	github.com/libdns/ovh v0.0.3

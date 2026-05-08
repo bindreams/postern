@@ -14,10 +14,15 @@
       "automerge": false
     },
     {
-      "description": "external/** is a vendored git-subrepo. Routine bumps come via the customManager on .gitrepo files (which triggers .github/workflows/subrepo-pull.yaml). Disable standard package managers under external/** so Renovate doesn't redundantly edit inner files (those edits diverge from upstream and are subsumed or conflict on the next subrepo pull). Security advisories still flow because vulnerabilityAlerts overrides packageRules.enabled. See issue #82.",
+      "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability advisories still flow because Renovate's vulnerabilityAlerts pipeline force-sets `enabled: true` for matching deps, regardless of packageRules. See issue #82.",
       "matchFileNames": ["external/**"],
-      "matchManagers": ["cargo", "gomod", "dockerfile", "npm", "pip_requirements", "github-actions", "git-submodules"],
       "enabled": false
+    },
+    {
+      "description": "Re-enable the .gitrepo subrepo customManager that the broad external/** disable above would otherwise silence. Subrepo bumps are how external/** legitimately advances.",
+      "matchFileNames": ["external/**/.gitrepo"],
+      "matchManagers": ["custom.regex"],
+      "enabled": true
     }
   ],
   "vulnerabilityAlerts": {

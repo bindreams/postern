@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 
 # Lego (ACME DNS-01 client). Pin a specific tag; Renovate's customManager regex
 # in .github/renovate.json tracks upgrades.
-RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v4/cmd/lego@v4.19.2
+RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v4/cmd/lego@v4.35.2
 
 FROM dhi.io/alpine-base:3.23-dev AS build
 # All privileged setup happens in the -dev stage (the runtime stage at

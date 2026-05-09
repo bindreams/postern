@@ -50,7 +50,7 @@ jobs:
           enable-cache: true
 
       - name: Build the per-connection shadowsocks image (compose does not build it)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: shadowsocks/Dockerfile
@@ -190,7 +190,7 @@ jobs:
           enable-cache: true
 
       - name: Build the provisioner image (real-infra tests use `docker run --rm` against it)
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: provisioner/Dockerfile

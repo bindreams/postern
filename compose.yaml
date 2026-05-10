@@ -7,10 +7,19 @@ services:
       - "80:80/tcp"
       - "443:443/tcp"
     volumes:
+      # Mount the nginx config files individually rather than overlaying the
+      # whole /etc/nginx directory. Overlaying hides the in-image
+      # /etc/nginx/{mime.types,fastcgi*,scgi*,uwsgi*}, and nginx.conf's
+      # `include mime.types;` would then fail. With per-path mounts, the
+      # image defaults stay live and we just override our customizations.
       - type: bind
         read_only: true
-        source: ./nginx/etc
-        target: /etc/nginx
+        source: ./nginx/etc/nginx.conf
+        target: /etc/nginx/nginx.conf
+      - type: bind
+        read_only: true
+        source: ./nginx/etc/conf.d
+        target: /etc/nginx/conf.d
       - type: bind
         read_only: true
         source: /etc/localtime

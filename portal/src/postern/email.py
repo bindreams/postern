@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 async def send_otp_email(to: str, code: str, settings: Settings) -> bool:
     """Send a one-time auth code via SMTP. Returns True on success."""
     msg = EmailMessage()
-    msg["Subject"] = "Your Postern VPN login code"
+    msg["Subject"] = f"Your {settings.product_name} login code"
     msg["From"] = settings.smtp_from
     msg["To"] = to
     msg.set_content(

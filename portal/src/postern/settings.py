@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     # Domain ===========================================================================================================
     domain: str = "postern.example.com"
 
+    # Branding =========================================================================================================
+    # Cosmetic display name shown in UI page titles, the OTP-email subject, and the
+    # downloaded-config filename prefix. Decoupled from `domain` and from
+    # `mta_dkim_selector_prefix` (which is part of the public DKIM record namespace
+    # and stays "postern" by default).
+    product_name: str = "Postern"
+
     # MTA ==============================================================================================================
     mta_verify_dns: bool = True
     mta_require_dnssec: bool | Literal["auto"] = "auto"

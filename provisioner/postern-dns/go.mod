@@ -7,7 +7,7 @@ require (
 	github.com/libdns/digitalocean v0.0.0-20230728223659-4f9064657aea
 	github.com/libdns/gandi v1.0.2
 	github.com/libdns/hetzner v0.0.1
-	github.com/libdns/libdns v0.2.3
+	github.com/libdns/libdns v1.1.1
 	github.com/libdns/linode v0.4.1
 	github.com/libdns/namecheap v0.1.0
 	github.com/libdns/ovh v0.0.3
@@ -46,4 +46,4 @@ require (
 // transitive dep requires it -- but our providers (namecheap v0.1.0, etc) are
 // compiled against the v0.2.x Record struct. Pin v0.2.3 explicitly via replace
 // so the build resolves to a single, mutually-compatible API.
-replace github.com/libdns/libdns => github.com/libdns/libdns v0.2.3
+replace github.com/libdns/libdns => github.com/libdns/libdns v1.1.1

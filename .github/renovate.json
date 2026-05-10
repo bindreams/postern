@@ -23,6 +23,11 @@
       "matchFileNames": ["external/**/.gitrepo"],
       "matchManagers": ["custom.regex"],
       "enabled": true
+    },
+    {
+      "description": "libdns ecosystem moves in lockstep -- group core + subdrivers so a single PR bumps them together. Otherwise per-subdriver PRs can straddle libdns major versions and break the Go build (see issue #81).",
+      "matchPackageNames": ["github.com/libdns/**"],
+      "groupName": "libdns ecosystem"
     }
   ],
   "vulnerabilityAlerts": {

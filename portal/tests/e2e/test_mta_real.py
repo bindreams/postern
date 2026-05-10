@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 
@@ -135,7 +136,24 @@ def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess
         "local/postern-provisioner",
         *args,
     ]
-    return subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
+    except subprocess.CalledProcessError as e:
+        # Surface the captured streams unconditionally on failure so
+        # postern-dns's stderr diagnostics survive pytest's rendering.
+        sys.stderr.write(
+            f"\n--- _postern_dns({args!r}) FAILED stdout ---\n{e.stdout}\n--- stderr ---\n{e.stderr}\n--- end ---\n"
+        )
+        sys.stderr.flush()
+        raise
+    # Even on success, postern-dns may emit warnings on stderr (the
+    # idempotency-recovery path on txt-set, for example). Surface those
+    # so they appear in the test log next to the operation that produced
+    # them.
+    if result.stderr:
+        sys.stderr.write(f"\n--- _postern_dns({args[:2]!r}, ...) stderr ---\n{result.stderr}--- end ---\n")
+        sys.stderr.flush()
+    return result
 
 
 def _resolve_txt_eventually(

@@ -21,10 +21,10 @@ FROM dhi.io/alpine-base:3.23-dev AS build
 # `opendkim-genkey` writes keys with ownership the mta container (running as
 # the same UID/GID) can read. py3-cryptography is required at runtime by
 # postern.cert.inspect (used by the cert state machine).
-RUN mkdir -p /var/lib/opendkim \
+RUN mkdir -p /var/lib/opendkim /etc/letsencrypt \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
-	&& chown opendkim:opendkim /var/lib/opendkim \
+	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt \
 	&& apk add --no-cache python3 py3-pip py3-dnspython py3-cryptography opendkim-utils ca-certificates tzdata
 
 FROM dhi.io/alpine-base:3.23-dev

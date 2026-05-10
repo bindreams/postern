@@ -22,6 +22,15 @@ class PosternApp(FastAPI):
         super().__init__(lifespan=type(self)._lifespan, docs_url=None, redoc_url=None, openapi_url=None)
         self.state.settings = settings or Settings()
 
+        # Brand display string surfaced via Jinja `{{ product_name }}` -- registered on each
+        # router's Jinja2Templates env so templates don't have to thread it through every
+        # context dict. Routers create their templates instance at module import; we patch
+        # the env globals here at app construction (settings now exist). Use `update` (not
+        # subscript) because `Environment.globals` is typed as a heterogeneous dict whose
+        # value type union doesn't include plain `str`; `update` is permissive enough.
+        for tpls in (login.templates, dashboard.templates):
+            tpls.env.globals.update(product_name=self.state.settings.product_name)
+
         @self.middleware("http")
         async def _inject_db(request: Request, call_next):
             request.state.db = self.state.db

@@ -15,6 +15,18 @@ router = APIRouter()
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_template_dir))
 
+_FILENAME_SAFE = re.compile(r"[^a-zA-Z0-9_-]")
+
+
+def _safe_filename(product_name: str, label: str) -> str:
+    """Sanitize both fields for use in a Content-Disposition filename. Replaces any
+    char outside [A-Za-z0-9_-] with `_`. Lowercases the product side so the prefix
+    is stable across casing variants (`PRODUCT_NAME=Hole` and `PRODUCT_NAME=hole`
+    yield the same filename)."""
+    safe_product = _FILENAME_SAFE.sub("_", product_name).lower()
+    safe_label = _FILENAME_SAFE.sub("_", label)
+    return f"{safe_product}-{safe_label}.json"
+
 
 async def _get_current_user(request: Request):
     """Return the current user or None if not authenticated."""
@@ -55,15 +67,16 @@ async def download_config(request: Request, connection_id: str):
     if not conn.enabled:
         return Response(status_code=404)
 
-    domain = request.app.state.settings.domain
-    config = client_config(conn, domain)
+    settings = request.app.state.settings
+    config = client_config(conn, settings.domain)
     config_json = json.dumps(config, indent=2)
+    filename = _safe_filename(settings.product_name, conn.label)
 
     return Response(
         content=config_json,
         media_type="application/json",
         headers={
-            "Content-Disposition": f'attachment; filename="postern-{re.sub(r"[^a-zA-Z0-9_-]", "_", conn.label)}.json"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
 

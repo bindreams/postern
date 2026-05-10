@@ -108,11 +108,11 @@ The default config is built around `postern.example.com`. To deploy under your o
 1. **[nginx/etc/conf.d/mta-sts.conf](nginx/etc/conf.d/mta-sts.conf)** — replace `postern.example.com` in the `server_name` and the cert include path. Skip if you opted out of the built-in MTA.
 1. **[nginx/etc/conf.d/mta-sts/policy.txt](nginx/etc/conf.d/mta-sts/policy.txt)** — replace `mail.postern.example.com` with `mail.<your-domain>` in the `mx:` line. Skip if you opted out of the built-in MTA.
 1. **[nginx/etc/conf.d/certs/postern.example.com.conf](nginx/etc/conf.d/certs/postern.example.com.conf)** and **[nginx/etc/conf.d/certs/mta-sts.postern.example.com.conf](nginx/etc/conf.d/certs/mta-sts.postern.example.com.conf)** — rename both files to match your domain and edit the three `/etc/letsencrypt/live/...` paths inside each. Then update the `include` lines from steps 1 and 2 to point at the renamed files.
-1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@postern.example.com>` to `<noreply@<your-domain>>`, set `MTA_ADMIN_EMAIL=` (required when using the built-in MTA), and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`).
-1. **Test fixtures** (optional; only if you plan to run the test suite with your domain). Three test files reference the default:
+1. **[.env](.env)** — change `SMTP_FROM` from `<noreply@postern.example.com>` to `<noreply@<your-domain>>`, set `MTA_ADMIN_EMAIL=` (required when using the built-in MTA), and uncomment/set `DOMAIN=<your-domain>` (overrides the default in `settings.py`). Optionally also set `PRODUCT_NAME=<YourBrand>` to change the cosmetic display name in UI page titles, the OTP-email subject, and the downloaded-config filename prefix — this is purely text and is decoupled from `DOMAIN` and from `MTA_DKIM_SELECTOR_PREFIX`.
+1. **Test fixtures** (optional; only if you plan to run the test suite with your domain). Two test files reference the default:
    - [portal/tests/test_reconciler.py](portal/tests/test_reconciler.py)
-   - [portal/tests/test_routes.py](portal/tests/test_routes.py)
    - [portal/tests/test_ss_config.py](portal/tests/test_ss_config.py)
+     ([portal/tests/test_routes.py](portal/tests/test_routes.py) reads `settings.product_name` and adapts to whatever `PRODUCT_NAME` you set, so it doesn't need editing.)
 
 After editing, rebuild Nginx: `docker compose up -d --build nginx`.
 

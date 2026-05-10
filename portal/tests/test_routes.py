@@ -42,10 +42,11 @@ async def client(test_app, app_settings):
 
 
 # Login page ===========================================================================================================
-async def test_login_page_renders(client):
+async def test_login_page_renders(client, app_settings):
     response = await client.get("/login")
     assert response.status_code == 200
-    assert "Postern VPN" in response.text
+    # Brand-string is whatever PRODUCT_NAME points at (default "Postern").
+    assert app_settings.product_name in response.text
 
 
 async def test_login_redirects_to_verify(client, app_settings):
@@ -162,6 +163,77 @@ async def test_healthz(client):
     response = await client.get("/healthz")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# PRODUCT_NAME branding ================================================================================================
+async def test_product_name_default(client):
+    """Without PRODUCT_NAME set, login renders the default 'Postern' brand."""
+    response = await client.get("/login")
+    assert response.status_code == 200
+    assert "<h1>Postern</h1>" in response.text
+
+
+async def test_product_name_override(tmp_path):
+    """With PRODUCT_NAME=Foo, all brand surfaces use Foo."""
+    settings = Settings(
+        database_path=str(tmp_path / "test.db"),
+        secret_key="test-secret",
+        product_name="Foo",
+    )
+    app = PosternApp(settings)
+    async with db.get_connection(settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
+        conn = Connection(
+            user_id=user.id,
+            path_token="abcdef123456789012345678",
+            label="Laptop",
+            password="k",
+        )
+        await db.create_connection(database, conn)
+        session = Session(token="tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            login_resp = await c.get("/login")
+            assert "<h1>Foo</h1>" in login_resp.text
+            assert "Login — Foo" in login_resp.text
+
+            c.cookies.set("session", "tok")
+            cfg_resp = await c.get(f"/connection/{conn.id}/config")
+            # PRODUCT_NAME is lowercased for the filename prefix.
+            assert 'filename="foo-Laptop.json"' in cfg_resp.headers["content-disposition"]
+
+
+def test_safe_filename_sanitization():
+    """_safe_filename strips chars outside [A-Za-z0-9_-] from both inputs."""
+    from postern.routes.dashboard import _safe_filename
+    assert _safe_filename("Hole/Slash", "test") == "hole_slash-test.json"
+    assert _safe_filename("Postern", "../etc/passwd") == "postern-___etc_passwd.json"
+    assert _safe_filename("Foo Bar", "label with spaces") == "foo_bar-label_with_spaces.json"
+
+
+async def test_otp_subject_uses_product_name(tmp_path):
+    """email.send_otp_email subject is f'Your {product_name} login code'."""
+    from postern import email
+    settings = Settings(
+        database_path=str(tmp_path / "x.db"),
+        secret_key="test-secret",
+        product_name="Hole",
+    )
+    captured: dict = {}
+
+    async def fake_send(msg, **kwargs):
+        captured["subject"] = msg["Subject"]
+
+    with patch("postern.email.aiosmtplib.send", side_effect=fake_send):
+        ok = await email.send_otp_email("a@b.example", "123456", settings)
+    assert ok is True
+    assert captured["subject"] == "Your Hole login code"
 
 
 # Logout ===============================================================================================================

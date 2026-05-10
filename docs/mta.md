@@ -137,16 +137,16 @@ This is a once-per-six-months chore.
 
 Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`:
 
-| Provider     | Env vars                                                                            |
-| ------------ | ----------------------------------------------------------------------------------- |
-| cloudflare   | `CLOUDFLARE_API_TOKEN`                                                              |
-| route53      | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                          |
-| gandi        | `GANDI_API_TOKEN`                                                                   |
-| digitalocean | `DO_AUTH_TOKEN`                                                                     |
-| ovh          | `OVH_ENDPOINT`, `OVH_APPLICATION_KEY`, `OVH_APPLICATION_SECRET`, `OVH_CONSUMER_KEY` |
-| hetzner      | `HETZNER_API_TOKEN`                                                                 |
-| linode       | `LINODE_TOKEN`                                                                      |
-| namecheap    | `NAMECHEAP_API_KEY`, `NAMECHEAP_API_USER`, `NAMECHEAP_CLIENT_IP`                    |
+| Provider     | Env vars                                                                            | Notes                                                                                                                                                                               |
+| ------------ | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cloudflare   | `CLOUDFLARE_API_TOKEN`                                                              |                                                                                                                                                                                     |
+| route53      | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`                          |                                                                                                                                                                                     |
+| gandi        | `GANDI_API_TOKEN`                                                                   | Must be a Gandi **Personal Access Token** generated at <https://account.gandi.net/personal-access-tokens>. The legacy "Gandi API key" (sent as `X-Api-Key`) is no longer supported. |
+| digitalocean | `DO_AUTH_TOKEN`                                                                     |                                                                                                                                                                                     |
+| ovh          | `OVH_ENDPOINT`, `OVH_APPLICATION_KEY`, `OVH_APPLICATION_SECRET`, `OVH_CONSUMER_KEY` |                                                                                                                                                                                     |
+| hetzner      | `HETZNER_API_TOKEN`                                                                 | Must be a **Hetzner Cloud** API token (zones in the new Hetzner Cloud Console). Tokens for the deprecated DNS Console at `dns.hetzner.com` are no longer supported.                 |
+| linode       | `LINODE_TOKEN`                                                                      |                                                                                                                                                                                     |
+| namecheap    | `NAMECHEAP_API_KEY`, `NAMECHEAP_API_USER`, `NAMECHEAP_CLIENT_IP`                    |                                                                                                                                                                                     |
 
 Use a token scoped to **only** the DNS zone for `<your-domain>`. The token lives only in the provisioner container (zero inbound listeners), but tighter scope is still better.
 

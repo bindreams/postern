@@ -47,7 +47,9 @@ def test_cert_renewal_full_config_valid():
         cert_acme_email="ops@postern.test",
         cert_acme_directory="https://acme-staging-v02.api.letsencrypt.org/directory",
         cert_renewal_days_before_expiry=14,
+        public_ipv4="1.2.3.4",  # required when cert_renewal=true (PR #115)
     )
     assert s.cert_renewal is True
     assert s.dns_provider == "cloudflare"
     assert s.cert_renewal_days_before_expiry == 14
+    assert s.public_ipv4 == "1.2.3.4"

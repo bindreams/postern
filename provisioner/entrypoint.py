@@ -42,7 +42,9 @@ from postern_mta import rotation  # noqa: E402
 
 # Cert renewal driver -- imported via the postern.* namespace (also COPYed in by Dockerfile).
 from postern.cert import state as cert_state  # noqa: E402
+from postern.cert import dns_records as dns_records_state  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
+from postern_provisioner import dns_records as dns_driver  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s provisioner %(levelname)s: %(message)s")
 logger = logging.getLogger("entrypoint")
@@ -315,6 +317,33 @@ def _build_cert_settings(domain: str) -> cert_driver.CertSettings:
     )
 
 
+def _build_dns_settings(domain: str) -> dns_driver.DnsRecordsSettings:
+    """Build DnsRecordsSettings for the apex/wildcard A/AAAA + CAA reconciler.
+
+    Refuses to start if PUBLIC_IPV4 is unset -- the portal Settings already
+    validates this when CERT_RENEWAL=true, but the provisioner's entrypoint
+    runs without loading portal Settings, so we re-check here for clarity."""
+    public_ipv4 = os.environ.get("PUBLIC_IPV4", "").strip()
+    public_ipv6 = os.environ.get("PUBLIC_IPV6", "").strip()
+    if not public_ipv4:
+        raise RuntimeError(
+            "CERT_RENEWAL=true but PUBLIC_IPV4 is unset. "
+            "The cert manager publishes A records for ${DOMAIN}, *.${DOMAIN}, and mail.${DOMAIN} "
+            "from PUBLIC_IPV4 -- it can't proceed without one."
+        )
+    # Validate the IP format eagerly so a typo doesn't only surface as a
+    # provider-side error mid-reconcile.
+    dns_driver.validate_ipv4(public_ipv4)
+    if public_ipv6:
+        dns_driver.validate_ipv6(public_ipv6)
+    return dns_driver.DnsRecordsSettings(
+        domain=domain,
+        dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
+        public_ipv4=public_ipv4,
+        public_ipv6=public_ipv6,
+    )
+
+
 def _try_advance_dkim(domain: str, selector_prefix: str, counters: dict[str, int]) -> None:
     try:
         state = rotation.read_state(keydir=KEYDIR)
@@ -355,23 +384,69 @@ def _try_advance_cert(domain: str, counters: dict[str, int]) -> None:
         logger.exception("cert step failed (%d consecutive)", counters["cert"])
 
 
+def _has_dns_trigger() -> bool:
+    return dns_records_state.trigger_path().exists()
+
+
+def _consume_dns_trigger() -> None:
+    try:
+        dns_records_state.trigger_path().unlink()
+    except OSError:
+        pass
+
+
+def _try_advance_dns(domain: str, counters: dict[str, int]) -> None:
+    """Reconcile apex/wildcard A/AAAA + CAA records. Runs only when
+    CERT_RENEWAL=true (caller's gate). Matches the dkim/cert tick pattern."""
+    try:
+        settings = _build_dns_settings(domain)
+        state = dns_records_state.read_state()
+        had_trigger = _has_dns_trigger()
+        runner = dns_driver.PosternDnsRunner()
+        new_state = dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+        if had_trigger:
+            _consume_dns_trigger()
+        if new_state != state:
+            dns_records_state.write_state(new_state)
+            # Only log on meaningful transitions; consecutive_failures bumps are noisy.
+            if new_state.last_reconciled_iso != state.last_reconciled_iso:
+                logger.info(
+                    "dns: reconciled apex/wildcard A/AAAA + CAA (v4=%s v6=%s)",
+                    new_state.last_published_ipv4 or "(unset)",
+                    new_state.last_published_ipv6 or "(unset)",
+                )
+        counters["dns"] = 0
+    except Exception:
+        counters["dns"] = counters.get("dns", 0) + 1
+        logger.exception("dns reconcile step failed (%d consecutive)", counters["dns"])
+
+
 def _sleep_with_triggers() -> None:
     """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
     slept = 0
     while slept < TICK_SECONDS:
-        if _has_explicit_trigger() or _has_cert_trigger():
+        if _has_explicit_trigger() or _has_cert_trigger() or _has_dns_trigger():
             break
         time.sleep(TRIGGER_POLL_SECONDS)
         slept += TRIGGER_POLL_SECONDS
 
 
-def run_combined_loop(domain: str, selector_prefix: str, *, dkim_enabled: bool, cert_enabled: bool) -> NoReturn:
-    counters: dict[str, int] = {"dkim": 0, "cert": 0}
+def run_combined_loop(
+    domain: str,
+    selector_prefix: str,
+    *,
+    dkim_enabled: bool,
+    cert_enabled: bool,
+    dns_enabled: bool,
+) -> NoReturn:
+    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0}
     while True:
         if dkim_enabled:
             _try_advance_dkim(domain, selector_prefix, counters)
         if cert_enabled:
             _try_advance_cert(domain, counters)
+        if dns_enabled:
+            _try_advance_dns(domain, counters)
         _sleep_with_triggers()
 
 
@@ -389,12 +464,22 @@ def main() -> NoReturn:
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
 
     dkim_enabled = dns_provider != "none"
+    # The apex/wildcard A/AAAA + CAA reconciler runs whenever cert renewal is
+    # on -- per the design discussion in #115, enabling cert renewal signals
+    # "I want the domain situation handled."
+    dns_enabled = cert_renewal
 
     if not dkim_enabled and not cert_renewal:
         logger.info("DNS_PROVIDER=none and CERT_RENEWAL=false -- nothing to do, exiting")
         sys.exit(0)
 
-    run_combined_loop(domain, selector_prefix, dkim_enabled=dkim_enabled, cert_enabled=cert_renewal)
+    run_combined_loop(
+        domain,
+        selector_prefix,
+        dkim_enabled=dkim_enabled,
+        cert_enabled=cert_renewal,
+        dns_enabled=dns_enabled,
+    )
 
 
 if __name__ == "__main__":

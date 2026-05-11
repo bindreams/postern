@@ -498,5 +498,85 @@ def cert_renewal_status() -> None:
         typer.echo(f"last_failed_state:    {state.last_failed_state}")
 
 
+dns_app = typer.Typer(name="dns", help="Manage cert-manager-driven DNS records (A/AAAA/CAA)")
+app.add_typer(dns_app)
+
+
+@dns_app.command("show")
+def dns_show() -> None:
+    """Show the apex/wildcard A/AAAA + CAA records the cert manager publishes,
+    plus the current state.json view of what's been published."""
+    from postern.cert import dns_records as dns_state
+    settings = _settings()
+    state = dns_state.read_state()
+
+    typer.echo(f"domain:               {settings.domain}")
+    typer.echo(f"public_ipv4:          {settings.public_ipv4 or '(unset)'}")
+    typer.echo(f"public_ipv6:          {settings.public_ipv6 or '(unset)'}")
+    typer.echo(f"last_published_ipv4:  {state.last_published_ipv4 or '(unset)'}")
+    typer.echo(f"last_published_ipv6:  {state.last_published_ipv6 or '(unset)'}")
+    typer.echo(f"last_published_caa:   {state.last_published_caa or '(unset)'}")
+    typer.echo(f"last_reconciled_iso:  {state.last_reconciled_iso or '(never)'}")
+    typer.echo(f"consecutive_failures: {state.consecutive_failures}")
+    typer.echo("")
+    typer.echo("Records the reconciler publishes:")
+    for fqdn in (settings.domain, f"*.{settings.domain}", f"mail.{settings.domain}"):
+        typer.echo(f"  {fqdn:40} A     {settings.public_ipv4 or '(skipped: PUBLIC_IPV4 unset)'}")
+        if settings.public_ipv6:
+            typer.echo(f"  {fqdn:40} AAAA  {settings.public_ipv6}")
+    typer.echo(f"  {settings.domain:40} CAA   0 issue \"letsencrypt.org\"")
+
+
+@dns_app.command("verify")
+def dns_verify() -> None:
+    """Check live DNS matches the expected apex/wildcard A/AAAA + CAA records.
+    Exits non-zero on drift."""
+    import dns.exception
+    import dns.resolver
+
+    from postern.cert import dns_records as dns_state
+
+    settings = _settings()
+    if not settings.cert_renewal:
+        typer.echo("CERT_RENEWAL is not enabled in this deployment", err=True)
+        raise typer.Exit(1)
+
+    resolver = dns.resolver.Resolver(configure=True)
+    failures: list[str] = []
+
+    def _query(name: str, rdtype: str) -> set[str]:
+        try:
+            ans = resolver.resolve(name, rdtype, raise_on_no_answer=False)
+            return {r.to_text() for r in ans} if ans.rrset is not None else set()
+        except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.exception.Timeout):
+            return set()
+
+    for fqdn in (settings.domain, f"*.{settings.domain}", f"mail.{settings.domain}"):
+        # Wildcard query: resolvers expand *.<dom> only for unmatched names, so probe
+        # a known sub-name to exercise the wildcard.
+        probe = fqdn if not fqdn.startswith("*.") else "doctor-probe." + fqdn[2:]
+        got = _query(probe, "A")
+        if settings.public_ipv4 not in got:
+            failures.append(f"A    {fqdn:40} expected {settings.public_ipv4}, got {got or '(empty)'}")
+        if settings.public_ipv6:
+            got6 = _query(probe, "AAAA")
+            if settings.public_ipv6 not in got6:
+                failures.append(f"AAAA {fqdn:40} expected {settings.public_ipv6}, got {got6 or '(empty)'}")
+
+    caa = _query(settings.domain, "CAA")
+    if not any('issue "letsencrypt.org"' in v for v in caa):
+        failures.append(f"CAA  {settings.domain:40} expected 'issue \"letsencrypt.org\"', got {caa or '(empty)'}")
+
+    state = dns_state.read_state()
+    if state.last_reconciled_iso is None:
+        failures.append("state: reconciler has not yet completed a tick (last_reconciled_iso is null)")
+
+    if failures:
+        for f in failures:
+            typer.echo(f"FAIL: {f}", err=True)
+        raise typer.Exit(1)
+    typer.echo("dns OK: apex/wildcard A/AAAA + CAA match expected values")
+
+
 if __name__ == "__main__":
     app()

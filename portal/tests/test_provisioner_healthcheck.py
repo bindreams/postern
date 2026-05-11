@@ -16,6 +16,7 @@ def _patch_paths(monkeypatch, tmp_path: Path):
     certdir.mkdir()
     monkeypatch.setattr(healthcheck.rotation, "DEFAULT_KEYDIR", keydir)
     monkeypatch.setattr(healthcheck.cert_state, "DEFAULT_CERTDIR", certdir)
+    monkeypatch.setattr(healthcheck.dns_records_state, "DEFAULT_CERTDIR", certdir)
     return keydir, certdir
 
 
@@ -52,9 +53,27 @@ def test_unhealthy_when_cert_renewal_on_but_no_cert(monkeypatch, _patch_paths):
 
 
 def test_healthy_when_cert_renewal_on_and_cert_installed(monkeypatch, _patch_paths):
+    """All three halves green: DKIM STABLE, cert INSTALLED, DNS records reconciled."""
     keydir, certdir = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     (certdir / "state.json").write_text(json.dumps({"state": "INSTALLED"}))
+    (certdir / "dns_records_state.json").write_text(
+        json.dumps({
+            "last_published_ipv4": "1.2.3.4",
+            "last_reconciled_iso": "2026-05-11T00:00:00+00:00",
+        })
+    )
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "true")
     assert healthcheck.main() == 0
+
+
+def test_unhealthy_when_cert_renewal_on_but_dns_not_reconciled(monkeypatch, _patch_paths):
+    """Cert is INSTALLED but the DNS reconciler hasn't completed a tick yet."""
+    keydir, certdir = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    (certdir / "state.json").write_text(json.dumps({"state": "INSTALLED"}))
+    # No dns_records_state.json -> read_state returns default (last_reconciled_iso=None).
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "true")
+    assert healthcheck.main() == 1

@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     cert_renewal_days_before_expiry: int = 30
     cert_force_reissue: bool = False
 
+    # Public IPs (cert manager publishes apex/wildcard A/AAAA when CERT_RENEWAL=true) ==================================
+    # IPv4 required when CERT_RENEWAL=true. IPv6 optional; if set, AAAA records are
+    # published; if previously published and now unset, AAAA records are deleted
+    # (delete-on-unset, to avoid stale AAAA pointing at an old address after a
+    # v6 -> v4-only migration).
+    public_ipv4: str = ""
+    public_ipv6: str = ""
+
     @field_validator("secret_key")
     @classmethod
     def _reject_placeholder(cls, v: str) -> str:
@@ -83,6 +91,16 @@ class Settings(BaseSettings):
                 raise ValueError("CERT_RENEWAL=true requires CERT_ACME_EMAIL")
             if "@example." in self.cert_acme_email:
                 raise ValueError("CERT_ACME_EMAIL cannot be an example.com / example.org address")
+            if not self.public_ipv4:
+                raise ValueError(
+                    "CERT_RENEWAL=true requires PUBLIC_IPV4 (the cert manager publishes A/AAAA "
+                    "records for ${DOMAIN}, *.${DOMAIN}, and mail.${DOMAIN})"
+                )
+            # Validate IP formats. Lazy import to avoid extra deps at module load.
+            from postern_provisioner.dns_records import validate_ipv4, validate_ipv6
+            validate_ipv4(self.public_ipv4)
+            if self.public_ipv6:
+                validate_ipv6(self.public_ipv6)
         if self.cert_renewal_days_before_expiry < 1:
             raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
         return self

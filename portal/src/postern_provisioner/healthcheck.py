@@ -7,7 +7,9 @@ Two modes:
   OR the deployment has DKIM disabled (DNS_PROVIDER=none AND no DKIM state file).
   This is today's de-facto behaviour, just made explicit.
 
-- CERT_RENEWAL=true: healthy iff cert state.json shows INSTALLED, AND the
+- CERT_RENEWAL=true: healthy iff cert state.json shows INSTALLED **and** the
+  apex/wildcard A/AAAA + CAA records have been reconciled at least once
+  (dns_records_state.json's last_reconciled_iso is non-null), AND the
   DKIM condition above also holds.
 
 Used by docker-compose's `depends_on: condition: service_healthy` so nginx
@@ -20,6 +22,7 @@ import os
 import sys
 from pathlib import Path
 
+from postern.cert import dns_records as dns_records_state
 from postern.cert import state as cert_state
 from postern.mta import rotation
 
@@ -55,6 +58,18 @@ def main() -> int:
         cert = cert_state.read_state()
         if cert.state != "INSTALLED":
             print(f"cert: state={cert.state}, waiting for INSTALLED", file=sys.stderr)
+            return 1
+
+        # DNS records half ---------------------------------------------------------------------------------------------
+        # The apex/wildcard A/AAAA + CAA reconciler runs alongside the cert
+        # state machine when CERT_RENEWAL=true. Healthy only after the first
+        # successful tick, so nginx/mta don't start before the DNS chain is
+        # in place. Subsequent ticks may fail without changing health (the
+        # reconciler increments consecutive_failures internally, but a
+        # transient provider hiccup shouldn't make every dependent unhealthy).
+        dns = dns_records_state.read_state()
+        if dns.last_reconciled_iso is None:
+            print("dns: apex/wildcard A/AAAA + CAA records not yet reconciled", file=sys.stderr)
             return 1
 
     return 0

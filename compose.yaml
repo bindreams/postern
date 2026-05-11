@@ -3,23 +3,18 @@ services:
     build: ./nginx
     image: local/nginx
     container_name: nginx
+    environment:
+      # Required: the entrypoint renders nginx/etc/*.tmpl with ${DOMAIN} at startup.
+      # Unset/empty value -> nginx refuses to start. See nginx/nginx-entrypoint.sh.
+      DOMAIN: ${DOMAIN:-postern.example.com}
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
     volumes:
-      # Mount the nginx config files individually rather than overlaying the
-      # whole /etc/nginx directory. Overlaying hides the in-image
-      # /etc/nginx/{mime.types,fastcgi*,scgi*,uwsgi*}, and nginx.conf's
-      # `include mime.types;` would then fail. With per-path mounts, the
-      # image defaults stay live and we just override our customizations.
-      - type: bind
-        read_only: true
-        source: ./nginx/etc/nginx.conf
-        target: /etc/nginx/nginx.conf
-      - type: bind
-        read_only: true
-        source: ./nginx/etc/conf.d
-        target: /etc/nginx/conf.d
+      # The nginx image's /etc/nginx is writable; entrypoint renders templates
+      # from /etc/nginx/templates/ into /etc/nginx/ at startup. No bind mount
+      # of nginx/etc/ is needed -- the source tree is baked into the image at
+      # build time. /etc/letsencrypt and /var/log/nginx still bind through.
       - type: bind
         read_only: true
         source: /etc/localtime

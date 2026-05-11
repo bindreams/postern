@@ -59,6 +59,14 @@ services:
   nginx:
     build: ../../../nginx
     image: local/nginx
+    environment:
+      # The entrypoint requires DOMAIN to render templates from
+      # /etc/nginx/templates/. The e2e nginx.conf below is bind-mounted
+      # read-only so the rendered nginx.conf write is harmlessly skipped;
+      # this DOMAIN drives the rendered conf.d/*.conf files (which
+      # the e2e nginx.conf doesn't include, but the entrypoint still wants
+      # a sane value here).
+      DOMAIN: postern.test
     ports:
       - "127.0.0.1:8443:443/tcp"
     volumes:

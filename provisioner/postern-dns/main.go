@@ -1,27 +1,39 @@
-// postern-dns -- thin Lego/libdns-style wrapper for publishing arbitrary TXT records.
+// postern-dns -- thin libdns wrapper for publishing/retiring DNS records.
 //
-// Used by the provisioner's Python entrypoint to publish/retire DKIM TXT
-// records via the deployer's configured DNS provider.
+// Used by the provisioner's Python entrypoint to publish/retire records via
+// the deployer's configured DNS provider. TXT records have always been
+// supported (DKIM rotation, lego's DNS-01 challenges); A/AAAA/MX/TLSA/CAA
+// were added (#113) so the same binary serves the planned cert-manager and
+// MTA-records auto-publishers.
 //
 // Subcommands:
 //
-//	postern-dns txt-set    <fqdn> <value>
-//	postern-dns txt-delete <fqdn> <value>
+//	postern-dns txt-set     <fqdn> <value>
+//	postern-dns txt-delete  <fqdn> <value>
+//	postern-dns a-set       <fqdn> <ipv4>
+//	postern-dns a-delete    <fqdn> <ipv4>
+//	postern-dns aaaa-set    <fqdn> <ipv6>
+//	postern-dns aaaa-delete <fqdn> <ipv6>
+//	postern-dns mx-set      <fqdn> <preference> <target>
+//	postern-dns mx-delete   <fqdn> <preference> <target>
+//	postern-dns caa-set     <fqdn> <flags> <tag> <value>
+//	postern-dns caa-delete  <fqdn> <flags> <tag> <value>
+//	postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
+//	postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
 //
 // Provider selection: env var DNS_PROVIDER (matches a known provider name).
 // Provider config: each provider's native env vars (e.g. CLOUDFLARE_API_TOKEN,
 // AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, GANDI_API_TOKEN, DO_AUTH_TOKEN).
 // Postern documents the env-var contract per provider in docs/mta.md.
-//
-// Forward-compat: this binary is intentionally generic. A planned ACME
-// DNS-01 cert-renewal feature will add `acme-issue` and `acme-renew`
-// subcommands using the same providers; `txt-set`/`txt-delete` stay stable.
 package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"net/netip"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +47,11 @@ import (
 	"github.com/libdns/ovh"
 	"github.com/libdns/route53"
 )
+
+// recordTTL is the TTL applied to records this binary publishes. Short enough
+// that a mistake doesn't linger; long enough that periodic renewals don't
+// hammer the provider API.
+const recordTTL = 5 * time.Minute
 
 // providerOps is the libdns interface intersection we need.
 //
@@ -117,21 +134,33 @@ func splitFQDN(fqdn string) (zone, name string) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
-  postern-dns txt-set    <fqdn> <value>
-  postern-dns txt-delete <fqdn> <value>
+  postern-dns txt-set     <fqdn> <value>
+  postern-dns txt-delete  <fqdn> <value>
+  postern-dns a-set       <fqdn> <ipv4>
+  postern-dns a-delete    <fqdn> <ipv4>
+  postern-dns aaaa-set    <fqdn> <ipv6>
+  postern-dns aaaa-delete <fqdn> <ipv6>
+  postern-dns mx-set      <fqdn> <preference> <target>
+  postern-dns mx-delete   <fqdn> <preference> <target>
+  postern-dns caa-set     <fqdn> <flags> <tag> <value>
+  postern-dns caa-delete  <fqdn> <flags> <tag> <value>
+  postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
+  postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
 
 env vars:
   DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
-                      ovh, hetzner, linode, namecheap)
+                  ovh, hetzner, linode, namecheap)
   Plus the provider's native credential env vars; see docs/mta.md.`)
 	os.Exit(2)
 }
 
 func main() {
-	if len(os.Args) != 4 {
+	if len(os.Args) < 4 {
 		usage()
 	}
-	cmd, fqdn, value := os.Args[1], os.Args[2], os.Args[3]
+	cmd := os.Args[1]
+	fqdn := os.Args[2]
+	args := os.Args[3:]
 	providerName := os.Getenv("DNS_PROVIDER")
 	if providerName == "" || providerName == "none" {
 		fmt.Fprintln(os.Stderr, "postern-dns: DNS_PROVIDER not set or set to 'none'")
@@ -146,26 +175,268 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := runCmd(ctx, providerName, provider, cmd, fqdn, value); err != nil {
+	if err := runCmd(ctx, providerName, provider, cmd, fqdn, args); err != nil {
 		fmt.Fprintln(os.Stderr, "postern-dns:", err)
 		os.Exit(1)
 	}
 }
 
-// runCmd is the testable core of main(): given a configured provider and
-// a command (txt-set/txt-delete), it does the libdns calls and returns
-// either nil (success) or an error suitable for stderr + exit-1. Pulled
-// out of main() so unit tests can drive it with a fakeProvider.
-func runCmd(ctx context.Context, providerName string, provider providerOps, cmd, fqdn, value string) error {
+// runCmd is the testable core of main(): given a configured provider, a
+// subcommand, the FQDN, and the remaining positional args, it parses the
+// type-specific args into a libdns record and dispatches to the right
+// publish/retire helper. Pulled out of main() so unit tests can drive it
+// with a fakeProvider.
+func runCmd(ctx context.Context, providerName string, provider providerOps, cmd, fqdn string, args []string) error {
 	zone, name := splitFQDN(fqdn)
+
 	switch cmd {
 	case "txt-set":
-		return doTxtSet(ctx, provider, zone, name, value)
+		if len(args) != 1 {
+			return fmt.Errorf("txt-set: expected <value>, got %d arg(s)", len(args))
+		}
+		return doTxtSet(ctx, provider, zone, name, args[0])
 	case "txt-delete":
-		return doTxtDelete(ctx, providerName, provider, zone, name, value)
+		if len(args) != 1 {
+			return fmt.Errorf("txt-delete: expected <value>, got %d arg(s)", len(args))
+		}
+		return doTxtDelete(ctx, providerName, provider, zone, name, args[0])
+
+	case "a-set", "aaaa-set":
+		rec, err := parseAddressArgs(cmd, name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordSet(ctx, provider, zone, rec)
+	case "a-delete", "aaaa-delete":
+		rec, err := parseAddressArgs(strings.TrimSuffix(cmd, "-delete")+"-set", name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordDelete(ctx, provider, zone, rec)
+
+	case "mx-set":
+		rec, err := parseMXArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordSet(ctx, provider, zone, rec)
+	case "mx-delete":
+		rec, err := parseMXArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordDelete(ctx, provider, zone, rec)
+
+	case "caa-set":
+		rec, err := parseCAAArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordSet(ctx, provider, zone, rec)
+	case "caa-delete":
+		rec, err := parseCAAArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordDelete(ctx, provider, zone, rec)
+
+	case "tlsa-set":
+		rec, err := parseTLSAArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordSet(ctx, provider, zone, rec)
+	case "tlsa-delete":
+		rec, err := parseTLSAArgs(name, args)
+		if err != nil {
+			return err
+		}
+		return doRecordDelete(ctx, provider, zone, rec)
+
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// Per-type arg parsing ==================================================================================================
+
+// parseAddressArgs handles `a-set`/`aaaa-set` (and the `-delete` variants, which
+// pass the same args after trimming). The caller passes "a-set" or "aaaa-set"
+// so this function can verify the IP family matches the subcommand.
+func parseAddressArgs(cmd, name string, args []string) (libdns.Address, error) {
+	wantType := "A"
+	if cmd == "aaaa-set" {
+		wantType = "AAAA"
+	}
+	if len(args) != 1 {
+		return libdns.Address{}, fmt.Errorf("%s: expected <ip>, got %d arg(s)", cmd, len(args))
+	}
+	ip, err := netip.ParseAddr(args[0])
+	if err != nil {
+		return libdns.Address{}, fmt.Errorf("%s: invalid IP %q: %w", cmd, args[0], err)
+	}
+	if wantType == "A" && !ip.Is4() {
+		return libdns.Address{}, fmt.Errorf("%s: %q is not an IPv4 address (use aaaa-set for IPv6)", cmd, args[0])
+	}
+	if wantType == "AAAA" && !ip.Is6() {
+		return libdns.Address{}, fmt.Errorf("%s: %q is not an IPv6 address (use a-set for IPv4)", cmd, args[0])
+	}
+	return libdns.Address{Name: name, IP: ip, TTL: recordTTL}, nil
+}
+
+func parseMXArgs(name string, args []string) (libdns.MX, error) {
+	if len(args) != 2 {
+		return libdns.MX{}, fmt.Errorf("mx: expected <preference> <target>, got %d arg(s)", len(args))
+	}
+	pref, err := strconv.ParseUint(args[0], 10, 16)
+	if err != nil {
+		return libdns.MX{}, fmt.Errorf("mx: preference must be a uint16: %w", err)
+	}
+	target := args[1]
+	if target == "" {
+		return libdns.MX{}, fmt.Errorf("mx: target must be non-empty")
+	}
+	return libdns.MX{
+		Name:       name,
+		Preference: uint16(pref),
+		Target:     target,
+		TTL:        recordTTL,
+	}, nil
+}
+
+func parseCAAArgs(name string, args []string) (libdns.CAA, error) {
+	if len(args) != 3 {
+		return libdns.CAA{}, fmt.Errorf("caa: expected <flags> <tag> <value>, got %d arg(s)", len(args))
+	}
+	flags, err := strconv.ParseUint(args[0], 10, 8)
+	if err != nil {
+		return libdns.CAA{}, fmt.Errorf("caa: flags must be a uint8: %w", err)
+	}
+	// Per RFC 8659, valid flag values are 0 and 128 (the critical bit). Anything
+	// else is meaningless on the wire and almost always a typo.
+	if flags != 0 && flags != 128 {
+		return libdns.CAA{}, fmt.Errorf("caa: flags must be 0 or 128 (got %d)", flags)
+	}
+	// The canonical tag set is issue/issuewild/iodef/contactemail/contactphone.
+	// Validating that here would lock out future IANA-assigned tags, so we just
+	// check non-empty.
+	tag := args[1]
+	if tag == "" {
+		return libdns.CAA{}, fmt.Errorf("caa: tag must be non-empty")
+	}
+	return libdns.CAA{
+		Name:  name,
+		Flags: uint8(flags),
+		Tag:   tag,
+		Value: args[2],
+		TTL:   recordTTL,
+	}, nil
+}
+
+// parseTLSAArgs builds a generic libdns.RR for TLSA (libdns v1.1.1 has no typed
+// TLSA struct). The wire format is `<usage> <selector> <matching-type> <hex>`;
+// libdns/cloudflare's default-case parser accepts this shape via RR.Parse().
+func parseTLSAArgs(name string, args []string) (libdns.RR, error) {
+	if len(args) != 4 {
+		return libdns.RR{}, fmt.Errorf("tlsa: expected <usage> <selector> <matching-type> <cert-hex>, got %d arg(s)", len(args))
+	}
+	usage, err := strconv.ParseUint(args[0], 10, 8)
+	if err != nil || usage > 3 {
+		return libdns.RR{}, fmt.Errorf("tlsa: usage must be 0..3 (RFC 6698 §2.1.1), got %q", args[0])
+	}
+	selector, err := strconv.ParseUint(args[1], 10, 8)
+	if err != nil || selector > 1 {
+		return libdns.RR{}, fmt.Errorf("tlsa: selector must be 0 or 1 (RFC 6698 §2.1.2), got %q", args[1])
+	}
+	matchType, err := strconv.ParseUint(args[2], 10, 8)
+	if err != nil || matchType > 2 {
+		return libdns.RR{}, fmt.Errorf("tlsa: matching-type must be 0..2 (RFC 6698 §2.1.3), got %q", args[2])
+	}
+	certHex := strings.ToLower(args[3])
+	if _, err := hex.DecodeString(certHex); err != nil {
+		return libdns.RR{}, fmt.Errorf("tlsa: cert-hex must be valid hex: %w", err)
+	}
+	return libdns.RR{
+		Name: name,
+		Type: "TLSA",
+		Data: fmt.Sprintf("%d %d %d %s", usage, selector, matchType, certHex),
+		TTL:  recordTTL,
+	}, nil
+}
+
+// Generic set / delete helpers (for non-TXT types) =====================================================================
+//
+// TXT keeps its own pair (doTxtSet / doTxtDelete) because of the chunked-content
+// workarounds for libdns/cloudflare#32. The other record types here use the
+// straightforward libdns flow: AppendRecords on set, GetRecords + DeleteRecords
+// on delete, with content-equality matching via the RR shape.
+
+// doRecordSet publishes `rec` via AppendRecords. Duplicate-record errors from
+// the provider are treated as idempotent success (matching the doTxtSet
+// contract): the desired state is already present.
+func doRecordSet(ctx context.Context, provider providerOps, zone string, rec libdns.Record) error {
+	rr := rec.RR()
+	fqdn := displayFQDN(rr.Name, zone)
+	_, err := provider.AppendRecords(ctx, zone, []libdns.Record{rec})
+	if err == nil {
+		return nil
+	}
+	if !isDuplicateRecordError(err) {
+		return fmt.Errorf("%s-set %s: %w", strings.ToLower(rr.Type), fqdn, err)
+	}
+	// Confirm the record is present after duplicate-detection.
+	all, getErr := provider.GetRecords(ctx, zone)
+	if getErr != nil {
+		return fmt.Errorf("%s-set %s: AppendRecords reported duplicate but GetRecords failed: %w (original AppendRecords error: %v)", strings.ToLower(rr.Type), fqdn, getErr, err)
+	}
+	if len(matchRR(all, rr)) == 0 {
+		return fmt.Errorf("%s-set %s: provider reported duplicate but no matching record visible to GetRecords: %w", strings.ToLower(rr.Type), fqdn, err)
+	}
+	fmt.Fprintf(os.Stderr, "postern-dns(warn): %s-set %s: AppendRecords returned %q; record already present, treating as idempotent success\n", strings.ToLower(rr.Type), fqdn, err)
+	return nil
+}
+
+// doRecordDelete removes any record matching `rec`'s (Type, Name, Data) shape.
+// Matches the doTxtDelete contract: no-match -> idempotent success;
+// local-matches-but-provider-reports-0-deleted -> error (silent no-op is a bug).
+func doRecordDelete(ctx context.Context, provider providerOps, zone string, rec libdns.Record) error {
+	rr := rec.RR()
+	fqdn := displayFQDN(rr.Name, zone)
+	all, getErr := provider.GetRecords(ctx, zone)
+	if getErr != nil {
+		return fmt.Errorf("%s-delete %s: GetRecords: %w", strings.ToLower(rr.Type), fqdn, getErr)
+	}
+	matches := matchRR(all, rr)
+	if len(matches) == 0 {
+		return nil
+	}
+	deleted, delErr := provider.DeleteRecords(ctx, zone, matches)
+	if delErr != nil {
+		return fmt.Errorf("%s-delete %s: %w", strings.ToLower(rr.Type), fqdn, delErr)
+	}
+	if len(deleted) == 0 {
+		return fmt.Errorf("%s-delete %s: subdriver returned 0 deleted records despite %d local matches", strings.ToLower(rr.Type), fqdn, len(matches))
+	}
+	return nil
+}
+
+// matchRR filters `all` to records whose (Type, Name, Data) match `want`.
+// Generic counterpart to matchTXT (which has TXT-specific chunk normalization).
+func matchRR(all []libdns.Record, want libdns.RR) []libdns.Record {
+	var out []libdns.Record
+	for _, rec := range all {
+		got := rec.RR()
+		if got.Type != want.Type {
+			continue
+		}
+		if got.Name != want.Name {
+			continue
+		}
+		if got.Data == want.Data {
+			out = append(out, rec)
+		}
+	}
+	return out
 }
 
 // displayFQDN renders a (name, zone) pair as a single readable FQDN for

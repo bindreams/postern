@@ -427,7 +427,7 @@ func errStr(s string) error { return errors.New(s) }
 
 func TestRunCmd_TxtSet_Success(t *testing.T) {
 	fp := &fakeProvider{}
-	if err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", "v=ok"); err != nil {
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", []string{"v=ok"}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
 	if len(fp.appended) != 1 {
@@ -447,7 +447,7 @@ func TestRunCmd_TxtSet_DuplicateRecoveredFromGetRecords(t *testing.T) {
 		stored:    []libdns.Record{preExisting},
 		appendErr: errStr("got error status: HTTP 400: [{Code:81058 Message:An identical record already exists}]"),
 	}
-	if err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", "v=ok"); err != nil {
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", []string{"v=ok"}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
 }
@@ -459,7 +459,7 @@ func TestRunCmd_TxtSet_DuplicateButNoMatchInZone(t *testing.T) {
 		stored:    []libdns.Record{libdns.TXT{Name: "host", Text: "v=other", TTL: time.Minute}},
 		appendErr: errStr("got error status: HTTP 400: [{Code:81058 Message:An identical record already exists}]"),
 	}
-	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", "v=ok")
+	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", []string{"v=ok"})
 	if err == nil {
 		t.Fatalf("runCmd: want error, got nil")
 	}
@@ -470,7 +470,7 @@ func TestRunCmd_TxtSet_DuplicateButNoMatchInZone(t *testing.T) {
 
 func TestRunCmd_UnknownCommand(t *testing.T) {
 	fp := &fakeProvider{}
-	err := runCmd(context.Background(), "cloudflare", fp, "txt-typo", "host.example.com", "v=ok")
+	err := runCmd(context.Background(), "cloudflare", fp, "txt-typo", "host.example.com", []string{"v=ok"})
 	if err == nil || !strings.Contains(err.Error(), "unknown command") {
 		t.Fatalf("runCmd unknown-command: got err=%v; want 'unknown command' anchor", err)
 	}
@@ -485,7 +485,7 @@ func TestRunCmd_TxtSet_DuplicateButGetRecordsAlsoFails(t *testing.T) {
 		appendErr:     errStr("got error status: HTTP 400: [{Code:81058 Message:An identical record already exists}]"),
 		getRecordsErr: errStr("rate limit exceeded on GetRecords"),
 	}
-	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", "v=ok")
+	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", []string{"v=ok"})
 	if err == nil {
 		t.Fatalf("runCmd: want error, got nil")
 	}
@@ -509,7 +509,7 @@ func TestRunCmd_TxtSet_GenericErrorIsNotMaskedByPriorRecord(t *testing.T) {
 		stored:    []libdns.Record{preExisting},
 		appendErr: errStr("authentication failed: invalid API token"),
 	}
-	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", "v=ok")
+	err := runCmd(context.Background(), "cloudflare", fp, "txt-set", "host.example.com", []string{"v=ok"})
 	if err == nil {
 		t.Fatalf("runCmd: want error (auth failure must propagate), got nil")
 	}
@@ -522,7 +522,7 @@ func TestRunCmd_TxtDelete_NoMatch_IsIdempotent(t *testing.T) {
 	fp := &fakeProvider{
 		stored: []libdns.Record{libdns.TXT{Name: "_other", Text: "ignore me", TTL: time.Minute}},
 	}
-	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", "v=gone"); err != nil {
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", []string{"v=gone"}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
 	if len(fp.deleted) != 0 {
@@ -540,7 +540,7 @@ func TestRunCmd_TxtDelete_NonCloudflare_PassesRecordsThrough(t *testing.T) {
 		stored:                []libdns.Record{target},
 		strictDataEqualDelete: true, // simulate non-cloudflare strict semantics
 	}
-	if err := runCmd(context.Background(), "route53", fp, "txt-delete", "host.example.com", "v=ok"); err != nil {
+	if err := runCmd(context.Background(), "route53", fp, "txt-delete", "host.example.com", []string{"v=ok"}); err != nil {
 		t.Fatalf("runCmd: %v (workaround must be off for non-cloudflare)", err)
 	}
 	if len(fp.deleted) != 1 {
@@ -616,7 +616,7 @@ func TestRunCmd_TxtDelete_NonCloudflare_RetainsConcreteType(t *testing.T) {
 		providerID: "do-12345",
 	}
 	cp := &concreteTypeFakeProvider{stored: []taggedRecord{stored}}
-	if err := runCmd(context.Background(), "digitalocean", cp, "txt-delete", "host.example.com", "v=ok"); err != nil {
+	if err := runCmd(context.Background(), "digitalocean", cp, "txt-delete", "host.example.com", []string{"v=ok"}); err != nil {
 		t.Fatalf("runCmd: %v (concrete-type retention must hold for non-cloudflare)", err)
 	}
 	if len(cp.deleted) != 1 {
@@ -641,7 +641,7 @@ func TestRunCmd_TxtDelete_Cloudflare_WrapsForChunkedTXT(t *testing.T) {
 	fp := &fakeProvider{
 		stored: []libdns.Record{stored},
 	}
-	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", value); err != nil {
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", []string{value}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
 	if len(fp.deleted) != 1 {
@@ -665,7 +665,7 @@ func TestRunCmd_TxtDelete_SubdriverNoOpFails(t *testing.T) {
 	}
 	// On cloudflare the workaround wraps with `"v=ok"`. fp's strict
 	// compare against stored `v=ok` then refuses, so 0 deleted.
-	err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", "v=ok")
+	err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", "host.example.com", []string{"v=ok"})
 	if err == nil {
 		t.Fatalf("runCmd: want error (silent no-op delete must propagate), got nil")
 	}
@@ -692,5 +692,289 @@ func TestMatchTXT_NormalizesChunkedData(t *testing.T) {
 	got := matchTXT(all, "postern-target._domainkey", value)
 	if len(got) != 1 {
 		t.Fatalf("matchTXT failed to find chunked record (got %d, want 1)", len(got))
+	}
+}
+
+// Arg parsing — A/AAAA ==================================================================================================
+func TestParseAddressArgs_IPv4(t *testing.T) {
+	rec, err := parseAddressArgs("a-set", "host", []string{"203.0.113.42"})
+	if err != nil {
+		t.Fatalf("parseAddressArgs(a-set, IPv4): %v", err)
+	}
+	rr := rec.RR()
+	if rr.Type != "A" || rr.Name != "host" || rr.Data != "203.0.113.42" {
+		t.Errorf("unexpected RR: %+v", rr)
+	}
+	if rec.TTL != recordTTL {
+		t.Errorf("TTL = %v, want %v", rec.TTL, recordTTL)
+	}
+}
+
+func TestParseAddressArgs_IPv6(t *testing.T) {
+	rec, err := parseAddressArgs("aaaa-set", "host", []string{"2001:db8::1"})
+	if err != nil {
+		t.Fatalf("parseAddressArgs(aaaa-set, IPv6): %v", err)
+	}
+	if rec.RR().Type != "AAAA" {
+		t.Errorf("expected RR.Type=AAAA, got %q", rec.RR().Type)
+	}
+}
+
+func TestParseAddressArgs_RejectsMismatchedFamily(t *testing.T) {
+	if _, err := parseAddressArgs("a-set", "host", []string{"2001:db8::1"}); err == nil {
+		t.Error("a-set with IPv6 should reject; got nil error")
+	}
+	if _, err := parseAddressArgs("aaaa-set", "host", []string{"203.0.113.1"}); err == nil {
+		t.Error("aaaa-set with IPv4 should reject; got nil error")
+	}
+}
+
+func TestParseAddressArgs_RejectsInvalidIP(t *testing.T) {
+	if _, err := parseAddressArgs("a-set", "host", []string{"not-an-ip"}); err == nil {
+		t.Error("invalid IP should reject; got nil error")
+	}
+}
+
+func TestParseAddressArgs_RejectsWrongArgCount(t *testing.T) {
+	if _, err := parseAddressArgs("a-set", "host", []string{}); err == nil {
+		t.Error("empty args should reject")
+	}
+	if _, err := parseAddressArgs("a-set", "host", []string{"1.2.3.4", "extra"}); err == nil {
+		t.Error("too many args should reject")
+	}
+}
+
+// Arg parsing — MX ======================================================================================================
+func TestParseMXArgs(t *testing.T) {
+	rec, err := parseMXArgs("@", []string{"10", "mail.example.com"})
+	if err != nil {
+		t.Fatalf("parseMXArgs: %v", err)
+	}
+	if rec.Preference != 10 || rec.Target != "mail.example.com" {
+		t.Errorf("unexpected MX: %+v", rec)
+	}
+	// RR shape matches what libdns/cloudflare's MX path consumes.
+	if rec.RR().Type != "MX" {
+		t.Errorf("RR.Type = %q, want MX", rec.RR().Type)
+	}
+}
+
+func TestParseMXArgs_RejectsOutOfRangePreference(t *testing.T) {
+	if _, err := parseMXArgs("@", []string{"65536", "mail.example.com"}); err == nil {
+		t.Error("preference > uint16 should reject")
+	}
+}
+
+func TestParseMXArgs_RejectsNonNumericPreference(t *testing.T) {
+	if _, err := parseMXArgs("@", []string{"high", "mail.example.com"}); err == nil {
+		t.Error("non-numeric preference should reject")
+	}
+}
+
+func TestParseMXArgs_RejectsEmptyTarget(t *testing.T) {
+	if _, err := parseMXArgs("@", []string{"10", ""}); err == nil {
+		t.Error("empty target should reject")
+	}
+}
+
+// Arg parsing — CAA =====================================================================================================
+func TestParseCAAArgs(t *testing.T) {
+	rec, err := parseCAAArgs("@", []string{"0", "issue", "letsencrypt.org"})
+	if err != nil {
+		t.Fatalf("parseCAAArgs: %v", err)
+	}
+	if rec.Flags != 0 || rec.Tag != "issue" || rec.Value != "letsencrypt.org" {
+		t.Errorf("unexpected CAA: %+v", rec)
+	}
+}
+
+func TestParseCAAArgs_AcceptsCriticalBit(t *testing.T) {
+	if _, err := parseCAAArgs("@", []string{"128", "issue", "letsencrypt.org"}); err != nil {
+		t.Errorf("CAA flags=128 should be accepted (critical bit), got %v", err)
+	}
+}
+
+func TestParseCAAArgs_RejectsOtherFlags(t *testing.T) {
+	for _, bad := range []string{"1", "64", "255"} {
+		if _, err := parseCAAArgs("@", []string{bad, "issue", "letsencrypt.org"}); err == nil {
+			t.Errorf("CAA flags=%s should reject (only 0 and 128 are valid)", bad)
+		}
+	}
+}
+
+func TestParseCAAArgs_RejectsEmptyTag(t *testing.T) {
+	if _, err := parseCAAArgs("@", []string{"0", "", "letsencrypt.org"}); err == nil {
+		t.Error("empty CAA tag should reject")
+	}
+}
+
+// Arg parsing — TLSA ====================================================================================================
+func TestParseTLSAArgs(t *testing.T) {
+	// 3 1 1 = DANE-EE, SPKI, SHA-256 — what postern's MTA records use.
+	hexData := strings.Repeat("ab", 32) // 64 chars = 32-byte SHA-256
+	rec, err := parseTLSAArgs("_25._tcp.mail", []string{"3", "1", "1", hexData})
+	if err != nil {
+		t.Fatalf("parseTLSAArgs: %v", err)
+	}
+	want := "3 1 1 " + hexData
+	if rec.Data != want {
+		t.Errorf("RR.Data = %q, want %q", rec.Data, want)
+	}
+	if rec.Type != "TLSA" {
+		t.Errorf("RR.Type = %q, want TLSA", rec.Type)
+	}
+}
+
+func TestParseTLSAArgs_LowercasesHex(t *testing.T) {
+	hexUpper := strings.Repeat("AB", 32)
+	rec, err := parseTLSAArgs("_25._tcp.mail", []string{"3", "1", "1", hexUpper})
+	if err != nil {
+		t.Fatalf("parseTLSAArgs: %v", err)
+	}
+	if !strings.Contains(rec.Data, strings.ToLower(hexUpper)) {
+		t.Errorf("hex was not lowercased: %q", rec.Data)
+	}
+}
+
+func TestParseTLSAArgs_RejectsOutOfRangeFields(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"usage > 3", []string{"4", "1", "1", "ab"}},
+		{"selector > 1", []string{"3", "2", "1", "ab"}},
+		{"matching-type > 2", []string{"3", "1", "3", "ab"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := parseTLSAArgs("_25._tcp.mail", tc.args); err == nil {
+				t.Errorf("%s should reject", tc.name)
+			}
+		})
+	}
+}
+
+func TestParseTLSAArgs_RejectsNonHexCert(t *testing.T) {
+	if _, err := parseTLSAArgs("_25._tcp.mail", []string{"3", "1", "1", "not-hex!"}); err == nil {
+		t.Error("non-hex cert data should reject")
+	}
+}
+
+// Round-trip via runCmd (generic helpers) =================================================================================
+//
+// These exercise the dispatch + AppendRecords + GetRecords + DeleteRecords
+// flow for each non-TXT type against the fake provider, mirroring the
+// existing TXT coverage.
+
+func TestRunCmd_ASet(t *testing.T) {
+	fp := &fakeProvider{}
+	if err := runCmd(context.Background(), "cloudflare", fp, "a-set", "host.example.com", []string{"203.0.113.42"}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if len(fp.appended) != 1 {
+		t.Fatalf("expected 1 appended record, got %d", len(fp.appended))
+	}
+	rr := fp.appended[0].RR()
+	if rr.Type != "A" || rr.Data != "203.0.113.42" {
+		t.Errorf("unexpected RR: %+v", rr)
+	}
+}
+
+func TestRunCmd_AAAASet(t *testing.T) {
+	fp := &fakeProvider{}
+	if err := runCmd(context.Background(), "cloudflare", fp, "aaaa-set", "host.example.com", []string{"2001:db8::1"}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if rr := fp.appended[0].RR(); rr.Type != "AAAA" {
+		t.Errorf("RR.Type = %q, want AAAA", rr.Type)
+	}
+}
+
+func TestRunCmd_MXSet(t *testing.T) {
+	fp := &fakeProvider{}
+	if err := runCmd(context.Background(), "cloudflare", fp, "mx-set", "example.com", []string{"10", "mail.example.com"}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if rr := fp.appended[0].RR(); rr.Type != "MX" || rr.Data != "10 mail.example.com" {
+		t.Errorf("unexpected RR: %+v", rr)
+	}
+}
+
+func TestRunCmd_CAASet(t *testing.T) {
+	fp := &fakeProvider{}
+	if err := runCmd(context.Background(), "cloudflare", fp, "caa-set", "example.com", []string{"0", "issue", "letsencrypt.org"}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if rr := fp.appended[0].RR(); rr.Type != "CAA" || !strings.Contains(rr.Data, "letsencrypt.org") {
+		t.Errorf("unexpected RR: %+v", rr)
+	}
+}
+
+func TestRunCmd_TLSASet(t *testing.T) {
+	fp := &fakeProvider{}
+	certHex := strings.Repeat("ab", 32)
+	if err := runCmd(context.Background(), "cloudflare", fp, "tlsa-set", "_25._tcp.mail.example.com", []string{"3", "1", "1", certHex}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if rr := fp.appended[0].RR(); rr.Type != "TLSA" {
+		t.Errorf("RR.Type = %q, want TLSA", rr.Type)
+	}
+}
+
+func TestRunCmd_ADelete_NoMatchIsIdempotent(t *testing.T) {
+	fp := &fakeProvider{}
+	// Empty zone -- nothing to delete.
+	if err := runCmd(context.Background(), "cloudflare", fp, "a-delete", "host.example.com", []string{"203.0.113.42"}); err != nil {
+		t.Fatalf("delete on empty zone should be no-op success, got: %v", err)
+	}
+	if len(fp.deleted) != 0 {
+		t.Errorf("expected 0 delete calls, got %d", len(fp.deleted))
+	}
+}
+
+func TestRunCmd_ADelete_MatchFound(t *testing.T) {
+	fp := &fakeProvider{
+		stored: []libdns.Record{
+			libdns.RR{Name: "host", Type: "A", Data: "203.0.113.42", TTL: recordTTL},
+		},
+		strictDataEqualDelete: true,
+	}
+	if err := runCmd(context.Background(), "cloudflare", fp, "a-delete", "host.example.com", []string{"203.0.113.42"}); err != nil {
+		t.Fatalf("runCmd: %v", err)
+	}
+	if len(fp.deleted) != 1 {
+		t.Fatalf("expected 1 delete call, got %d", len(fp.deleted))
+	}
+	if rr := fp.deleted[0].RR(); rr.Type != "A" || rr.Data != "203.0.113.42" {
+		t.Errorf("unexpected deleted RR: %+v", rr)
+	}
+	if len(fp.stored) != 0 {
+		t.Errorf("expected stored emptied after delete, got %d records", len(fp.stored))
+	}
+}
+
+func TestRunCmd_RejectsInvalidArgs(t *testing.T) {
+	fp := &fakeProvider{}
+	cases := []struct {
+		cmd  string
+		args []string
+		hint string
+	}{
+		{"a-set", []string{"not-an-ip"}, "invalid IP"},
+		{"a-set", []string{}, "expected"},
+		{"mx-set", []string{"10"}, "expected"},
+		{"caa-set", []string{"7", "issue", "x"}, "flags must be"},
+		{"tlsa-set", []string{"3", "1", "1", "not-hex!"}, "hex"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.cmd, func(t *testing.T) {
+			err := runCmd(context.Background(), "cloudflare", fp, tc.cmd, "host.example.com", tc.args)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.hint)
+			}
+			if !strings.Contains(err.Error(), tc.hint) {
+				t.Errorf("error %q does not contain hint %q", err.Error(), tc.hint)
+			}
+		})
 	}
 }

@@ -1,0 +1,59 @@
+# Reference deployment: front postern with a TCP+SNI-passthrough Traefik gateway.
+# Apply via COMPOSE_FILE=compose.yaml:compose.cert.yaml:compose.gateway.yaml in .env.
+#
+# REQUIRES compose.cert.yaml to be layered alongside this file. The cert override
+# is what mounts postern-nginx on the postern-letsencrypt named volume and adds
+# `depends_on: provisioner: service_healthy` so nginx waits for first issuance.
+# Without compose.cert.yaml in the chain, postern-nginx would start before any
+# cert exists on disk and Traefik would forward TLS to a 'no cert' nginx.
+#
+# Postern's nginx terminates TLS itself (cert from postern-letsencrypt volume,
+# managed by the provisioner). Traefik does TCP+SNI passthrough on :443 to
+# postern-nginx:443; postern's mta keeps its host :25 binding because Traefik
+# isn't an SMTP proxy.
+#
+# Pre-requisites at the gateway side (a separate stack):
+#   - A docker network named `gateway` (external to this compose).
+#   - A Traefik service watching that network for `traefik.expose=true` labels,
+#     with a `websecure` entrypoint on :443.
+#   - Some catchall TCP router lower-priority than 100 (or none).
+# See docs/gateway.md for the full reference setup.
+
+services:
+  nginx:
+    container_name: postern-nginx
+    # Traefik owns host :80/:443; postern's nginx is reachable only via
+    # the gateway docker network. !reset wipes the 80:80 / 443:443 bindings
+    # declared in compose.yaml.
+    ports: !reset []
+    networks:
+      gateway: {}
+    labels:
+      traefik.enable: "true"
+      traefik.expose: "true"
+      traefik.docker.network: "gateway"
+      traefik.tcp.routers.postern.rule: "HostSNI(`${DOMAIN}`)"
+      traefik.tcp.routers.postern.entrypoints: "websecure"
+      traefik.tcp.routers.postern.tls.passthrough: "true"
+      # Pin priority above any HostSNI(`*`) catchall on the gateway side
+      # so this route wins explicitly rather than relying on Traefik's
+      # default rule-length tiebreak.
+      traefik.tcp.routers.postern.priority: "100"
+      traefik.tcp.services.postern.loadbalancer.server.port: "443"
+
+  portal:
+    container_name: postern-portal
+
+  mta:
+    container_name: postern-mta
+
+  provisioner:
+    container_name: postern-provisioner
+
+  docker-proxy:
+    container_name: postern-docker-proxy
+
+networks:
+  gateway:
+    name: gateway
+    external: true

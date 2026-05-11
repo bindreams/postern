@@ -7,9 +7,9 @@
 # When opting out of the built-in MTA, this block is harmlessly unreachable:
 # the deployer simply doesn't publish DNS for `mta-sts.<domain>`.
 server {
-	server_name mta-sts.postern.example.com;
+	server_name mta-sts.${DOMAIN};
 	include conf.d/ssl.conf;
-	include conf.d/certs/postern.example.com.conf;
+	include conf.d/cert.conf;
 	listen 443 ssl;
 	listen [::]:443 ssl;
 

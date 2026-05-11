@@ -2,9 +2,9 @@
 FROM dhi.io/nginx:1-alpine3.23
 
 # DHI nginx is distroless and does NOT honor the docker-library /docker-entrypoint.d/
-# convention -- its entrypoint runs nginx directly. To add the periodic-reload loop
-# we ship our own ENTRYPOINT. nonroot can't `RUN cat > /...`, so we use a heredoc
-# COPY (BuildKit performs COPY as root regardless of USER).
+# convention -- its entrypoint runs nginx directly. To add the templated render
+# step (so DOMAIN comes from .env, not VCS edits) plus the periodic-reload loop
+# we ship our own ENTRYPOINT.
 #
 # Note: this image has NO root user in /etc/passwd, so `USER root` + `RUN apk ...`
 # is impossible. Modifying /etc/group at build time (e.g. to put nginx in
@@ -14,13 +14,12 @@ FROM dhi.io/nginx:1-alpine3.23
 # boundary is "anyone with shell access in any container is already admin-
 # equivalent", so 0644 is an acceptable degradation. See the install path in
 # postern_provisioner.install for where this is enforced.
-COPY --chmod=755 <<-"EOF" /usr/local/bin/nginx-entrypoint.sh
-	#!/bin/sh
-	# Periodically reload nginx to pick up renewed TLS certificates.
-	# inotifywait does not work reliably across Docker bind mounts
-	# (Let's Encrypt updates symlink targets, not the symlinks themselves).
-	(while true; do sleep 21600; nginx -s reload; done) &
-	exec nginx -g "daemon off;"
-EOF
+
+# Bring the source-tree configs in under /etc/nginx/templates/; the entrypoint
+# renders *.tmpl files (substituting ${DOMAIN}) into /etc/nginx/ at start. The
+# image's own /etc/nginx/{mime.types,fastcgi*,scgi*,uwsgi*,modules} remain
+# untouched.
+COPY etc/ /etc/nginx/templates/
+COPY --chmod=755 nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/nginx-entrypoint.sh"]

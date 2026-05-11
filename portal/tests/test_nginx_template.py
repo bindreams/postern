@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 NGINX_ETC = REPO_ROOT / "nginx" / "etc"
 
 
-# nginx.conf.tmpl =======================================================================================================
+# nginx.conf.tmpl ======================================================================================================
 def test_path_token_regex_byte_identical_in_template():
     """The `^/t/([a-f0-9]{24})$` literal must stay byte-identical in nginx.conf.tmpl.
 
@@ -23,7 +23,8 @@ def test_path_token_regex_byte_identical_in_template():
     body = (NGINX_ETC / "nginx.conf.tmpl").read_text()
     assert "^/t/([a-f0-9]{24})$" in body, (
         "Path-token regex missing or rewritten in nginx.conf.tmpl. "
-        "It must stay byte-identical; cli.py and reconciler.py depend on it.")
+        "It must stay byte-identical; cli.py and reconciler.py depend on it."
+    )
 
 
 def test_auth_zone_limit_rate_unchanged():
@@ -53,7 +54,7 @@ def test_cert_include_uses_fixed_filename():
     assert "conf.d/certs/" not in body
 
 
-# cert.conf.tmpl ========================================================================================================
+# cert.conf.tmpl =======================================================================================================
 def test_cert_paths_use_domain_placeholder():
     """The three cert paths (fullchain, privkey, chain) all reference ${DOMAIN}."""
     body = (NGINX_ETC / "conf.d" / "cert.conf.tmpl").read_text()
@@ -62,7 +63,7 @@ def test_cert_paths_use_domain_placeholder():
     assert "/etc/letsencrypt/live/${DOMAIN}/chain.pem" in body
 
 
-# mta-sts.conf.tmpl + policy.txt.tmpl ===================================================================================
+# mta-sts.conf.tmpl + policy.txt.tmpl ==================================================================================
 def test_mta_sts_server_name_uses_domain_placeholder():
     body = (NGINX_ETC / "conf.d" / "mta-sts.conf.tmpl").read_text()
     assert "server_name mta-sts.${DOMAIN};" in body

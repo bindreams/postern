@@ -4,7 +4,7 @@ Postern's default deployment owns ports 80 and 443 directly. Some operators run 
 
 - Strips the `80:80` / `443:443` host bindings from postern's nginx (the gateway owns them now).
 - Joins postern's nginx to an external docker network named `gateway`.
-- Adds Traefik labels for a TCP router matching `HostSNI(\`${DOMAIN}\`)` with `tls.passthrough: true`, routing to `postern-nginx:443`.
+- Adds Traefik labels for a TCP router matching ``HostSNI(`${DOMAIN}`)`` with `tls.passthrough: true`, routing to `postern-nginx:443`.
 - Renames every postern container with a `postern-` prefix so they coexist cleanly with other services in `docker ps`.
 
 The gateway is expected to **TCP+SNI passthrough**, not TLS-terminate. Postern's nginx serves the TLS leaf cert (either from a BYO bind mount or from the `postern-letsencrypt` named volume populated by the provisioner — see [docs/certs.md](certs.md)); the gateway must not re-encrypt or rewrite.
@@ -35,7 +35,7 @@ A separate compose stack (yours or someone else's) must provide:
 
 - A docker network named `gateway` (external to postern's compose), reachable from the host running both stacks.
 - A Traefik service watching that network for the `traefik.expose=true` label, with a `websecure` entrypoint on TCP `:443`.
-- Either no catch-all TCP router, or a catch-all with priority below 100 — `compose.gateway.yaml` pins `priority: 100` so postern's explicit `HostSNI(\`${DOMAIN}\`)` deterministically wins.
+- Either no catch-all TCP router, or a catch-all with priority below 100 — `compose.gateway.yaml` pins `priority: 100` so postern's explicit ``HostSNI(`${DOMAIN}`)`` deterministically wins.
 
 The mta keeps its host `:25` binding directly — Traefik is not an SMTP proxy and the gateway pattern only covers HTTPS.
 

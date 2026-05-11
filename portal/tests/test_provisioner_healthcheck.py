@@ -17,7 +17,16 @@ def _patch_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(healthcheck.rotation, "DEFAULT_KEYDIR", keydir)
     monkeypatch.setattr(healthcheck.cert_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.dns_records_state, "DEFAULT_CERTDIR", certdir)
+    monkeypatch.setattr(healthcheck.mta_records_state, "DEFAULT_KEYDIR", keydir)
     return keydir, certdir
+
+
+def _seed_mta_records_reconciled(keydir: Path) -> None:
+    """Convenience: write a minimal mta_records_state.json marking reconciled.
+    Most tests need this once the new (#118) MTA-records healthcheck half lands."""
+    (keydir / "mta_records_state.json").write_text(json.dumps({
+        "last_reconciled_iso": "2026-05-11T00:00:00+00:00",
+    }))
 
 
 def test_healthy_when_both_disabled(monkeypatch):
@@ -38,9 +47,20 @@ def test_unhealthy_when_dkim_state_says_no_keys(monkeypatch, _patch_paths):
 def test_healthy_when_dkim_initialised(monkeypatch, _patch_paths):
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE", "active_selectors": ["postern-2026-04"]}))
+    _seed_mta_records_reconciled(keydir)
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "false")
     assert healthcheck.main() == 0
+
+
+def test_unhealthy_when_mta_records_not_reconciled(monkeypatch, _patch_paths):
+    """DKIM is initialised but the MTA-records reconciler hasn't completed yet (#118)."""
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    # No mta_records_state.json -> read_state returns default (last_reconciled_iso=None).
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "false")
+    assert healthcheck.main() == 1
 
 
 def test_unhealthy_when_cert_renewal_on_but_no_cert(monkeypatch, _patch_paths):
@@ -53,7 +73,7 @@ def test_unhealthy_when_cert_renewal_on_but_no_cert(monkeypatch, _patch_paths):
 
 
 def test_healthy_when_cert_renewal_on_and_cert_installed(monkeypatch, _patch_paths):
-    """All three halves green: DKIM STABLE, cert INSTALLED, DNS records reconciled."""
+    """All halves green: DKIM STABLE, cert INSTALLED, apex-DNS + MTA-DNS records reconciled."""
     keydir, certdir = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     (certdir / "state.json").write_text(json.dumps({"state": "INSTALLED"}))
@@ -63,6 +83,7 @@ def test_healthy_when_cert_renewal_on_and_cert_installed(monkeypatch, _patch_pat
             "last_reconciled_iso": "2026-05-11T00:00:00+00:00",
         })
     )
+    _seed_mta_records_reconciled(keydir)
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "true")
     assert healthcheck.main() == 0

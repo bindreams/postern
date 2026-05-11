@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Provisioner Docker healthcheck.
 
-Two modes:
+Three halves, all green required:
 
-- CERT_RENEWAL=false (default): healthy iff DKIM state.json shows non-NO_KEYS,
-  OR the deployment has DKIM disabled (DNS_PROVIDER=none AND no DKIM state file).
-  This is today's de-facto behaviour, just made explicit.
+- DKIM: state.json shows non-NO_KEYS, OR DKIM is disabled (DNS_PROVIDER=none
+  AND no DKIM state file). This is today's de-facto behaviour, made explicit.
 
-- CERT_RENEWAL=true: healthy iff cert state.json shows INSTALLED **and** the
+- Cert (only when CERT_RENEWAL=true): state.json shows INSTALLED **and** the
   apex/wildcard A/AAAA + CAA records have been reconciled at least once
-  (dns_records_state.json's last_reconciled_iso is non-null), AND the
-  DKIM condition above also holds.
+  (dns_records_state.json's last_reconciled_iso is non-null).
+
+- MTA records (only when DKIM is enabled, i.e. DNS_PROVIDER != none):
+  mta_records_state.json's last_reconciled_iso is non-null. The MX/SPF/
+  DMARC/MTA-STS/TLS-RPT/TLSA chain is in DNS before mta startup.
 
 Used by docker-compose's `depends_on: condition: service_healthy` so nginx
 and mta block startup until the provisioner has done its first-issuance work.
@@ -25,6 +27,7 @@ from pathlib import Path
 from postern.cert import dns_records as dns_records_state
 from postern.cert import state as cert_state
 from postern.mta import rotation
+from postern_provisioner import mta_records as mta_records_state
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -60,16 +63,24 @@ def main() -> int:
             print(f"cert: state={cert.state}, waiting for INSTALLED", file=sys.stderr)
             return 1
 
-        # DNS records half ---------------------------------------------------------------------------------------------
-        # The apex/wildcard A/AAAA + CAA reconciler runs alongside the cert
-        # state machine when CERT_RENEWAL=true. Healthy only after the first
-        # successful tick, so nginx/mta don't start before the DNS chain is
-        # in place. Subsequent ticks may fail without changing health (the
-        # reconciler increments consecutive_failures internally, but a
-        # transient provider hiccup shouldn't make every dependent unhealthy).
+        # DNS records half (apex/wildcard A/AAAA + CAA, #115) ----------------------------------------------------------
+        # Healthy only after the first successful tick, so nginx/mta don't
+        # start before the DNS chain is in place. Subsequent ticks may fail
+        # without changing health (the reconciler increments
+        # consecutive_failures internally, but a transient provider hiccup
+        # shouldn't make every dependent unhealthy).
         dns = dns_records_state.read_state()
         if dns.last_reconciled_iso is None:
             print("dns: apex/wildcard A/AAAA + CAA records not yet reconciled", file=sys.stderr)
+            return 1
+
+    # MTA records half (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA, #118) -------------------------------------------------------
+    # Gate mta startup on the records being in place. Same first-tick-only
+    # gating as the cert/DNS halves above.
+    if dns_provider != "none":
+        mta = mta_records_state.read_state()
+        if mta.last_reconciled_iso is None:
+            print("mta-dns: MX/SPF/DMARC/MTA-STS/TLS-RPT records not yet reconciled", file=sys.stderr)
             return 1
 
     return 0

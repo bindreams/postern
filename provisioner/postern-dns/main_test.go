@@ -750,12 +750,46 @@ func TestParseMXArgs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseMXArgs: %v", err)
 	}
-	if rec.Preference != 10 || rec.Target != "mail.example.com" {
-		t.Errorf("unexpected MX: %+v", rec)
+	// Target must end with a trailing dot (#120): libdns/cloudflare's GetRecords
+	// path adds one via ensureTrailingDot, and matchRR does strict Data equality.
+	// Normalizing here keeps the matcher dumb and the round-trip idempotent.
+	if rec.Preference != 10 || rec.Target != "mail.example.com." {
+		t.Errorf("unexpected MX: %+v (want Target=mail.example.com.)", rec)
 	}
-	// RR shape matches what libdns/cloudflare's MX path consumes.
 	if rec.RR().Type != "MX" {
 		t.Errorf("RR.Type = %q, want MX", rec.RR().Type)
+	}
+	// RR.Data is "<pref> <target>" with the trailing dot preserved.
+	if rec.RR().Data != "10 mail.example.com." {
+		t.Errorf("RR.Data = %q, want \"10 mail.example.com.\"", rec.RR().Data)
+	}
+}
+
+func TestParseMXArgs_PreservesExistingTrailingDot(t *testing.T) {
+	// A caller passing a fully-qualified target should not get a double-dotted result.
+	rec, err := parseMXArgs("@", []string{"10", "mail.example.com."})
+	if err != nil {
+		t.Fatalf("parseMXArgs: %v", err)
+	}
+	if rec.Target != "mail.example.com." {
+		t.Errorf("Target double-dotted? got %q, want \"mail.example.com.\"", rec.Target)
+	}
+}
+
+func TestRunCmd_MXSet_RoundTripsWithCloudflareTrailingDot(t *testing.T) {
+	// Regression for #120: libdns/cloudflare's MX deserialization adds a trailing
+	// dot to the Target. If the same record already exists, AppendRecords returns
+	// 81058 "identical record already exists" and doRecordSet falls back to
+	// GetRecords-and-confirm. The confirm must match the trailing-dotted form.
+	fp := &fakeProvider{
+		stored: []libdns.Record{
+			libdns.MX{Name: "@", Preference: 10, Target: "mail.example.com.", TTL: recordTTL},
+		},
+		appendErr: errors.New("got error status: HTTP 400: [{Code:81058 Message:An identical record already exists. ErrorChain:[]}]"),
+	}
+	err := runCmd(context.Background(), "cloudflare", fp, "mx-set", "example.com", []string{"10", "mail.example.com"})
+	if err != nil {
+		t.Fatalf("mx-set with pre-existing trailing-dotted record should succeed idempotently, got: %v", err)
 	}
 }
 
@@ -895,8 +929,9 @@ func TestRunCmd_MXSet(t *testing.T) {
 	if err := runCmd(context.Background(), "cloudflare", fp, "mx-set", "example.com", []string{"10", "mail.example.com"}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
-	if rr := fp.appended[0].RR(); rr.Type != "MX" || rr.Data != "10 mail.example.com" {
-		t.Errorf("unexpected RR: %+v", rr)
+	// RR.Data carries the trailing dot we normalized to in parseMXArgs (#120).
+	if rr := fp.appended[0].RR(); rr.Type != "MX" || rr.Data != "10 mail.example.com." {
+		t.Errorf("unexpected RR: %+v (want Data=\"10 mail.example.com.\")", rr)
 	}
 }
 

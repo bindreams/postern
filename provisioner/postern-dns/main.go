@@ -296,6 +296,17 @@ func parseMXArgs(name string, args []string) (libdns.MX, error) {
 	if target == "" {
 		return libdns.MX{}, fmt.Errorf("mx: target must be non-empty")
 	}
+	// libdns/cloudflare's libdnsRecord() returns MX targets with a trailing dot
+	// (it calls ensureTrailingDot on the provider's content field), and the
+	// resulting RR.Data is "<pref> <target>." -- with the dot. matchRR does
+	// strict Data == Data equality. If we accept a no-dot target here, the
+	// matcher silently fails to find the round-tripped record, breaking the
+	// "duplicate -> confirm via GetRecords -> idempotent success" fallback in
+	// doRecordSet. Normalize to canonical trailing-dot form at parse time so
+	// the matcher stays a dumb byte-comparator.
+	if !strings.HasSuffix(target, ".") {
+		target += "."
+	}
 	return libdns.MX{
 		Name:       name,
 		Preference: uint16(pref),

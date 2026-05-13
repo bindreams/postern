@@ -58,7 +58,7 @@ class DnsRecordsState:
     consecutive_failures: int = 0
 
 
-# Persistence ===========================================================================================================
+# Persistence ==========================================================================================================
 def _resolve_certdir(certdir: Path | None) -> Path:
     return DEFAULT_CERTDIR if certdir is None else certdir
 

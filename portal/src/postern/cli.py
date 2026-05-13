@@ -578,5 +578,18 @@ def dns_verify() -> None:
     typer.echo("dns OK: apex/wildcard A/AAAA + CAA match expected values")
 
 
+@dns_app.command("publish")
+def dns_publish() -> None:
+    """Trigger the MTA-records reconciler to publish on the next provisioner
+    tick (without waiting for the 1h cadence). Writes the .publish-mta-dns
+    trigger file on the postern-mta-data volume; provisioner picks it up
+    within TRIGGER_POLL_SECONDS (5s by default)."""
+    keydir = Path("/var/lib/opendkim")
+    trigger = keydir / ".publish-mta-dns"
+    trigger.parent.mkdir(parents=True, exist_ok=True)
+    trigger.touch()
+    typer.echo(f"trigger written: {trigger}")
+
+
 if __name__ == "__main__":
     app()

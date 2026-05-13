@@ -1,16 +1,23 @@
 """DNS record rendering + verification for the built-in MTA.
 
-`expected_records()` produces the canonical strings the deployer must publish.
-`verify()` resolves and checks each one, returning a list of failure messages
-(empty list on pass).
+`expected_records()` produces the canonical zone-file strings the deployer
+must publish (display layer). `expected_records_structured()` returns the
+same record set as typed dataclasses, consumed by the MTA-records reconciler
+in [postern_provisioner.mta_records]. The two stay in sync because
+`expected_records()` derives its strings from the structured output.
+
+`verify()` resolves and checks each record, returning a list of failure
+messages (empty list on pass).
 """
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import logging
 import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 
@@ -21,6 +28,106 @@ import dns.resolver
 import dns.reversename
 
 logger = logging.getLogger(__name__)
+
+# MTA-STS policy template ==============================================================================================
+# Byte-identical to `nginx/etc/conf.d/mta-sts/policy.txt.tmpl` (the file nginx
+# serves at https://mta-sts.${DOMAIN}/.well-known/mta-sts.txt). The reconciler
+# computes the MTA-STS DNS `id=` from sha256() of the rendered content; nginx
+# serves the same content; both producers agree on the bytes.
+#
+# Cross-consistency pinned by `test_mta_sts_policy_template_matches_nginx`.
+MTA_STS_POLICY_TEMPLATE = """version: STSv1
+mode: enforce
+mx: mail.${DOMAIN}
+max_age: 604800
+"""
+
+
+def render_mta_sts_policy(domain: str) -> str:
+    """Render the MTA-STS policy.txt content for `domain`. Same substitution
+    rule as nginx's entrypoint (literal `${DOMAIN}` -> `domain`)."""
+    return MTA_STS_POLICY_TEMPLATE.replace("${DOMAIN}", domain)
+
+
+def mta_sts_id(domain: str) -> str:
+    """Compute the MTA-STS `id=` value: sha256(rendered_policy_txt)[:16].
+    Deterministic from content; changes iff the policy changes."""
+    return hashlib.sha256(render_mta_sts_policy(domain).encode("utf-8")).hexdigest()[:16]
+
+
+# Structured records API ===============================================================================================
+@dataclass(frozen=True)
+class MtaRecord:
+    """One DNS record the MTA reconciler publishes. Positional args match the
+    corresponding `postern-dns <type>-set` invocation:
+
+      MX   args = (preference, target)         -> postern-dns mx-set <fqdn> <pref> <target>
+      TXT  args = (quoted-content,)            -> postern-dns txt-set <fqdn> "<content>"
+      TLSA args = (usage, sel, mtype, hex)     -> postern-dns tlsa-set <fqdn> <u> <s> <m> <hex>
+    """
+    name: str
+    type: str
+    args: tuple[str, ...]
+
+
+def _encode_email(addr: str) -> str:
+    """Percent-encode an email for use in a mailto: URI inside DMARC/TLS-RPT TXTs.
+    Keeps `@` literal (RFC 7489 / 8460 don't require encoding it in this context)."""
+    return urllib.parse.quote(addr, safe="@")
+
+
+def expected_records_structured(
+    domain: str,
+    *,
+    admin_email: str,
+    tlsa_cert_hex: str | None = None,
+) -> list[MtaRecord]:
+    """Typed view of the records the MTA needs in DNS. Consumed by the auto-publish
+    reconciler. DKIM is intentionally excluded -- the rotation state machine
+    publishes DKIM TXTs on its own cadence.
+
+    TLSA is included iff `tlsa_cert_hex` is provided (the SPKI sha256 hex of the
+    live cert). The reconciler skips it before any cert exists; once cert is
+    on disk it's included on every tick so drift (cert renewal -> new pubkey)
+    auto-corrects.
+    """
+    admin_for_dmarc = admin_email or f"postmaster@{domain}"
+    admin_for_tlsrpt = admin_email or f"tls-rpt@{domain}"
+    enc_dmarc = _encode_email(admin_for_dmarc)
+    enc_tlsrpt = _encode_email(admin_for_tlsrpt)
+    sts = mta_sts_id(domain)
+
+    out: list[MtaRecord] = [
+        MtaRecord(name=domain, type="MX", args=("10", f"mail.{domain}")),
+        MtaRecord(name=domain, type="TXT", args=('"v=spf1 mx -all"', )),
+        MtaRecord(
+            name=f"_dmarc.{domain}",
+            type="TXT",
+            args=(f'"v=DMARC1; p=reject; adkim=s; aspf=s; '
+                  f'rua=mailto:{enc_dmarc}; ruf=mailto:{enc_dmarc}"', ),
+        ),
+        MtaRecord(
+            name=f"_mta-sts.{domain}",
+            type="TXT",
+            args=(f'"v=STSv1; id={sts}"', ),
+        ),
+        MtaRecord(
+            name=f"_smtp._tls.{domain}",
+            type="TXT",
+            args=(f'"v=TLSRPTv1; rua=mailto:{enc_tlsrpt}"', ),
+        ),
+    ]
+    if tlsa_cert_hex is not None:
+        # Mode 3 1 1 = DANE-EE, SPKI, SHA-256. Matches the cert manager's
+        # `bootstrap-dns.py` choice and the lego/letsencrypt cert key cadence.
+        out.append(
+            MtaRecord(
+                name=f"_25._tcp.mail.{domain}",
+                type="TLSA",
+                args=("3", "1", "1", tlsa_cert_hex.lower()),
+            )
+        )
+    return out
 
 
 # Public API ===========================================================================================================

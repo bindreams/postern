@@ -109,7 +109,7 @@ def test_reconcile_aaaa_delete_on_unset():
     # Three AAAA deletes (apex, wildcard, mail), nothing else.
     assert len(runner.delete_calls) == 3
     assert all(call[0] == "AAAA" for call in runner.delete_calls)
-    assert all(call[2] == ("2001:db8::1",) for call in runner.delete_calls)
+    assert all(call[2] == ("2001:db8::1", ) for call in runner.delete_calls)
     assert new.last_published_ipv6 == ""
 
 
@@ -125,12 +125,12 @@ def test_reconcile_ipv4_drift_deletes_old_then_publishes_new():
 
     # Three old A deletes.
     assert len(runner.delete_calls) == 3
-    assert all(call[0] == "A" and call[2] == ("1.2.3.4",) for call in runner.delete_calls)
+    assert all(call[0] == "A" and call[2] == ("1.2.3.4", ) for call in runner.delete_calls)
     # Three new A publishes (CAA was already published so it's skipped).
     sets_by_type = {}
     for typ, _, args in runner.set_calls:
         sets_by_type.setdefault(typ, []).append(args)
-    assert sets_by_type.get("A") == [("5.6.7.8",)] * 3
+    assert sets_by_type.get("A") == [("5.6.7.8", )] * 3
     assert new.last_published_ipv4 == "5.6.7.8"
 
 
@@ -167,11 +167,13 @@ def test_state_unknown_fields_ignored(tmp_path):
     """Forward-compat: a state.json from a newer schema is tolerated."""
     path = dns_state.state_path(certdir=tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "schema_version": 999,
-        "last_published_ipv4": "1.2.3.4",
-        "future_field_we_dont_know": "ignored",
-    }))
+    path.write_text(
+        json.dumps({
+            "schema_version": 999,
+            "last_published_ipv4": "1.2.3.4",
+            "future_field_we_dont_know": "ignored",
+        })
+    )
     state = dns_state.read_state(certdir=tmp_path)
     assert state.last_published_ipv4 == "1.2.3.4"
 

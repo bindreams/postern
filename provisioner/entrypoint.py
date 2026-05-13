@@ -45,6 +45,7 @@ from postern.cert import state as cert_state  # noqa: E402
 from postern.cert import dns_records as dns_records_state  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
 from postern_provisioner import dns_records as dns_driver  # noqa: E402
+from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s provisioner %(levelname)s: %(message)s")
 logger = logging.getLogger("entrypoint")
@@ -421,11 +422,56 @@ def _try_advance_dns(domain: str, counters: dict[str, int]) -> None:
         logger.exception("dns reconcile step failed (%d consecutive)", counters["dns"])
 
 
+# MTA records reconciler (#118) ========================================================================================
+def _has_mta_records_trigger() -> bool:
+    return mta_records_driver.trigger_path(keydir=KEYDIR).exists()
+
+
+def _consume_mta_records_trigger() -> None:
+    try:
+        mta_records_driver.trigger_path(keydir=KEYDIR).unlink()
+    except OSError:
+        pass
+
+
+def _build_mta_records_settings(domain: str) -> mta_records_driver.MtaRecordsSettings:
+    return mta_records_driver.MtaRecordsSettings(
+        domain=domain,
+        dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
+        admin_email=os.environ.get("MTA_ADMIN_EMAIL", "").strip(),
+    )
+
+
+def _try_advance_mta_records(domain: str, counters: dict[str, int]) -> None:
+    """Reconcile MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA records. Runs whenever
+    DKIM is enabled (the same gate as the rotation loop) -- the reconciler's
+    pure-function design means a tick with no drift is a cheap no-op."""
+    try:
+        settings = _build_mta_records_settings(domain)
+        state = mta_records_driver.read_state(keydir=KEYDIR)
+        had_trigger = _has_mta_records_trigger()
+        runner = mta_records_driver.PosternDnsRunner()
+        cert_pem_path = cert_state.DEFAULT_CERTDIR / "live" / domain / "fullchain.pem"
+        new_state = mta_records_driver.reconcile_mta_records(
+            state, settings=settings, cert_pem_path=cert_pem_path, runner=runner
+        )
+        if had_trigger:
+            _consume_mta_records_trigger()
+        if new_state != state:
+            mta_records_driver.write_state(new_state, keydir=KEYDIR)
+            if new_state.last_reconciled_iso != state.last_reconciled_iso:
+                logger.info("mta-dns: reconciled MTA records (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA)")
+        counters["mta_records"] = 0
+    except Exception:
+        counters["mta_records"] = counters.get("mta_records", 0) + 1
+        logger.exception("mta-dns reconcile step failed (%d consecutive)", counters["mta_records"])
+
+
 def _sleep_with_triggers() -> None:
     """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
     slept = 0
     while slept < TICK_SECONDS:
-        if _has_explicit_trigger() or _has_cert_trigger() or _has_dns_trigger():
+        if (_has_explicit_trigger() or _has_cert_trigger() or _has_dns_trigger() or _has_mta_records_trigger()):
             break
         time.sleep(TRIGGER_POLL_SECONDS)
         slept += TRIGGER_POLL_SECONDS
@@ -438,8 +484,9 @@ def run_combined_loop(
     dkim_enabled: bool,
     cert_enabled: bool,
     dns_enabled: bool,
+    mta_records_enabled: bool,
 ) -> NoReturn:
-    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0}
+    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0}
     while True:
         if dkim_enabled:
             _try_advance_dkim(domain, selector_prefix, counters)
@@ -447,6 +494,8 @@ def run_combined_loop(
             _try_advance_cert(domain, counters)
         if dns_enabled:
             _try_advance_dns(domain, counters)
+        if mta_records_enabled:
+            _try_advance_mta_records(domain, counters)
         _sleep_with_triggers()
 
 
@@ -468,6 +517,9 @@ def main() -> NoReturn:
     # on -- per the design discussion in #115, enabling cert renewal signals
     # "I want the domain situation handled."
     dns_enabled = cert_renewal
+    # The MTA records reconciler runs whenever DKIM is enabled (#118). The
+    # reconciler is a pure function: a no-drift tick is a cheap no-op.
+    mta_records_enabled = dkim_enabled
 
     if not dkim_enabled and not cert_renewal:
         logger.info("DNS_PROVIDER=none and CERT_RENEWAL=false -- nothing to do, exiting")
@@ -479,6 +531,7 @@ def main() -> NoReturn:
         dkim_enabled=dkim_enabled,
         cert_enabled=cert_renewal,
         dns_enabled=dns_enabled,
+        mta_records_enabled=mta_records_enabled,
     )
 
 

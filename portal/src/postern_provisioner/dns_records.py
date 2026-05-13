@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 POSTERN_DNS_BIN = "/usr/local/bin/postern-dns"
 
 
-# Settings ==============================================================================================================
+# Settings =============================================================================================================
 @dataclass
 class DnsRecordsSettings:
     """Subset of portal settings used by the reconciler. Injected from the
@@ -53,7 +53,7 @@ class DnsRecordsSettings:
     caa_issuer: str = "letsencrypt.org"  # locks issuance to LE; future configurable
 
 
-# Desired records =======================================================================================================
+# Desired records ======================================================================================================
 @dataclass(frozen=True)
 class DesiredRecord:
     """One record we expect to be in DNS. The reconciler maps these to
@@ -79,15 +79,15 @@ def desired_records(settings: DnsRecordsSettings) -> list[DesiredRecord]:
     v6 = settings.public_ipv6
 
     for fqdn in (domain, f"*.{domain}", f"mail.{domain}"):
-        out.append(DesiredRecord(name=fqdn, type="A", args=(v4,)))
+        out.append(DesiredRecord(name=fqdn, type="A", args=(v4, )))
         if v6:
-            out.append(DesiredRecord(name=fqdn, type="AAAA", args=(v6,)))
+            out.append(DesiredRecord(name=fqdn, type="AAAA", args=(v6, )))
 
     out.append(DesiredRecord(name=domain, type="CAA", args=("0", "issue", settings.caa_issuer)))
     return out
 
 
-# postern-dns runner ====================================================================================================
+# postern-dns runner ===================================================================================================
 class PosternDnsRunner:
     """Thin subprocess wrapper around the postern-dns Go binary. Swappable in tests."""
 
@@ -105,7 +105,7 @@ class PosternDnsRunner:
         subprocess.run(cmd, env=self.env, check=True, capture_output=True, text=True)
 
 
-# Reconciler ============================================================================================================
+# Reconciler ===========================================================================================================
 def reconcile_apex_dns(
     state: dns_state.DnsRecordsState,
     *,
@@ -146,34 +146,23 @@ def reconcile_apex_dns(
         # 1. AAAA delete-on-unset --------------------------------------------------------------------------------------
         if state.last_published_ipv6 and not settings.public_ipv6:
             for fqdn in (domain, f"*.{domain}", f"mail.{domain}"):
-                runner.delete_record(
-                    DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6,))
-                )
+                runner.delete_record(DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6, )))
                 logger.info("dns: deleted AAAA %s -> %s (PUBLIC_IPV6 unset)", fqdn, state.last_published_ipv6)
             new_state.last_published_ipv6 = ""
 
-        # 2. A drift: delete old IPv4 before publishing new --------------------------------------------------------------
+        # 2. A drift: delete old IPv4 before publishing new ------------------------------------------------------------
         if state.last_published_ipv4 and state.last_published_ipv4 != settings.public_ipv4:
             for fqdn in (domain, f"*.{domain}", f"mail.{domain}"):
-                runner.delete_record(
-                    DesiredRecord(name=fqdn, type="A", args=(state.last_published_ipv4,))
-                )
-                logger.info(
-                    "dns: deleted stale A %s -> %s (was last_published_ipv4)",
-                    fqdn, state.last_published_ipv4
-                )
+                runner.delete_record(DesiredRecord(name=fqdn, type="A", args=(state.last_published_ipv4, )))
+                logger.info("dns: deleted stale A %s -> %s (was last_published_ipv4)", fqdn, state.last_published_ipv4)
             new_state.last_published_ipv4 = ""
 
-        # 3. AAAA drift: delete old IPv6 before publishing new -----------------------------------------------------------
-        if (state.last_published_ipv6 and settings.public_ipv6
-                and state.last_published_ipv6 != settings.public_ipv6):
+        # 3. AAAA drift: delete old IPv6 before publishing new ---------------------------------------------------------
+        if (state.last_published_ipv6 and settings.public_ipv6 and state.last_published_ipv6 != settings.public_ipv6):
             for fqdn in (domain, f"*.{domain}", f"mail.{domain}"):
-                runner.delete_record(
-                    DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6,))
-                )
+                runner.delete_record(DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6, )))
                 logger.info(
-                    "dns: deleted stale AAAA %s -> %s (was last_published_ipv6)",
-                    fqdn, state.last_published_ipv6
+                    "dns: deleted stale AAAA %s -> %s (was last_published_ipv6)", fqdn, state.last_published_ipv6
                 )
             new_state.last_published_ipv6 = ""
 
@@ -195,8 +184,8 @@ def reconcile_apex_dns(
         new_state.consecutive_failures = state.consecutive_failures + 1
         stderr = (e.stderr or "").strip()
         logger.error(
-            "dns: reconcile step failed (%d consecutive): %s%s",
-            new_state.consecutive_failures, e, f": {stderr}" if stderr else ""
+            "dns: reconcile step failed (%d consecutive): %s%s", new_state.consecutive_failures, e,
+            f": {stderr}" if stderr else ""
         )
 
     return new_state
@@ -219,7 +208,7 @@ def _already_published(rec: DesiredRecord, state: dns_state.DnsRecordsState) -> 
     return False
 
 
-# Settings validation ===================================================================================================
+# Settings validation ==================================================================================================
 def validate_ipv4(s: str) -> str:
     """Parse and re-render an IPv4 string (rejects IPv6, invalid formats).
     Returns the canonical string form."""
@@ -240,7 +229,7 @@ def validate_ipv6(s: str) -> str:
     return str(addr)
 
 
-# Helpers ===============================================================================================================
+# Helpers ==============================================================================================================
 def all_desired_fqdns(domain: str) -> Iterable[str]:
     """The set of FQDNs this reconciler manages records under. Useful for the
     `postern dns show` CLI to list-without-publish."""

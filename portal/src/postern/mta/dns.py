@@ -97,24 +97,28 @@ def expected_records_structured(
     enc_tlsrpt = _encode_email(admin_for_tlsrpt)
     sts = mta_sts_id(domain)
 
+    # TXT content is passed UNQUOTED. libdns/cloudflare wraps on write and
+    # unwraps on read; passing pre-quoted content double-wraps on write and
+    # then unwraps to a still-quoted value that postern-dns' matchTXT can't
+    # round-trip. DKIM rotation (which works) uses the same unquoted form.
     out: list[MtaRecord] = [
         MtaRecord(name=domain, type="MX", args=("10", f"mail.{domain}")),
-        MtaRecord(name=domain, type="TXT", args=('"v=spf1 mx -all"', )),
+        MtaRecord(name=domain, type="TXT", args=("v=spf1 mx -all", )),
         MtaRecord(
             name=f"_dmarc.{domain}",
             type="TXT",
-            args=(f'"v=DMARC1; p=reject; adkim=s; aspf=s; '
-                  f'rua=mailto:{enc_dmarc}; ruf=mailto:{enc_dmarc}"', ),
+            args=(f"v=DMARC1; p=reject; adkim=s; aspf=s; "
+                  f"rua=mailto:{enc_dmarc}; ruf=mailto:{enc_dmarc}", ),
         ),
         MtaRecord(
             name=f"_mta-sts.{domain}",
             type="TXT",
-            args=(f'"v=STSv1; id={sts}"', ),
+            args=(f"v=STSv1; id={sts}", ),
         ),
         MtaRecord(
             name=f"_smtp._tls.{domain}",
             type="TXT",
-            args=(f'"v=TLSRPTv1; rua=mailto:{enc_tlsrpt}"', ),
+            args=(f"v=TLSRPTv1; rua=mailto:{enc_tlsrpt}", ),
         ),
     ]
     if tlsa_cert_hex is not None:

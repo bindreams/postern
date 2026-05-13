@@ -37,8 +37,9 @@ def _settings(admin: str = "ops@example.com") -> mta_driver.MtaRecordsSettings:
 def test_mta_sts_policy_template_matches_nginx():
     """The Python constant in mta/dns.py must byte-match the nginx template
     (nginx serves the policy; the reconciler hashes it; both must agree)."""
-    nginx_template = (Path(__file__).resolve().parent.parent.parent
-                      / "nginx" / "etc" / "conf.d" / "mta-sts" / "policy.txt.tmpl")
+    nginx_template = (
+        Path(__file__).resolve().parent.parent.parent / "nginx" / "etc" / "conf.d" / "mta-sts" / "policy.txt.tmpl"
+    )
     on_disk = nginx_template.read_text(encoding="utf-8")
     assert on_disk == mta_dns.MTA_STS_POLICY_TEMPLATE, (
         f"nginx policy.txt.tmpl drift from mta_dns.MTA_STS_POLICY_TEMPLATE.\n"
@@ -76,9 +77,7 @@ def test_expected_records_structured_v4_only():
 
 def test_expected_records_structured_with_tlsa():
     hex_data = "ab" * 32
-    recs = mta_dns.expected_records_structured(
-        "example.com", admin_email="ops@example.com", tlsa_cert_hex=hex_data
-    )
+    recs = mta_dns.expected_records_structured("example.com", admin_email="ops@example.com", tlsa_cert_hex=hex_data)
     tlsa = next(r for r in recs if r.type == "TLSA")
     assert tlsa.name == "_25._tcp.mail.example.com"
     # Mode 3 1 1 (DANE-EE, SPKI, SHA-256).
@@ -90,9 +89,7 @@ def test_expected_records_structured_tlsa_hex_lowercased():
     the wrapper normalizes (postern-dns's tlsa parser is case-insensitive but
     we want byte-identity for state comparison)."""
     upper = "AB" * 32
-    recs = mta_dns.expected_records_structured(
-        "example.com", admin_email="ops@example.com", tlsa_cert_hex=upper
-    )
+    recs = mta_dns.expected_records_structured("example.com", admin_email="ops@example.com", tlsa_cert_hex=upper)
     tlsa = next(r for r in recs if r.type == "TLSA")
     assert tlsa.args[3] == upper.lower()
 
@@ -106,9 +103,7 @@ def test_expected_records_structured_mx_target():
 def test_dmarc_contains_url_encoded_admin_email():
     """Admin emails with chars needing percent-encoding in mailto: URIs
     must be encoded (RFC 7489 §6.2 / RFC 3986). `@` stays literal."""
-    recs = mta_dns.expected_records_structured(
-        "example.com", admin_email="ops+postmaster@example.com"
-    )
+    recs = mta_dns.expected_records_structured("example.com", admin_email="ops+postmaster@example.com")
     dmarc = next(r for r in recs if r.name == "_dmarc.example.com")
     # `+` percent-encodes to `%2B` in mailto: URIs.
     assert "mailto:ops%2Bpostmaster@example.com" in dmarc.args[0]
@@ -147,9 +142,7 @@ def test_reconcile_skips_when_state_matches(tmp_path):
     runner = FakeRunner()
     # Pre-populate state with all the expected values.
     expected = mta_dns.expected_records_structured("example.com", admin_email="ops@example.com")
-    state = mta_driver.MtaRecordsState(
-        last_reconciled_iso="2026-05-11T00:00:00+00:00",
-    )
+    state = mta_driver.MtaRecordsState(last_reconciled_iso="2026-05-11T00:00:00+00:00", )
     for rec in expected:
         mta_driver._set_last_published(state, rec.name, rec.type, " ".join(rec.args))
     new = mta_driver.reconcile_mta_records(
@@ -164,15 +157,18 @@ def test_reconcile_dmarc_drift_deletes_old_publishes_new():
     runner = FakeRunner()
     state = mta_driver.MtaRecordsState(
         last_published_mx='10 mail.example.com',
-        last_published_spf='"v=spf1 mx -all"',
-        last_published_dmarc='"v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:OLD@example.com; ruf=mailto:OLD@example.com"',
-        last_published_mta_sts=f'"v=STSv1; id={mta_dns.mta_sts_id("example.com")}"',
-        last_published_tls_rpt='"v=TLSRPTv1; rua=mailto:OLD@example.com"',
+        last_published_spf='v=spf1 mx -all',
+        last_published_dmarc=
+        'v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:OLD@example.com; ruf=mailto:OLD@example.com',
+        last_published_mta_sts=f'v=STSv1; id={mta_dns.mta_sts_id("example.com")}',
+        last_published_tls_rpt='v=TLSRPTv1; rua=mailto:OLD@example.com',
         last_reconciled_iso="2026-05-11T00:00:00+00:00",
     )
     new = mta_driver.reconcile_mta_records(
-        state, settings=_settings(admin="NEW@example.com"),
-        cert_pem_path=Path("/nonexistent"), runner=runner,
+        state,
+        settings=_settings(admin="NEW@example.com"),
+        cert_pem_path=Path("/nonexistent"),
+        runner=runner,
     )
     # DMARC + TLS-RPT both reference the admin email, so both should drift.
     deleted_names = {call[1] for call in runner.delete_calls}
@@ -185,6 +181,15 @@ def test_reconcile_dmarc_drift_deletes_old_publishes_new():
     assert "example.com" not in deleted_names
     # The new state's DMARC must show the new admin.
     assert "mailto:NEW@example.com" in new.last_published_dmarc
+    # Drift-path reconstruction: the stale TXT content has internal whitespace
+    # and must reach `txt-delete` as ONE positional arg, not split per word.
+    # postern-dns rejects txt-delete with !=1 arg.
+    stale_dmarc_delete = next(
+        call for call in runner.delete_calls if call[0] == "TXT" and call[1] == "_dmarc.example.com"
+    )
+    _, _, args = stale_dmarc_delete
+    assert len(args) == 1
+    assert "mailto:OLD@example.com" in args[0]
 
 
 def test_reconcile_skips_tlsa_when_cert_missing():
@@ -215,18 +220,17 @@ def test_reconcile_publishes_tlsa_when_cert_present(tmp_path, monkeypatch):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test.example")])
     cert = (
-        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(days=1))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=90)).sign(key, hashes.SHA256())
+        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(datetime.now(timezone.utc) -
+                           timedelta(days=1)).not_valid_after(datetime.now(timezone.utc) +
+                                                              timedelta(days=90)).sign(key, hashes.SHA256())
     )
     cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
 
     runner = FakeRunner()
     state = mta_driver.MtaRecordsState()
-    new = mta_driver.reconcile_mta_records(
-        state, settings=_settings(), cert_pem_path=cert_path, runner=runner
-    )
+    new = mta_driver.reconcile_mta_records(state, settings=_settings(), cert_pem_path=cert_path, runner=runner)
     tlsa_sets = [call for call in runner.set_calls if call[0] == "TLSA"]
     assert len(tlsa_sets) == 1
     assert tlsa_sets[0][1] == "_25._tcp.mail.example.com"
@@ -258,7 +262,7 @@ def test_reconcile_failure_increments_counter():
 def test_state_roundtrip(tmp_path):
     state = mta_driver.MtaRecordsState(
         last_published_mx="10 mail.example.com",
-        last_published_spf='"v=spf1 mx -all"',
+        last_published_spf="v=spf1 mx -all",
         last_published_tlsa="3 1 1 " + "ab" * 32,
         last_reconciled_iso="2026-05-11T00:00:00+00:00",
         consecutive_failures=1,
@@ -275,11 +279,13 @@ def test_state_missing_returns_default(tmp_path):
 def test_state_unknown_fields_ignored(tmp_path):
     path = mta_driver.state_path(keydir=tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
-        "schema_version": 999,
-        "last_published_mx": "10 mail.example.com",
-        "future_field": "ignored",
-    }))
+    path.write_text(
+        json.dumps({
+            "schema_version": 999,
+            "last_published_mx": "10 mail.example.com",
+            "future_field": "ignored",
+        })
+    )
     state = mta_driver.read_state(keydir=tmp_path)
     assert state.last_published_mx == "10 mail.example.com"
 

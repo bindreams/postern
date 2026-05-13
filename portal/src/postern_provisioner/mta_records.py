@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 POSTERN_DNS_BIN = "/usr/local/bin/postern-dns"
 
 
-# Settings ==============================================================================================================
+# Settings =============================================================================================================
 @dataclass
 class MtaRecordsSettings:
     """Subset of portal settings used by the MTA-records reconciler. Injected
@@ -48,7 +48,7 @@ class MtaRecordsSettings:
     admin_email: str  # MTA_ADMIN_EMAIL; used in DMARC and TLS-RPT mailto: URIs
 
 
-# postern-dns runner ====================================================================================================
+# postern-dns runner ===================================================================================================
 class PosternDnsRunner:
     """Subprocess wrapper around the postern-dns Go binary. Swappable in tests."""
 
@@ -65,7 +65,7 @@ class PosternDnsRunner:
         subprocess.run(cmd, env=self.env, check=True, capture_output=True, text=True)
 
 
-# Cert helpers ==========================================================================================================
+# Cert helpers =========================================================================================================
 def compute_tlsa_cert_hex(cert_pem_path: Path) -> str | None:
     """Read fullchain.pem and return sha256(SubjectPublicKeyInfo) hex of the leaf.
 
@@ -86,7 +86,7 @@ def compute_tlsa_cert_hex(cert_pem_path: Path) -> str | None:
     return hashlib.sha256(spki_der).hexdigest()
 
 
-# State =================================================================================================================
+# State ================================================================================================================
 SCHEMA_VERSION = 1
 DEFAULT_KEYDIR = Path("/var/lib/opendkim")
 
@@ -102,10 +102,10 @@ class MtaRecordsState:
     """
     schema_version: int = SCHEMA_VERSION
     last_published_mx: str = ""  # "10 mail.<domain>"
-    last_published_spf: str = ""  # raw quoted content
-    last_published_dmarc: str = ""  # raw quoted content
-    last_published_mta_sts: str = ""  # raw quoted content (includes id=)
-    last_published_tls_rpt: str = ""  # raw quoted content
+    last_published_spf: str = ""  # TXT content, unquoted (libdns wraps on write)
+    last_published_dmarc: str = ""  # TXT content, unquoted
+    last_published_mta_sts: str = ""  # TXT content, unquoted (includes id=)
+    last_published_tls_rpt: str = ""  # TXT content, unquoted
     last_published_tlsa: str = ""  # "3 1 1 <hex>"
     last_reconciled_iso: str | None = None
     consecutive_failures: int = 0
@@ -160,12 +160,21 @@ def write_state(state: MtaRecordsState, *, keydir: Path | None = None) -> None:
         raise
 
 
-# Reconciler ============================================================================================================
+# Reconciler ===========================================================================================================
 def _record_signature(rec: mta_dns.MtaRecord) -> str:
     """Stable string representation of a record's content for state-comparison.
-    For MX: "preference target". For TXT: the quoted content. For TLSA: "u s m hex".
+    For MX: "preference target". For TXT: the (unquoted) content. For TLSA: "u s m hex".
     """
     return " ".join(rec.args)
+
+
+def _args_from_signature(type: str, sig: str) -> tuple[str, ...]:
+    """Inverse of `_record_signature`. TXT content contains internal whitespace
+    and must NOT be split (1 positional arg to postern-dns txt-delete);
+    MX/TLSA are space-separated positional args."""
+    if type == "TXT":
+        return (sig, )
+    return tuple(sig.split(" "))
 
 
 def _last_published_for(state: MtaRecordsState, name: str, type: str) -> str:
@@ -249,7 +258,7 @@ def reconcile_mta_records(
                 continue  # already in sync
             # Drift: delete the previously-published version before publishing the new one.
             if have_sig:
-                old = mta_dns.MtaRecord(name=rec.name, type=rec.type, args=tuple(have_sig.split(" ")))
+                old = mta_dns.MtaRecord(name=rec.name, type=rec.type, args=_args_from_signature(rec.type, have_sig))
                 try:
                     runner.delete_record(old)
                     logger.info("mta-dns: deleted stale %s %s -> %s", rec.type, rec.name, have_sig)
@@ -259,8 +268,8 @@ def reconcile_mta_records(
                     # what we want. Log and continue.
                     stderr = (e.stderr or "").strip()
                     logger.warning(
-                        "mta-dns: failed to delete stale %s %s (continuing): %s%s",
-                        rec.type, rec.name, e, f": {stderr}" if stderr else ""
+                        "mta-dns: failed to delete stale %s %s (continuing): %s%s", rec.type, rec.name, e,
+                        f": {stderr}" if stderr else ""
                     )
             runner.set_record(rec)
             logger.info("mta-dns: published %s %s -> %s", rec.type, rec.name, want_sig)
@@ -278,8 +287,8 @@ def reconcile_mta_records(
         new_state.consecutive_failures = state.consecutive_failures + 1
         stderr = (e.stderr or "").strip()
         logger.error(
-            "mta-dns: reconcile step failed (%d consecutive): %s%s",
-            new_state.consecutive_failures, e, f": {stderr}" if stderr else ""
+            "mta-dns: reconcile step failed (%d consecutive): %s%s", new_state.consecutive_failures, e,
+            f": {stderr}" if stderr else ""
         )
 
     return new_state

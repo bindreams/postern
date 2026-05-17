@@ -591,5 +591,83 @@ def dns_publish() -> None:
     typer.echo(f"trigger written: {trigger}")
 
 
+# Doctor ===============================================================================================================
+def _tlsa_cert_hex(domain: str, certdir: Path = Path("/etc/letsencrypt")) -> str | None:
+    """sha256(SubjectPublicKeyInfo) hex of the leaf cert for `domain`, or None
+    if the cert isn't on disk yet (first-issuance bootstrap window)."""
+    import hashlib
+
+    fullchain = certdir / "live" / domain / "fullchain.pem"
+    try:
+        pem = fullchain.read_bytes()
+    except FileNotFoundError:
+        return None
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization
+    leaf = x509.load_pem_x509_certificates(pem)[0]
+    spki_der = leaf.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(spki_der).hexdigest()
+
+
+@app.command("doctor")
+def doctor_cmd(
+    external_only: bool = typer.Option(False, "--external-only", help="Only run external (DS, PTR) checks"),
+    postern_only: bool = typer.Option(False, "--postern-only", help="Only run postern-managed record checks"),
+    connectivity_only: bool = typer.Option(False, "--connectivity-only", help="Only run connectivity probes"),
+    output_json: bool = typer.Option(False, "--json", help="Emit structured JSON instead of the human table"),
+) -> None:
+    """Verify operator-prereqs and live record state.
+
+    Three sections:
+      1. External  -- things postern cannot publish itself (DS at registrar, PTR at VPS).
+      2. Postern-managed -- live DNS matches what postern claims to publish.
+      3. Connectivity -- :443/tcp serves a valid cert, :25/tcp is reachable.
+
+    Exits non-zero on any FAIL so this is usable as a bring-up gate or CI smoke step.
+    """
+    from postern import doctor
+    from postern.mta import dkim as mta_dkim
+    from postern.mta import rotation
+
+    settings = _settings()
+    selected = (external_only, postern_only, connectivity_only)
+    if sum(selected) > 1:
+        typer.echo("at most one of --external-only/--postern-only/--connectivity-only may be set", err=True)
+        raise typer.Exit(2)
+    if external_only:
+        sections: tuple[doctor.Section, ...] = (doctor.EXTERNAL, )
+    elif postern_only:
+        sections = (doctor.POSTERN_MANAGED, )
+    elif connectivity_only:
+        sections = (doctor.CONNECTIVITY, )
+    else:
+        sections = (doctor.EXTERNAL, doctor.POSTERN_MANAGED, doctor.CONNECTIVITY)
+
+    pubkeys: dict[str, str] = {}
+    state = rotation.read_state()
+    for selector in state.active_selectors:
+        try:
+            pubkeys[selector] = mta_dkim.read_local_pubkey(selector)
+        except mta_dkim.DkimKeyNotFoundError:
+            pass
+
+    doctor_settings = doctor.DoctorSettings(
+        domain=settings.domain,
+        public_ipv4=settings.public_ipv4,
+        public_ipv6=settings.public_ipv6 or None,
+        admin_email=settings.mta_admin_email,
+        tlsa_cert_hex=_tlsa_cert_hex(settings.domain),
+        dkim_pubkey_by_selector=pubkeys,
+    )
+
+    report = doctor.run_doctor(doctor_settings, sections=sections)
+    typer.echo(doctor.render_json(report) if output_json else doctor.render_text(report), nl=False)
+    raise typer.Exit(report.exit_code)
+
+
 if __name__ == "__main__":
     app()

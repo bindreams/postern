@@ -24,19 +24,26 @@ def env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _build_passing_report() -> doctor.DoctorReport:
-    return doctor.DoctorReport(results=[
-        doctor.CheckResult(section=doctor.EXTERNAL, label="DS hole.example", status="ok", detail="-> ok"),
-        doctor.CheckResult(section=doctor.CONNECTIVITY, label=":443/tcp hole.example", status="ok"),
-    ])
+    return doctor.DoctorReport(
+        results=[
+            doctor.CheckResult(section=doctor.EXTERNAL, label="DS hole.example", status="ok", detail="-> ok"),
+            doctor.CheckResult(section=doctor.CONNECTIVITY, label=":443/tcp hole.example", status="ok"),
+        ]
+    )
 
 
 def _build_failing_report() -> doctor.DoctorReport:
-    return doctor.DoctorReport(results=[
-        doctor.CheckResult(
-            section=doctor.EXTERNAL, label="PTR 203.0.113.42", status="fail",
-            detail="no PTR record", fix="set rDNS at VPS provider",
-        ),
-    ])
+    return doctor.DoctorReport(
+        results=[
+            doctor.CheckResult(
+                section=doctor.EXTERNAL,
+                label="PTR 203.0.113.42",
+                status="fail",
+                detail="no PTR record",
+                fix="set rDNS at VPS provider",
+            ),
+        ]
+    )
 
 
 def test_doctor_exits_zero_when_all_checks_pass(env):

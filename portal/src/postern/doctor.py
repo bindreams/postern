@@ -196,29 +196,40 @@ def build_postern_expectations(
     mta_fix = "Wait for the next provisioner tick; if it persists, check `docker compose logs provisioner`."
 
     for fqdn in (domain, f"*.{domain}", f"mail.{domain}"):
-        out.append(PosternManagedExpectation(
-            label=f"A    {fqdn}", name=fqdn, type="A", expected_content=public_ipv4, fix=cert_fix
-        ))
+        out.append(
+            PosternManagedExpectation(
+                label=f"A    {fqdn}", name=fqdn, type="A", expected_content=public_ipv4, fix=cert_fix
+            )
+        )
         if public_ipv6:
-            out.append(PosternManagedExpectation(
-                label=f"AAAA {fqdn}", name=fqdn, type="AAAA", expected_content=public_ipv6, fix=cert_fix
-            ))
-    out.append(PosternManagedExpectation(
-        label=f"CAA  {domain}", name=domain, type="CAA",
-        expected_content='0 issue "letsencrypt.org"', fix=cert_fix,
-    ))
+            out.append(
+                PosternManagedExpectation(
+                    label=f"AAAA {fqdn}", name=fqdn, type="AAAA", expected_content=public_ipv6, fix=cert_fix
+                )
+            )
+    out.append(
+        PosternManagedExpectation(
+            label=f"CAA  {domain}",
+            name=domain,
+            type="CAA",
+            expected_content='0 issue "letsencrypt.org"',
+            fix=cert_fix,
+        )
+    )
 
     for rec in mta_dns.expected_records_structured(domain, admin_email=admin_email, tlsa_cert_hex=tlsa_cert_hex):
         out.append(_expectation_from_mta_record(rec, fix=mta_fix))
 
     for selector, pubkey in (dkim_pubkey_by_selector or {}).items():
-        out.append(PosternManagedExpectation(
-            label=f"DKIM {selector}._domainkey.{domain}",
-            name=f"{selector}._domainkey.{domain}",
-            type="TXT",
-            expected_content=f"v=DKIM1; k=rsa; p={pubkey}",
-            fix="Run `postern mta rotation-status` to inspect the rotation state machine.",
-        ))
+        out.append(
+            PosternManagedExpectation(
+                label=f"DKIM {selector}._domainkey.{domain}",
+                name=f"{selector}._domainkey.{domain}",
+                type="TXT",
+                expected_content=f"v=DKIM1; k=rsa; p={pubkey}",
+                fix="Run `postern mta rotation-status` to inspect the rotation state machine.",
+            )
+        )
 
     return out
 
@@ -229,19 +240,28 @@ def _expectation_from_mta_record(rec: MtaRecord, *, fix: str) -> PosternManagedE
         # `mta_records.parseMXArgs` adds a trailing dot on the wire (#121).
         target = target.rstrip(".") + "."
         return PosternManagedExpectation(
-            label=f"MX   {rec.name}", name=rec.name, type="MX",
-            expected_content=f"{priority} {target}", fix=fix,
+            label=f"MX   {rec.name}",
+            name=rec.name,
+            type="MX",
+            expected_content=f"{priority} {target}",
+            fix=fix,
         )
     if rec.type == "TLSA":
         u, s, m, hexv = rec.args
         return PosternManagedExpectation(
-            label=f"TLSA {rec.name}", name=rec.name, type="TLSA",
-            expected_content=f"{u} {s} {m} {hexv}", fix=fix,
+            label=f"TLSA {rec.name}",
+            name=rec.name,
+            type="TLSA",
+            expected_content=f"{u} {s} {m} {hexv}",
+            fix=fix,
         )
     if rec.type == "TXT":
         return PosternManagedExpectation(
-            label=_label_for_mta_txt(rec.name), name=rec.name, type="TXT",
-            expected_content=rec.args[0], fix=fix,
+            label=_label_for_mta_txt(rec.name),
+            name=rec.name,
+            type="TXT",
+            expected_content=rec.args[0],
+            fix=fix,
         )
     raise ValueError(f"unsupported MtaRecord type: {rec.type}")
 
@@ -270,21 +290,30 @@ def check_postern_record(
         ans = r.resolve(probe, exp.type, raise_on_no_answer=False)
     except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
         return CheckResult(
-            section=POSTERN_MANAGED, label=exp.label, status="fail",
-            detail=f"no {exp.type} record (expected {exp.expected_content!r})", fix=exp.fix,
+            section=POSTERN_MANAGED,
+            label=exp.label,
+            status="fail",
+            detail=f"no {exp.type} record (expected {exp.expected_content!r})",
+            fix=exp.fix,
         )
     except dns.exception.DNSException as e:
         return CheckResult(
-            section=POSTERN_MANAGED, label=exp.label, status="fail",
-            detail=f"lookup failed: {e}", fix=exp.fix,
+            section=POSTERN_MANAGED,
+            label=exp.label,
+            status="fail",
+            detail=f"lookup failed: {e}",
+            fix=exp.fix,
         )
 
     got = _rendered_answers(ans, exp.type)
     if _content_matches(exp.expected_content, got, exp.type):
         return CheckResult(section=POSTERN_MANAGED, label=exp.label, status="ok", detail=f"-> {exp.expected_content}")
     return CheckResult(
-        section=POSTERN_MANAGED, label=exp.label, status="fail",
-        detail=f"got {got}, expected {exp.expected_content!r}", fix=exp.fix,
+        section=POSTERN_MANAGED,
+        label=exp.label,
+        status="fail",
+        detail=f"got {got}, expected {exp.expected_content!r}",
+        fix=exp.fix,
     )
 
 
@@ -325,7 +354,10 @@ def check_tcp(host: str, port: int, *, timeout: float = 5.0) -> CheckResult:
             return CheckResult(section=CONNECTIVITY, label=label, status="ok", detail="reachable")
     except OSError as e:
         return CheckResult(
-            section=CONNECTIVITY, label=label, status="fail", detail=f"unreachable: {e}",
+            section=CONNECTIVITY,
+            label=label,
+            status="fail",
+            detail=f"unreachable: {e}",
             fix=(
                 f"Check that port {port} is open in the VPS firewall and not bound by a "
                 "different process on the host."
@@ -343,12 +375,16 @@ def check_tls(host: str, port: int = 443, *, timeout: float = 5.0) -> CheckResul
         with socket.create_connection((host, port), timeout=timeout) as sock:
             with ctx.wrap_socket(sock, server_hostname=host):
                 return CheckResult(
-                    section=CONNECTIVITY, label=label, status="ok",
+                    section=CONNECTIVITY,
+                    label=label,
+                    status="ok",
                     detail="chain validates against system trust store",
                 )
     except ssl.SSLCertVerificationError as e:
         return CheckResult(
-            section=CONNECTIVITY, label=label, status="fail",
+            section=CONNECTIVITY,
+            label=label,
+            status="fail",
             detail=f"cert verification failed: {e.reason}",
             fix=(
                 "Check `postern cert verify` and `postern cert show`. If the cert is "
@@ -357,7 +393,9 @@ def check_tls(host: str, port: int = 443, *, timeout: float = 5.0) -> CheckResul
         )
     except (OSError, ssl.SSLError) as e:
         return CheckResult(
-            section=CONNECTIVITY, label=label, status="fail",
+            section=CONNECTIVITY,
+            label=label,
+            status="fail",
             detail=f"TLS handshake failed: {e}",
             fix="Check `docker compose logs nginx` and that :443/tcp is reachable.",
         )

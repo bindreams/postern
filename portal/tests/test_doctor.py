@@ -14,7 +14,7 @@ import pytest
 from postern import doctor
 
 
-# Fixtures ============================================================================================================
+# Fixtures =============================================================================================================
 def _settings(**overrides) -> doctor.DoctorSettings:
     base = dict(
         domain="hole.example",
@@ -131,23 +131,32 @@ class TestBuildPosternExpectations:
 
     def test_no_aaaa_when_no_v6(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="203.0.113.42", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="203.0.113.42",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         assert not any(e.type == "AAAA" for e in exps)
 
     def test_aaaa_when_v6(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="203.0.113.42", public_ipv6="2001:db8::42",
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="203.0.113.42",
+            public_ipv6="2001:db8::42",
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         aaaa_names = {e.name for e in exps if e.type == "AAAA"}
         assert aaaa_names == {"hole.example", "*.hole.example", "mail.hole.example"}
 
     def test_caa_apex_only(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         caa = [e for e in exps if e.type == "CAA"]
         assert len(caa) == 1
@@ -158,8 +167,11 @@ class TestBuildPosternExpectations:
         """`postern-dns mx-set` normalizes to trailing dot; the doctor must
         expect the on-wire form, not the bare hostname."""
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         mx = next(e for e in exps if e.type == "MX")
         assert mx.expected_content == "10 mail.hole.example."
@@ -168,8 +180,11 @@ class TestBuildPosternExpectations:
         """libdns/cloudflare unwraps on read; the doctor compares against the
         unquoted form (#122)."""
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         spf = next(e for e in exps if e.type == "TXT" and e.name == "hole.example")
         assert spf.expected_content == "v=spf1 mx -all"
@@ -177,8 +192,11 @@ class TestBuildPosternExpectations:
 
     def test_tlsa_when_cert_hex_provided(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex="ab" * 32,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex="ab" * 32,
         )
         tlsa = next(e for e in exps if e.type == "TLSA")
         assert tlsa.name == "_25._tcp.mail.hole.example"
@@ -186,15 +204,21 @@ class TestBuildPosternExpectations:
 
     def test_no_tlsa_when_cert_hex_absent(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
         )
         assert not any(e.type == "TLSA" for e in exps)
 
     def test_dkim_included_when_pubkey_supplied(self):
         exps = doctor.build_postern_expectations(
-            "hole.example", public_ipv4="1.1.1.1", public_ipv6=None,
-            admin_email="ops@example.com", tlsa_cert_hex=None,
+            "hole.example",
+            public_ipv4="1.1.1.1",
+            public_ipv6=None,
+            admin_email="ops@example.com",
+            tlsa_cert_hex=None,
             dkim_pubkey_by_selector={"sel-2026-05": "BASE64KEY"},
         )
         dkim = next(e for e in exps if e.name == "sel-2026-05._domainkey.hole.example")
@@ -248,8 +272,11 @@ class TestCheckPosternRecord:
 
         r.resolve.side_effect = _resolve
         exp = doctor.PosternManagedExpectation(
-            label="A    *.hole.example", name="*.hole.example", type="A",
-            expected_content="203.0.113.42", fix="",
+            label="A    *.hole.example",
+            name="*.hole.example",
+            type="A",
+            expected_content="203.0.113.42",
+            fix="",
         )
         doctor.check_postern_record(exp, resolver=r)
         assert captured == ["doctor-probe.hole.example"]
@@ -265,8 +292,11 @@ class TestCheckPosternRecord:
         r.resolve.return_value = ans
 
         exp = doctor.PosternManagedExpectation(
-            label="SPF  hole.example", name="hole.example", type="TXT",
-            expected_content="v=spf1 mx -all", fix="",
+            label="SPF  hole.example",
+            name="hole.example",
+            type="TXT",
+            expected_content="v=spf1 mx -all",
+            fix="",
         )
         assert doctor.check_postern_record(exp, resolver=r).status == "ok"
 
@@ -283,8 +313,11 @@ class TestCheckPosternRecord:
         r.resolve.return_value = ans
 
         exp = doctor.PosternManagedExpectation(
-            label="MX   hole.example", name="hole.example", type="MX",
-            expected_content="10 mail.hole.example.", fix="",
+            label="MX   hole.example",
+            name="hole.example",
+            type="MX",
+            expected_content="10 mail.hole.example.",
+            fix="",
         )
         assert doctor.check_postern_record(exp, resolver=r).status == "ok"
 
@@ -292,8 +325,11 @@ class TestCheckPosternRecord:
         r = MagicMock(spec=dns.resolver.Resolver)
         r.resolve.side_effect = dns.resolver.NXDOMAIN()
         exp = doctor.PosternManagedExpectation(
-            label="A    hole.example", name="hole.example", type="A",
-            expected_content="203.0.113.42", fix="bring up provisioner",
+            label="A    hole.example",
+            name="hole.example",
+            type="A",
+            expected_content="203.0.113.42",
+            fix="bring up provisioner",
         )
         res = doctor.check_postern_record(exp, resolver=r)
         assert res.status == "fail"
@@ -365,7 +401,11 @@ class TestRunDoctor:
 
         report = doctor.run_doctor(
             _settings(),
-            ds_probe=ds, ptr_probe=ptr, record_probe=rec, tcp_probe=tcp, tls_probe=tls,
+            ds_probe=ds,
+            ptr_probe=ptr,
+            record_probe=rec,
+            tcp_probe=tcp,
+            tls_probe=tls,
         )
         assert "ds" in seen
         assert "ptr-203.0.113.42" in seen
@@ -415,7 +455,8 @@ class TestRender:
 
     def test_all_pass_text_says_all_passed(self):
         report = doctor.DoctorReport(results=[
-            _ok("DS hole.example"), _ok("PTR 1.2.3.4"),
+            _ok("DS hole.example"),
+            _ok("PTR 1.2.3.4"),
         ])
         out = doctor.render_text(report)
         assert "All 2 checks passed." in out
@@ -437,9 +478,7 @@ class TestRender:
         report = doctor.DoctorReport(results=[
             _ok("short", section=doctor.EXTERNAL),
         ])
-        line = next(
-            l for l in doctor.render_text(report).splitlines() if "[OK]" in l
-        )
+        line = next(l for l in doctor.render_text(report).splitlines() if "[OK]" in l)
         # Indent + marker is 2 + 6 + 1 = 9 chars; then label padded to _LABEL_W.
         assert len(line.split("-> ok")[0]) >= 9 + doctor._LABEL_W - 1
 
@@ -451,11 +490,13 @@ class TestRender:
         assert decoded["results"][0]["section"] == "external"
 
     def test_grouped_by_section_with_headings(self):
-        report = doctor.DoctorReport(results=[
-            _ok("A", section=doctor.EXTERNAL),
-            _ok("B", section=doctor.POSTERN_MANAGED),
-            _ok("C", section=doctor.CONNECTIVITY),
-        ])
+        report = doctor.DoctorReport(
+            results=[
+                _ok("A", section=doctor.EXTERNAL),
+                _ok("B", section=doctor.POSTERN_MANAGED),
+                _ok("C", section=doctor.CONNECTIVITY),
+            ]
+        )
         out = doctor.render_text(report)
         # The three headings appear in this order.
         i_ext = out.index("External (operator must publish")

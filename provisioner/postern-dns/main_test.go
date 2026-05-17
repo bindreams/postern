@@ -948,7 +948,9 @@ func TestRunCmd_CAASet(t *testing.T) {
 func TestRunCmd_TLSASet(t *testing.T) {
 	fp := &fakeProvider{}
 	certHex := strings.Repeat("ab", 32)
-	if err := runCmd(context.Background(), "cloudflare", fp, "tlsa-set", "_25._tcp.mail.example.com", []string{"3", "1", "1", certHex}); err != nil {
+	// Use a non-Cloudflare provider name so the libdns path is exercised; the
+	// Cloudflare-specific TLSA fallback (#127) is covered by cloudflare_tlsa_test.go.
+	if err := runCmd(context.Background(), "gandi", fp, "tlsa-set", "_25._tcp.mail.example.com", []string{"3", "1", "1", certHex}); err != nil {
 		t.Fatalf("runCmd: %v", err)
 	}
 	if rr := fp.appended[0].RR(); rr.Type != "TLSA" {

@@ -245,11 +245,20 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 		if err != nil {
 			return err
 		}
+		// libdns/cloudflare v0.2.2 doesn't marshal TLSA structured fields,
+		// so Cloudflare's API rejects the request (#127). Until upstream
+		// adds a TLSA case to cloudflareRecord, talk to the API directly.
+		if providerName == "cloudflare" {
+			return cloudflareTLSASet(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, rec)
+		}
 		return doRecordSet(ctx, provider, zone, rec)
 	case "tlsa-delete":
 		rec, err := parseTLSAArgs(name, args)
 		if err != nil {
 			return err
+		}
+		if providerName == "cloudflare" {
+			return cloudflareTLSADelete(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, rec)
 		}
 		return doRecordDelete(ctx, provider, zone, rec)
 

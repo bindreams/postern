@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +26,12 @@ class Connection(BaseModel):
     password: str
     enabled: bool = True
     created_at: datetime | None = None
+    # Pydantic Literal validates on construction (`Connection(plugin=...)`). It
+    # does NOT validate on `model_copy(update={"plugin": ...})` -- that's
+    # documented Pydantic v2 behaviour. The DB-level CHECK constraint in
+    # migration 2 is the catch-all defence for any code path that bypasses the
+    # Pydantic boundary.
+    plugin: Literal["v2ray-plugin", "galoshes"] = "v2ray-plugin"
 
 
 class OtpCode(BaseModel):

@@ -72,6 +72,24 @@ def test_client_config_per_plugin(plugin_name):
     assert cfg["local_port"] == 1080
 
 
+def test_client_config_galoshes_enables_udp():
+    """Galoshes' value-add over v2ray-plugin is UDP via yamux. The client
+    config must opt sslocal into tcp_and_udp so UDP-ASSOCIATE opens
+    automatically -- without this, the operator gets TCP-only galoshes
+    silently and has to hand-edit JSON."""
+    conn = _make_connection().model_copy(update={"plugin": "galoshes"})
+    cfg = client_config(conn, DOMAIN)
+    assert cfg["servers"][0]["mode"] == "tcp_and_udp"
+
+
+def test_client_config_v2ray_stays_tcp_only():
+    """v2ray-plugin has no UDP path; advertising tcp_and_udp would let sslocal
+    open UDP-ASSOCIATE that the server cannot service. Keep absence."""
+    conn = _make_connection()  # default plugin = v2ray-plugin
+    cfg = client_config(conn, DOMAIN)
+    assert "mode" not in cfg["servers"][0]
+
+
 # Connection plugin field ==============================================================================================
 def test_connection_default_plugin_is_v2ray():
     conn = Connection(user_id="u", path_token="x" * 24, label="L", password="P")

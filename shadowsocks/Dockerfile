@@ -13,7 +13,7 @@ RUN <<-EOF
 	wget -q -O SHA256SUMS "${base}/SHA256SUMS"
 	# BusyBox sha256sum lacks --ignore-missing. Filter SHA256SUMS to the single
 	# line that names our asset (linux entries use text-mode "<hash>  <file>").
-	grep "  ${asset}\$" SHA256SUMS > SHA256SUMS.one
+	grep -F "  ${asset}" SHA256SUMS > SHA256SUMS.one
 	sha256sum -c SHA256SUMS.one
 	tar -xzf "${asset}" -C /
 	test -x /v2ray-plugin
@@ -37,7 +37,7 @@ RUN <<-EOF
 	cd /tmp
 	wget -q -O "${asset}" "${base}/${asset}"
 	wget -q -O SHA256SUMS "${base}/SHA256SUMS"
-	grep "  ${asset}\$" SHA256SUMS > SHA256SUMS.one
+	grep -F "  ${asset}" SHA256SUMS > SHA256SUMS.one
 	sha256sum -c SHA256SUMS.one
 	install -m 0755 "${asset}" /galoshes
 EOF

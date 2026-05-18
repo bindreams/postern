@@ -51,7 +51,39 @@ def _login_complete(client: httpx.Client, mailpit, email: str) -> httpx.Response
 
 def _launch_sslocal(ssclient_config_path: str) -> None:
     """Start sslocal in ssclient as a daemonized background process, then wait
-    for the SOCKS port (1080) to accept connections before returning."""
+    for the SOCKS port (1080) to accept connections before returning.
+
+    First, kill any prior sslocal and wait for :1080 to drain. Without this,
+    a parametrized test re-running `_launch_sslocal` would see the previous
+    parametrization's sslocal still bound on 1080, `nc -z` would report READY
+    immediately, and the new test's curl would tunnel through the WRONG
+    sslocal (still configured for the prior connection). That is precisely
+    the failure mode that lets a galoshes-xfail "pass" for an unrelated
+    reason."""
+    # Stop and reap any existing sslocal.
+    subprocess.run(
+        compose(
+            "exec", "-T", "ssclient", "sh", "-c",
+            "pkill -TERM -x sslocal 2>/dev/null; sleep 0.3; pkill -KILL -x sslocal 2>/dev/null; true"
+        ),
+        capture_output=True,
+        text=True,
+    )
+    # Wait for :1080 to be FREE before launching the new sslocal.
+    for _ in range(20):
+        probe = subprocess.run(
+            compose(
+                "exec", "-T", "ssclient", "sh", "-c", "nc -z localhost 1080 2>/dev/null && echo BOUND || echo FREE"
+            ),
+            capture_output=True,
+            text=True,
+        )
+        if "FREE" in probe.stdout:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("port 1080 never freed after pkill -- prior sslocal not cleaned up")
+
     # `-d` detaches; using docker exec directly (no `sh -c`) so the pid
     # inherits the container's init and survives past our call returning.
     subprocess.run(
@@ -220,8 +252,8 @@ def test_galoshes_tunnel_routes_udp(portal_client, mailpit_client, fresh_user, f
     _login_complete(portal_client, mailpit_client, email)
     r = portal_client.get(f"/connection/{conn_id}/config")
     config = r.json()
-    # Force tcp_and_udp so sslocal opens UDP-ASSOCIATE.
-    config["servers"][0]["mode"] = "tcp_and_udp"
+    # ss_config.client_config now sets mode=tcp_and_udp for galoshes -- pin the contract.
+    assert config["servers"][0]["mode"] == "tcp_and_udp"
 
     config_path_in_container = "/tmp/client-udp.json"
     subprocess.run(

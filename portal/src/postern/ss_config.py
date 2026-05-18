@@ -41,18 +41,28 @@ def server_config(conn: Connection, domain: str) -> dict:
 
 
 def client_config(conn: Connection, domain: str) -> dict:
-    """Generate a shadowsocks client config for download."""
-    plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
+    """Generate a shadowsocks client config for download.
+
+    For galoshes connections we set `mode: tcp_and_udp` so sslocal opens
+    UDP-ASSOCIATE -- otherwise galoshes' raison d'etre over plain v2ray-plugin
+    (UDP via yamux) is silently TCP-only and the user has to hand-edit JSON.
+    v2ray-plugin connections stay TCP-only (the historical default) since
+    plain v2ray-plugin has no UDP path; advertising tcp_and_udp there would
+    open UDP-ASSOCIATE on sslocal but UDP traffic would be dropped server-side.
+    """
+    server: dict = {
+        "address": domain,
+        "port": 443,
+        "password": conn.password,
+        "method": CIPHER,
+        "plugin": conn.plugin,
+        "plugin_opts": f"tls;fast-open;path=/t/{conn.path_token};host={domain}",
+    }
+    if conn.plugin == "galoshes":
+        server["mode"] = "tcp_and_udp"
 
     return {
-        "servers": [{
-            "address": domain,
-            "port": 443,
-            "password": conn.password,
-            "method": CIPHER,
-            "plugin": conn.plugin,
-            "plugin_opts": plugin_opts,
-        }],
+        "servers": [server],
         "local_port": 1080,
         "local_address": "127.0.0.1",
     }

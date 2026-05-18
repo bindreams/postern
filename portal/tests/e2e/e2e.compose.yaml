@@ -131,6 +131,24 @@ services:
     init: true
     # No healthcheck: the image is scratch-based (no shell, no wget). It starts in ms.
 
+  # UDP echo for the galoshes UDP test. Listens on UDP/9999, echoes every
+  # datagram back to its sender. Lives only on e2e-shadowsocks so ssclient
+  # cannot reach it directly -- only via the tunnel through the ss-* container.
+  udp-echo:
+    image: dhi.io/python:3.13-alpine3.23-dev
+    networks: [e2e-shadowsocks]
+    init: true
+    command:
+      - python3
+      - -c
+      - |
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.bind(("0.0.0.0", 9999))
+        while True:
+            data, addr = s.recvfrom(4096)
+            s.sendto(data, addr)
+
   ssclient:
     build:
       context: ../../..

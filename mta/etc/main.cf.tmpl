@@ -39,6 +39,9 @@ smtp_tls_protocols = >=TLSv1.2
 smtp_tls_mandatory_protocols = >=TLSv1.2
 smtp_tls_loglevel = 1
 smtp_host_lookup = dns
+# CA bundle for `secure`-policy destinations (MTA-STS-driven) when DANE is unavailable
+# or overridden by mta-sts-daemon. Without this, CA-based verify always fails.
+smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt
 
 # Local-delivery scope -------------------------------------------------------------------------------------------------
 # Only the four named addresses are accepted at SMTP RCPT TO. They are virtual-aliased

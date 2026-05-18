@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from enum import Enum
 from pathlib import Path
 
 import typer
@@ -12,6 +13,16 @@ from postern import db
 from postern.models import Connection, User
 from postern.settings import Settings
 from postern.ss_config import generate_password
+
+
+class PluginChoice(str, Enum):
+    """SIP003 plugin choice for a connection. Typer renders this as a
+    click.Choice on the CLI. The .value is what callers see (e.g.
+    `--plugin v2ray-plugin`), and what's persisted to the connections.plugin
+    column."""
+
+    v2ray = "v2ray-plugin"
+    galoshes = "galoshes"
 
 app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
@@ -120,7 +131,15 @@ def user_delete(email: str) -> None:
 
 # Connection commands ==================================================================================================
 @connection_app.command("add")
-def connection_add(user_email: str, label: str) -> None:
+def connection_add(
+    user_email: str,
+    label: str,
+    plugin: PluginChoice = typer.Option(
+        PluginChoice.v2ray,
+        "--plugin",
+        help="SIP003 plugin: 'v2ray-plugin' (default) or 'galoshes' (adds UDP via yamux).",
+    ),
+) -> None:
     """Create a new connection for a user."""
     settings = _settings()
 
@@ -139,6 +158,7 @@ def connection_add(user_email: str, label: str) -> None:
                 path_token=path_token,
                 label=label,
                 password=password,
+                plugin=plugin.value,
             )
             await db.create_connection(database, conn)
             return conn
@@ -147,7 +167,7 @@ def connection_add(user_email: str, label: str) -> None:
     if conn is None:
         typer.echo(f"User not found: {user_email}")
         raise typer.Exit(1)
-    typer.echo(f"Created connection {conn.id}")
+    typer.echo(f"Created connection {conn.id} ({conn.plugin})")
     _trigger_reconcile(settings)
 
 
@@ -174,7 +194,7 @@ def connection_list(user_email: str | None = None) -> None:
         return
     for c in connections:
         status = "enabled" if c.enabled else "DISABLED"
-        typer.echo(f"  {c.id}  {c.label}  {status}")
+        typer.echo(f"  {c.id}  {c.label}  [{c.plugin}]  {status}")
 
 
 @connection_app.command("disable")

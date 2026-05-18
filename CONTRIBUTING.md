@@ -210,16 +210,17 @@ prek run --all-files
 
 ## Working with vendored code
 
-[external/shadowsocks-rust](external/shadowsocks-rust) and [external/v2ray-plugin](external/v2ray-plugin) are pinned upstream copies, managed with [`git subrepo`](https://github.com/ingydotnet/git-subrepo) (not submodules):
+[external/shadowsocks-rust](external/shadowsocks-rust) is a pinned upstream copy, managed with [`git subrepo`](https://github.com/ingydotnet/git-subrepo) (not submodules):
 
 ```bash
-# Pull upstream changes into a subrepo
+# Pull upstream changes into the subrepo
 git subrepo pull external/shadowsocks-rust
-git subrepo pull external/v2ray-plugin
 
 # Push back upstream (rare — usually only upstream maintainers need this)
-git subrepo push external/<name>
+git subrepo push external/shadowsocks-rust
 ```
+
+`v2ray-plugin` and `galoshes` are NOT subrepos — they are downloaded as pre-built release assets from [bindreams/hole](https://github.com/bindreams/hole)'s `releases/v2ray-plugin/v*` and `releases/galoshes/v*` tracks at image build time, with the version pinned via `ARG V2RAY_PLUGIN_VERSION=` / `ARG GALOSHES_VERSION=` in [shadowsocks/Dockerfile](shadowsocks/Dockerfile) and SHA256-verified against the release's `SHA256SUMS`. Renovate bumps both versions via two `github-tags` custom managers in [.github/renovate.json](.github/renovate.json).
 
 These directories are:
 

@@ -263,14 +263,14 @@ sys.stdout.write(data[off:].decode())
 """
     result = subprocess.run(
         compose("exec", "-T", "ssclient", "python3", "-c", probe_py),
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     assert result.returncode == 0, (
         f"UDP-through-galoshes probe failed: stdout={result.stdout!r} stderr={result.stderr!r}"
     )
-    assert result.stdout == "postern-udp-probe", (
-        f"UDP echo did not round-trip cleanly: got {result.stdout!r}"
-    )
+    assert result.stdout == "postern-udp-probe", (f"UDP echo did not round-trip cleanly: got {result.stdout!r}")
 
 
 # Auth-flow assertions =================================================================================================

@@ -24,6 +24,7 @@ class PluginChoice(str, Enum):
     v2ray = "v2ray-plugin"
     galoshes = "galoshes"
 
+
 app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
 connection_app = typer.Typer(name="connection", help="Manage connections")

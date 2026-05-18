@@ -328,6 +328,7 @@ async def test_migration_2_adds_plugin_column_with_v2ray_default(settings):
 
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
+        assert row is not None
         assert row[0] == 2
 
 
@@ -378,4 +379,5 @@ async def test_migration_2_is_resumable_after_partial_failure(settings):
         await db.migrate(conn)
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
+        assert row is not None
         assert row[0] == 2

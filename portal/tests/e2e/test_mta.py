@@ -248,3 +248,18 @@ def test_opendkim_table_signs_with_latest_selector(mta_e2e_stack, active_selecto
         f"postern.test:{active_selector}:/var/lib/opendkim/{active_selector}.private"
     )
     assert expected_key in keytable, (f"KeyTable does not contain {expected_key!r}; got:\n{keytable!r}")
+
+
+def test_smtp_tls_cafile_set_for_mta_sts_secure_policy(mta_e2e_stack):
+    """Regression for #101: ``smtp_tls_CAfile`` must point at the system CA bundle
+    so MTA-STS ``secure``-policy destinations (e.g. proton.me, which publishes
+    both DANE and MTA-STS) succeed CA-based verification. Without it postfix
+    fails the verify with ``untrusted issuer`` and outbound mail silently defers.
+
+    ``postconf -h`` is the authoritative check: an unknown postfix parameter
+    is silently dropped from the rendered config, so a template-string match
+    wouldn't prove postfix actually accepted the directive."""
+    out = mta_exec("postconf", "-h", "smtp_tls_CAfile").stdout.strip()
+    assert out == "/etc/ssl/certs/ca-certificates.crt", (
+        f"smtp_tls_CAfile is {out!r}, expected '/etc/ssl/certs/ca-certificates.crt'"
+    )

@@ -70,6 +70,30 @@ MIGRATIONS: dict[int, str] = {
             expires_at TEXT NOT NULL
         );
     """,
+    # SQLite ALTER TABLE ADD COLUMN cannot attach a CHECK constraint, so
+    # rebuild the table. DROP IF EXISTS at the top makes the migration
+    # resumable -- a crash between INSERT and DROP TABLE on a previous run
+    # leaves connections_new stranded; this cleans it up. Safe to run under
+    # foreign_keys=ON because connections has only outgoing FKs (to users)
+    # and nothing FK-references it.
+    2: """
+        DROP TABLE IF EXISTS connections_new;
+        CREATE TABLE connections_new (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            path_token TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL,
+            password TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            plugin TEXT NOT NULL DEFAULT 'v2ray-plugin'
+                CHECK (plugin IN ('v2ray-plugin', 'galoshes'))
+        );
+        INSERT INTO connections_new (id, user_id, path_token, label, password, enabled, created_at, plugin)
+        SELECT id, user_id, path_token, label, password, enabled, created_at, 'v2ray-plugin' FROM connections;
+        DROP TABLE connections;
+        ALTER TABLE connections_new RENAME TO connections;
+    """,
 }
 
 
@@ -148,8 +172,8 @@ async def delete_user(db: aiosqlite.Connection, user_id: str) -> bool:
 # Connection queries ===================================================================================================
 async def create_connection(db: aiosqlite.Connection, conn: Connection) -> Connection:
     await db.execute(
-        """INSERT INTO connections (id, user_id, path_token, label, password, enabled)
-           VALUES (?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO connections (id, user_id, path_token, label, password, enabled, plugin)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
             conn.id,
             conn.user_id,
@@ -157,6 +181,7 @@ async def create_connection(db: aiosqlite.Connection, conn: Connection) -> Conne
             conn.label,
             conn.password,
             conn.enabled,
+            conn.plugin,
         ),
     )
     await db.commit()

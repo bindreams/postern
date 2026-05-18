@@ -117,6 +117,56 @@ def test_connection_add_user_not_found(cli_env):
     assert result.exit_code == 1
 
 
+# Connection plugin flag ===============================================================================================
+def test_connection_add_default_plugin_is_v2ray(cli_env):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "iPhone"])
+    assert result.exit_code == 0
+    import sqlite3
+    with sqlite3.connect(cli_env) as raw:
+        row = raw.execute("SELECT plugin FROM connections WHERE label='iPhone'").fetchone()
+    assert row is not None and row[0] == "v2ray-plugin"
+
+
+def test_connection_add_plugin_galoshes(cli_env):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "iPad", "--plugin", "galoshes"])
+    assert result.exit_code == 0, result.output
+    import sqlite3
+    with sqlite3.connect(cli_env) as raw:
+        row = raw.execute("SELECT plugin FROM connections WHERE label='iPad'").fetchone()
+    assert row is not None and row[0] == "galoshes"
+
+
+def test_connection_add_explicit_v2ray_plugin_value(cli_env):
+    """Pins the --plugin v2ray-plugin form against any Typer-Enum
+    value-vs-name rendering regression. PluginChoice.v2ray = "v2ray-plugin";
+    Typer should accept the *value* on the CLI, not the *name*."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Mac", "--plugin", "v2ray-plugin"])
+    assert result.exit_code == 0, result.output
+    import sqlite3
+    with sqlite3.connect(cli_env) as raw:
+        row = raw.execute("SELECT plugin FROM connections WHERE label='Mac'").fetchone()
+    assert row is not None and row[0] == "v2ray-plugin"
+
+
+def test_connection_add_invalid_plugin_rejected(cli_env):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "X", "--plugin", "bogus"])
+    assert result.exit_code != 0
+
+
+def test_connection_list_shows_plugin(cli_env):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "iPhone"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "iPad", "--plugin", "galoshes"])
+    result = runner.invoke(app, ["connection", "list"])
+    assert result.exit_code == 0
+    assert "[v2ray-plugin]" in result.output
+    assert "[galoshes]" in result.output
+
+
 def test_connection_list(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     runner.invoke(app, ["connection", "add", "alice@example.com", "iPhone"])
@@ -140,7 +190,8 @@ def test_connection_list_filter_by_user(cli_env):
 def test_connection_disable(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
-    conn_id = result.output.split("Created connection ")[1].strip()
+    # Output is "Created connection <uuid> (<plugin>)"; take the UUID only.
+    conn_id = result.output.split("Created connection ")[1].split()[0]
 
     result = runner.invoke(app, ["connection", "disable", conn_id])
     assert result.exit_code == 0
@@ -150,7 +201,8 @@ def test_connection_disable(cli_env):
 def test_connection_enable(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
-    conn_id = result.output.split("Created connection ")[1].strip()
+    # Output is "Created connection <uuid> (<plugin>)"; take the UUID only.
+    conn_id = result.output.split("Created connection ")[1].split()[0]
 
     runner.invoke(app, ["connection", "disable", conn_id])
     result = runner.invoke(app, ["connection", "enable", conn_id])

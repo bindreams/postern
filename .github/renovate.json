@@ -9,8 +9,9 @@
   },
   "packageRules": [
     {
-      "description": "Subrepo bumps cannot auto-merge until subrepo-pull.yaml uses a token that re-triggers checks. See issue #23.",
+      "description": "Subrepo .gitrepo bumps cannot auto-merge until subrepo-pull.yaml uses a token that re-triggers checks. See issue #23. Narrowed to external/**/.gitrepo so unrelated custom-regex managers (Lego, bindreams/hole) can auto-merge.",
       "matchManagers": ["custom.regex"],
+      "matchFileNames": ["external/**/.gitrepo"],
       "automerge": false
     },
     {
@@ -28,6 +29,16 @@
       "description": "libdns ecosystem moves in lockstep -- group core + subdrivers so a single PR bumps them together. Otherwise per-subdriver PRs can straddle libdns major versions and break the Go build (see issue #81).",
       "matchPackageNames": ["github.com/libdns/**"],
       "groupName": "libdns ecosystem"
+    },
+    {
+      "description": "Filter bindreams/hole tags to the v2ray-plugin track only and strip the per-track prefix. Renovate disallows extractVersion on custom managers, so it lives here.",
+      "matchDepNames": ["bindreams/hole-v2ray-plugin"],
+      "extractVersion": "^releases/v2ray-plugin/(?<version>v\\d+\\.\\d+\\.\\d+(?:-hole\\.\\d+)?)$"
+    },
+    {
+      "description": "Filter bindreams/hole tags to the galoshes track only and strip the per-track prefix.",
+      "matchDepNames": ["bindreams/hole-galoshes"],
+      "extractVersion": "^releases/galoshes/(?<version>v\\d+\\.\\d+\\.\\d+(?:-[\\w.]+)?)$"
     }
   ],
   "vulnerabilityAlerts": {
@@ -44,17 +55,6 @@
       "datasourceTemplate": "github-releases"
     },
     {
-      "description": "Branch-pinned git-subrepos (e.g. v2ray-plugin on master; upstream stopped cutting releases in 2022). Renovate bumps 'commit = <sha>' when the branch moves; .github/workflows/subrepo-pull.yaml completes the pull.",
-      "customType": "regex",
-      "managerFilePatterns": ["/^external/.*/\\.gitrepo$/"],
-      "matchStrings": [
-        "remote = (?<packageName>https://github.com/[^\\n]+?)(\\.git)?\\n[\\s\\S]*?branch = (?<currentValue>(?:[^v\\s][^\\s]*|v(?:[^\\d.\\s]|\\d+[^\\d.\\s])[^\\s]*|v))\\s*\\n\\s*commit = (?<currentDigest>[a-f0-9]+)"
-      ],
-      "datasourceTemplate": "git-refs",
-      "versioningTemplate": "loose",
-      "depNameTemplate": "{{packageName}}"
-    },
-    {
       "description": "Lego ACME client baked into the provisioner image via `go install`. `go install ...@vX.Y.Z` is not picked up by default Renovate Go-module rules.",
       "customType": "regex",
       "managerFilePatterns": ["/^provisioner/Dockerfile$/"],
@@ -63,6 +63,36 @@
       ],
       "datasourceTemplate": "go",
       "depNameTemplate": "github.com/go-acme/lego/v4"
+    },
+    {
+      "description": "v2ray-plugin from bindreams/hole. Tags follow `releases/v2ray-plugin/v<X.Y.Z[-hole.N]>`. depNameTemplate carries a track-unique logical name so the matchDepNames packageRule (above) can apply extractVersion to filter to this track only and strip the prefix. packageNameTemplate is the real GitHub repo Renovate queries.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^shadowsocks/Dockerfile$/",
+        "/^portal/tests/e2e/ssclient\\.Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-tags depName=bindreams/hole\\s*\\nARG V2RAY_PLUGIN_VERSION=(?<currentValue>v\\S+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "bindreams/hole-v2ray-plugin",
+      "packageNameTemplate": "bindreams/hole",
+      "versioningTemplate": "loose"
+    },
+    {
+      "description": "galoshes from bindreams/hole. Same dual-name pattern as the v2ray-plugin manager above.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^shadowsocks/Dockerfile$/",
+        "/^portal/tests/e2e/ssclient\\.Dockerfile$/"
+      ],
+      "matchStrings": [
+        "# renovate: datasource=github-tags depName=bindreams/hole\\s*\\nARG GALOSHES_VERSION=(?<currentValue>v\\S+)"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "bindreams/hole-galoshes",
+      "packageNameTemplate": "bindreams/hole",
+      "versioningTemplate": "loose"
     }
   ],
   "hostRules": [

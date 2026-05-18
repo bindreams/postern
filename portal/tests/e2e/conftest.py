@@ -294,8 +294,8 @@ def fresh_connection(e2e_stack):
     """Create a connection via CLI, return (connection_id, path_token).
     Triggers reconcile and waits for the ss-<token> container to appear."""
 
-    def _make(email: str, label: str) -> tuple[str, str]:
-        result = postern_cli("connection", "add", email, label)
+    def _make(email: str, label: str, plugin: str = "v2ray-plugin") -> tuple[str, str]:
+        result = postern_cli("connection", "add", email, label, "--plugin", plugin)
         match = CONNECTION_ID_RE.search(result.stdout)
         if not match:
             raise AssertionError(f"connection id not found in CLI output: {result.stdout!r}")

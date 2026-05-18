@@ -1,6 +1,6 @@
 # Postern VPN
 
-Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small FastAPI web portal with an Nginx reverse proxy and a dynamic fleet of Shadowsocks-rust + v2ray-plugin containers (one per connection). Users sign in with an email one-time code, then download a client config for their tunnel. An internal reconciliation loop keeps running containers in sync with the portal database.
+Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small FastAPI web portal with an Nginx reverse proxy and a dynamic fleet of Shadowsocks-rust containers (one per connection), each running v2ray-plugin (default) or galoshes (adds UDP via yamux multiplexing) per the connection's setting. Users sign in with an email one-time code, then download a client config for their tunnel. An internal reconciliation loop keeps running containers in sync with the portal database.
 
 ## Architecture
 
@@ -15,12 +15,12 @@ Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small Fa
            │    └─► portal :8000 ──(Docker API via docker-proxy)──► creates/removes
            │                                                        ss-{token} containers
            │
-           └─► ss-{token} :80 ──► v2ray-plugin ──► Shadowsocks
+           └─► ss-{token} :80 ──► v2ray-plugin | galoshes ──► Shadowsocks
 ```
 
 - **nginx** — TLS termination, HTTP→HTTPS redirect, path-based WebSocket routing, security headers, rate limiting on `/login*`. Periodically self-reloads to pick up renewed Let's Encrypt certs.
 - **portal** — Python 3.13 / FastAPI. OTP email login, dashboard, JSON config download, admin CLI, and a background reconciliation loop that manages per-connection Shadowsocks containers via the Docker API.
-- **ss-{token} containers** — one Shadowsocks-rust instance per enabled connection, fronted by v2ray-plugin in WebSocket mode. `{token}` is a 24-hex-char path token; Nginx proxies `wss://<domain>/t/{token}` to `ss-{token}:80`.
+- **ss-{token} containers** — one Shadowsocks-rust instance per enabled connection, fronted by either v2ray-plugin (default) or galoshes (adds UDP via yamux multiplexing) in TLS + WebSocket mode. `{token}` is a 24-hex-char path token; Nginx proxies `wss://<domain>/t/{token}` to `ss-{token}:80`. The plugin choice is set per-connection via `postern connection add ... --plugin {v2ray-plugin,galoshes}`.
 - **docker-proxy** — [tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), a restricted Docker API exposed to the portal over TCP. The portal never sees the raw `/var/run/docker.sock`.
 
 ## Prerequisites
@@ -159,7 +159,7 @@ From the user's side:
 
 ## How the VPN tunnel works
 
-A client connects to `wss://<your-domain>:443/t/<token>` (v2ray-plugin in TLS + WebSocket mode). Nginx matches the path with `^/t/([a-f0-9]{24})$` and proxies the upgraded connection to `http://ss-<token>:80`, resolved on the `shadowsocks` Docker network via Docker's embedded DNS. The `ss-<token>` container runs v2ray-plugin → Shadowsocks-rust, decrypts the tunnel, and forwards traffic to the destination.
+A client connects to `wss://<your-domain>:443/t/<token>` (v2ray-plugin or galoshes in TLS + WebSocket mode; both wire-compatible at the WebSocket+TLS layer). Nginx matches the path with `^/t/([a-f0-9]{24})$` and proxies the upgraded connection to `http://ss-<token>:80`, resolved on the `shadowsocks` Docker network via Docker's embedded DNS. The `ss-<token>` container runs the configured plugin → Shadowsocks-rust, decrypts the tunnel, and forwards traffic to the destination.
 
 ## Operations
 
@@ -196,8 +196,7 @@ shadowsocks/                    # Per-connection tunnel image (Go + Rust multi-s
 docs/                           # Deployer guides
     mta.md
 external/                       # Vendored upstreams, managed as git-subrepos
-    shadowsocks-rust/
-    v2ray-plugin/
+    shadowsocks-rust/             # v2ray-plugin and galoshes are downloaded from bindreams/hole release assets at image build time -- no subrepo.
 scripts/                        # Prek (pre-commit) helpers
 .github/workflows/              # subrepo-pull.yaml: Renovate-driven subrepo updates
 ```

@@ -51,7 +51,39 @@ def _login_complete(client: httpx.Client, mailpit, email: str) -> httpx.Response
 
 def _launch_sslocal(ssclient_config_path: str) -> None:
     """Start sslocal in ssclient as a daemonized background process, then wait
-    for the SOCKS port (1080) to accept connections before returning."""
+    for the SOCKS port (1080) to accept connections before returning.
+
+    First, kill any prior sslocal and wait for :1080 to drain. Without this,
+    a parametrized test re-running `_launch_sslocal` would see the previous
+    parametrization's sslocal still bound on 1080, `nc -z` would report READY
+    immediately, and the new test's curl would tunnel through the WRONG
+    sslocal (still configured for the prior connection). That is precisely
+    the failure mode that lets a galoshes-xfail "pass" for an unrelated
+    reason."""
+    # Stop and reap any existing sslocal.
+    subprocess.run(
+        compose(
+            "exec", "-T", "ssclient", "sh", "-c",
+            "pkill -TERM -x sslocal 2>/dev/null; sleep 0.3; pkill -KILL -x sslocal 2>/dev/null; true"
+        ),
+        capture_output=True,
+        text=True,
+    )
+    # Wait for :1080 to be FREE before launching the new sslocal.
+    for _ in range(20):
+        probe = subprocess.run(
+            compose(
+                "exec", "-T", "ssclient", "sh", "-c", "nc -z localhost 1080 2>/dev/null && echo BOUND || echo FREE"
+            ),
+            capture_output=True,
+            text=True,
+        )
+        if "FREE" in probe.stdout:
+            break
+        time.sleep(0.25)
+    else:
+        raise AssertionError("port 1080 never freed after pkill -- prior sslocal not cleaned up")
+
     # `-d` detaches; using docker exec directly (no `sh -c`) so the pid
     # inherits the container's init and survives past our call returning.
     subprocess.run(
@@ -80,18 +112,37 @@ def _launch_sslocal(ssclient_config_path: str) -> None:
 
 
 # Tunnel happy path ====================================================================================================
-def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_user, fresh_connection):
-    """The single most important test: prove a byte tunnels end-to-end."""
-    email = "happy@postern.test"
-    fresh_user("Happy User", email)
-    conn_id, path_token = fresh_connection(email, "happy-path-conn")
+@pytest.mark.parametrize(
+    "plugin",
+    [
+        "v2ray-plugin",
+        pytest.param(
+            "galoshes",
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason=(
+                    "galoshes v0.1.0 has a SIP003 bind-vs-connect direction bug under "
+                    "shadowsocks-rust 1.24.0 (EADDRINUSE on SS_LOCAL_HOST:SS_LOCAL_PORT). "
+                    "Tracked upstream as bindreams/hole#353. Re-enable when fixed."
+                ),
+            ),
+        ),
+    ],
+)
+def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_user, fresh_connection, plugin):
+    """The single most important test: prove a byte tunnels end-to-end.
+    Parametrized over both plugins -- galoshes wraps v2ray-plugin via yamux,
+    so the same TCP-through-the-tunnel byte-roundtrip works for both."""
+    email = f"happy-{plugin}@postern.test"
+    fresh_user(f"Happy User {plugin}", email)
+    conn_id, path_token = fresh_connection(email, f"happy-path-{plugin}", plugin=plugin)
 
     _login_complete(portal_client, mailpit_client, email)
 
     # Dashboard renders the connection
     r = portal_client.get("/")
     assert r.status_code == 200
-    assert "happy-path-conn" in r.text
+    assert f"happy-path-{plugin}" in r.text
 
     # Download client config
     r = portal_client.get(f"/connection/{conn_id}/config")
@@ -100,7 +151,7 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     server = config["servers"][0]
     assert server["address"] == "postern.test"
     assert server["port"] == 443
-    assert server["plugin"] == "v2ray-plugin"
+    assert server["plugin"] == plugin
     assert server["plugin_opts"].startswith("tls;fast-open;")
     assert f"path=/t/{path_token}" in server["plugin_opts"]
     assert server["plugin_opts"].endswith(f"host=postern.test")
@@ -172,6 +223,86 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
         f"stderr={direct.stderr!r}). Expected rc=6 (DNS resolution failure). "
         "The tunnel test above proves nothing if direct access succeeds."
     )
+
+
+# UDP through galoshes =================================================================================================
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "galoshes v0.1.0 has a SIP003 bind-vs-connect direction bug under "
+        "shadowsocks-rust 1.24.0 (EADDRINUSE on SS_LOCAL_HOST:SS_LOCAL_PORT). "
+        "Tracked upstream as bindreams/hole#353. Re-enable when fixed."
+    ),
+)
+def test_galoshes_tunnel_routes_udp(portal_client, mailpit_client, fresh_user, fresh_connection):
+    """Galoshes adds UDP transport on top of v2ray-plugin via yamux. Send a
+    UDP datagram through SOCKS5 UDP-ASSOCIATE; the echo MUST come back.
+
+    Plain v2ray-plugin has no UDP path, so this test specifically discriminates
+    between the two plugins. The negative control: temporarily swap
+    plugin='galoshes' for plugin='v2ray-plugin' below and this test must
+    time out -- if it passes for both, the test isn't exercising UDP."""
+    import socket
+    import struct
+
+    email = "udp-galoshes@postern.test"
+    fresh_user("UDP Galoshes", email)
+    conn_id, _ = fresh_connection(email, "udp-galoshes", plugin="galoshes")
+
+    _login_complete(portal_client, mailpit_client, email)
+    r = portal_client.get(f"/connection/{conn_id}/config")
+    config = r.json()
+    # ss_config.client_config now sets mode=tcp_and_udp for galoshes -- pin the contract.
+    assert config["servers"][0]["mode"] == "tcp_and_udp"
+
+    config_path_in_container = "/tmp/client-udp.json"
+    subprocess.run(
+        compose("exec", "-T", "ssclient", "sh", "-c", f"cat > {config_path_in_container}"),
+        input=json.dumps(config),
+        text=True,
+        check=True,
+    )
+    _launch_sslocal(config_path_in_container)
+
+    # Pure-Python SOCKS5 UDP-ASSOCIATE probe. Runs inside ssclient.
+    probe_py = r"""
+import socket, struct, sys
+PAYLOAD = b'postern-udp-probe'
+TARGET_HOST, TARGET_PORT = b'udp-echo', 9999
+
+ctrl = socket.create_connection(('127.0.0.1', 1080), timeout=10)
+ctrl.sendall(b'\x05\x01\x00')                              # SOCKS5, 1 method, NOAUTH
+greeting = ctrl.recv(2)
+assert greeting == b'\x05\x00', repr(greeting)
+# UDP-ASSOCIATE with DST.ADDR=0.0.0.0:0 (server picks the bind).
+ctrl.sendall(b'\x05\x03\x00\x01' + b'\x00\x00\x00\x00' + b'\x00\x00')
+hdr = ctrl.recv(10)
+assert hdr[:3] == b'\x05\x00\x00' and hdr[3] == 1, hdr.hex()
+bnd_port = struct.unpack('!H', hdr[8:10])[0]
+
+udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+udp.settimeout(10)
+# SOCKS5 UDP header: RSV(2) + FRAG(1) + ATYP=3 + LEN + domain + PORT(2) + payload
+req = b'\x00\x00\x00\x03' + bytes([len(TARGET_HOST)]) + TARGET_HOST + struct.pack('!H', TARGET_PORT) + PAYLOAD
+udp.sendto(req, ('127.0.0.1', bnd_port))
+data, _ = udp.recvfrom(4096)
+atyp = data[3]
+if atyp == 1:    off = 4 + 4 + 2
+elif atyp == 3:  off = 4 + 1 + data[4] + 2
+elif atyp == 4:  off = 4 + 16 + 2
+else:            raise SystemExit(f'bad ATYP {atyp}')
+sys.stdout.write(data[off:].decode())
+"""
+    result = subprocess.run(
+        compose("exec", "-T", "ssclient", "python3", "-c", probe_py),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, (
+        f"UDP-through-galoshes probe failed: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert result.stdout == "postern-udp-probe", (f"UDP echo did not round-trip cleanly: got {result.stdout!r}")
 
 
 # Auth-flow assertions =================================================================================================

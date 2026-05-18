@@ -190,3 +190,40 @@ async def test_cleanup_all_containers(mock_get_client):
     c2.stop.assert_called_once()
     c2.remove.assert_called_once()
     client.close.assert_called_once()
+
+
+# Per-connection plugin in SS_CONFIG ===================================================================================
+def test_v2ray_connection_passes_v2ray_plugin_in_ss_config():
+    import base64
+    import json as _json
+
+    conn = _make_connection()  # default plugin
+    settings = _make_settings()
+
+    client = MagicMock()
+    client.containers.list.return_value = []
+    client.images.get.return_value = MagicMock(id="img1")
+
+    _reconcile_once(client, [conn], settings)
+
+    call_kwargs = client.containers.run.call_args.kwargs
+    cfg = _json.loads(base64.b64decode(call_kwargs["environment"]["SS_CONFIG"]))
+    assert cfg["servers"][0]["plugin"] == "v2ray-plugin"
+
+
+def test_galoshes_connection_passes_galoshes_in_ss_config():
+    import base64
+    import json as _json
+
+    conn = _make_connection().model_copy(update={"plugin": "galoshes"})
+    settings = _make_settings()
+
+    client = MagicMock()
+    client.containers.list.return_value = []
+    client.images.get.return_value = MagicMock(id="img1")
+
+    _reconcile_once(client, [conn], settings)
+
+    call_kwargs = client.containers.run.call_args.kwargs
+    cfg = _json.loads(base64.b64decode(call_kwargs["environment"]["SS_CONFIG"]))
+    assert cfg["servers"][0]["plugin"] == "galoshes"

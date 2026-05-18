@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
@@ -296,3 +297,87 @@ async def test_migrate_is_idempotent(test_db):
     await db.migrate(test_db)
     users = await db.list_users(test_db)
     assert users == []
+
+
+async def test_migration_2_adds_plugin_column_with_v2ray_default(settings):
+    """Seed a v1-only DB, then call migrate() and confirm migration 2 backfills 'v2ray-plugin'."""
+    async with db.get_connection(settings.database_path) as conn:
+        # schema_version is created by migrate() itself, not by migration 1's body.
+        await conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+        # Apply migration 1 by hand -- simulates on-disk state before this PR.
+        for stmt in db.MIGRATIONS[1].split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                await conn.execute(stmt)
+        await conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+        # Seed a v1-shape row (no plugin column).
+        await conn.execute("INSERT INTO users (id, name, email) VALUES ('u1', 'A', 'a@x')")
+        await conn.execute(
+            "INSERT INTO connections (id, user_id, path_token, label, password) "
+            f"VALUES ('c1', 'u1', '{'aa' * 12}', 'L', 'P')"
+        )
+        await conn.commit()
+
+        # Now run all migrations -- migration 2 should ADD + backfill the column.
+        await db.migrate(conn)
+
+        cursor = await conn.execute("SELECT plugin FROM connections WHERE id='c1'")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row["plugin"] == "v2ray-plugin"
+
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 2
+
+
+async def test_migration_2_rejects_invalid_plugin(test_db):
+    """SQL-level CHECK constraint rejects unknown plugin values, defending
+    against any code path that bypasses the Pydantic Literal."""
+    await db.create_user(test_db, User(name="A", email="a@x"))
+    cursor = await test_db.execute("SELECT id FROM users WHERE email='a@x'")
+    row = await cursor.fetchone()
+    user_id = row["id"]
+    with pytest.raises(sqlite3.IntegrityError):
+        await test_db.execute(
+            "INSERT INTO connections (id, user_id, path_token, label, password, plugin) "
+            "VALUES ('c1', ?, ?, 'L', 'P', 'not-a-plugin')",
+            (user_id, "aa" * 12),
+        )
+        await test_db.commit()
+
+
+async def test_migration_2_accepts_galoshes(test_db):
+    await db.create_user(test_db, User(name="A", email="a@x"))
+    cursor = await test_db.execute("SELECT id FROM users WHERE email='a@x'")
+    row = await cursor.fetchone()
+    user_id = row["id"]
+    await test_db.execute(
+        "INSERT INTO connections (id, user_id, path_token, label, password, plugin) "
+        "VALUES ('c1', ?, ?, 'L', 'P', 'galoshes')",
+        (user_id, "aa" * 12),
+    )
+    await test_db.commit()
+    cursor = await test_db.execute("SELECT plugin FROM connections WHERE id='c1'")
+    row = await cursor.fetchone()
+    assert row["plugin"] == "galoshes"
+
+
+async def test_migration_2_is_resumable_after_partial_failure(settings):
+    """If a crash leaves `connections_new` from a previous attempt, the next
+    migrate() must clean it up via the leading DROP IF EXISTS."""
+    async with db.get_connection(settings.database_path) as conn:
+        await db.migrate(conn)
+        # Simulate a stranded connections_new from a crashed earlier attempt.
+        await conn.execute("CREATE TABLE connections_new (junk TEXT)")
+        # Force migration 2 to re-run by rolling schema_version back to 1.
+        await conn.execute("DELETE FROM schema_version")
+        await conn.execute("INSERT INTO schema_version VALUES (1)")
+        await conn.commit()
+
+        await db.migrate(conn)
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 2

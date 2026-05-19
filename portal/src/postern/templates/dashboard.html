@@ -1,37 +1,63 @@
 {% extends "base.html" %}
 {% block title %}Dashboard — {{ product_name }}{% endblock %}
-{% block body %}
-<div class="card" style="max-width: 560px;">
-    <div class="header">
-        <h1>{{ user.name }}</h1>
-        <form method="post" action="/logout" style="display:inline;">
-            <button type="submit" class="btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.8rem;">Logout</button>
-        </form>
-    </div>
 
-    {% if not connections %}
-    <p style="color: #94a3b8;">No connections configured. Contact your administrator.</p>
-    {% else %}
-    <ul class="connections">
-        {% for conn in connections %}
-        <li class="{% if not conn.enabled %}conn-disabled{% endif %}">
-            <div class="conn-info">
-                <span class="conn-label">{{ conn.label }}</span>
-                {% if not conn.enabled %}<span class="badge badge-disabled">disabled</span>{% endif %}
-                <div class="conn-meta">
-                    Created {{ conn.created_at.strftime('%Y-%m-%d') if conn.created_at else "unknown" }}
-                </div>
-            </div>
-            {% if conn.enabled %}
-            <a href="/connection/{{ conn.id }}/config" class="btn" style="padding: 0.5rem 1rem; font-size: 0.8rem;">
-                Download
-            </a>
-            {% endif %}
-        </li>
-        {% endfor %}
-    </ul>
-    {% endif %}
-
-
+{% block topright %}
+<div class="user-chip">
+  <div class="avatar" aria-hidden="true">{{ user.name[:1]|upper }}</div>
+  <span>{{ user.email }}</span>
+  <form method="post" action="/logout">
+    <button type="submit" class="logout">Log out</button>
+  </form>
 </div>
+{% endblock %}
+
+{% block body %}
+<section class="card-base cc" aria-labelledby="cc-label">
+  <div class="cc-hdr">
+    <span class="lbl" id="cc-label">Connections</span>
+    <span class="count">
+      {% set active = connections|selectattr("enabled")|list|length %}
+      {% set disabled = connections|rejectattr("enabled")|list|length %}
+      {{ active }} active{% if disabled %} · {{ disabled }} disabled{% endif %}
+    </span>
+  </div>
+
+  {% if connections %}
+  <div class="conn-list">
+    {% for conn in connections %}
+    <div class="conn{% if not conn.enabled %} disabled{% endif %}">
+      <div class="dot{% if not conn.enabled %} dis{% endif %}"></div>
+      <div class="info">
+        <div class="label">
+          {{ conn.label }}
+          <span class="plugin-badge">{% if conn.plugin == "v2ray-plugin" %}v2ray{% else %}{{ conn.plugin }}{% endif %}</span>
+        </div>
+        <div class="meta{% if not conn.enabled %} warn{% endif %}">
+          {% if conn.enabled %}
+            created {{ conn.created_at.strftime('%Y-%m-%d') if conn.created_at else "unknown" }}
+          {% else %}
+            disabled
+          {% endif %}
+        </div>
+      </div>
+      {% if conn.enabled %}
+      <a class="dl-btn" href="/connection/{{ conn.id }}/config">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        Download config
+      </a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div class="empty-hint">
+    {% if connections %}Need another tunnel?{% else %}No connections yet.{% endif %}
+    Ask your operator to run <code>postern connection add</code>.
+  </div>
+</section>
 {% endblock %}

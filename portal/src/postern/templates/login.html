@@ -1,15 +1,54 @@
 {% extends "base.html" %}
 {% block title %}Login — {{ product_name }}{% endblock %}
 {% block body %}
-<div class="card">
-    <h1>{{ product_name }}</h1>
+<div class="cards-row">
+  <section class="card-base lc" aria-labelledby="lc-title">
+    <h1 id="lc-title">Sign in</h1>
+    <div class="sub">We'll email you a one-time code.</div>
     {% if message %}
     <div class="message message-info">{{ message }}</div>
     {% endif %}
     <form method="post" action="/login">
-        <label for="email">Email address</label>
-        <input type="email" id="email" name="email" required autofocus placeholder="you@example.com">
-        <button type="submit">Send login code</button>
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" required autofocus placeholder="you@example.com" autocomplete="email">
+      <div class="grow"></div>
+      <button type="submit" class="primary">Send sign-in code</button>
     </form>
+  </section>
+
+  <aside class="card-base ipc" aria-labelledby="ipc-label">
+    <div class="ipc-label" id="ipc-label"><span class="dot"></span> You appear as</div>
+    <div class="ipc-ip">{{ identity.ip or "unknown" }}</div>
+    <div class="ipc-rows">
+      <div class="ipc-row">
+        <span class="k">Location</span>
+        <span class="v">
+          {% if identity.country_code %}<span class="flag flag-{{ identity.country_code }}"></span>{% endif %}
+          {% if identity.city and identity.country_code %}{{ identity.city }}, {{ identity.country_code|upper }}
+          {% elif identity.country_code %}{{ identity.country_code|upper }}
+          {% else %}unknown
+          {% endif %}
+        </span>
+      </div>
+      <div class="ipc-row">
+        <span class="k">ISP</span>
+        <span class="v">{{ identity.isp or "unknown" }}</span>
+      </div>
+      <div class="ipc-row">
+        <span class="k">ASN</span>
+        <span class="v">{{ identity.asn or "—" }}</span>
+      </div>
+      <div class="ipc-row">
+        <span class="k">Client</span>
+        <span class="v">{{ identity.client }}</span>
+      </div>
+    </div>
+    <div class="ipc-foot">
+      These tracks lead back to your door. Sign in to <em>slip out a different way</em>.
+      {% if geoip_attribution %}
+      <div class="attr">Geo data: <a href="https://www.maxmind.com" target="_blank" rel="noopener">GeoLite2 by MaxMind</a></div>
+      {% endif %}
+    </div>
+  </aside>
 </div>
 {% endblock %}

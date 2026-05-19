@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 
-from postern import db
+from postern import db, identity
 from postern.reconciler import cleanup_all_containers, reconciliation_loop
-from postern.routes import dashboard, login
+from postern.routes import brand_icon, dashboard, login
 from postern.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,13 @@ class PosternApp(FastAPI):
 
         self.include_router(login.router)
         self.include_router(dashboard.router)
+        self.include_router(brand_icon.router)
+
+        # Static assets ship inside the wheel; nothing here is operator-mutable. The
+        # /brand-icon route above is the only path that touches operator-controlled
+        # files (validated against a strict allowlist).
+        static_dir = Path(__file__).resolve().parent / "static"
+        self.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @classmethod
     @asynccontextmanager
@@ -46,6 +55,10 @@ class PosternApp(FastAPI):
         async with db.get_connection(settings.database_path) as database:
             await db.migrate(database)
             app.state.db = database
+            # GeoIP readers are lazy: GeoIPReaders("") is a no-op constructor and never
+            # opens a file. The login page calls .city() / .asn() on demand; missing or
+            # absent DBs are treated as "no enrichment" without raising.
+            app.state.geoip_readers = identity.GeoIPReaders(settings.geoip_db_dir)
 
             # Start reconciliation loop --------------------------------------------------------------------------------
             reconciler_task = asyncio.create_task(reconciliation_loop(settings.database_path, settings))
@@ -61,5 +74,12 @@ class PosternApp(FastAPI):
                 except asyncio.CancelledError:
                     pass
                 await cleanup_all_containers()
+                # GeoIPReaders may have never been assigned if startup failed
+                # before that point (e.g. db.get_connection raised). Tolerate
+                # the absence so shutdown doesn't swallow the real cause behind
+                # an AttributeError.
+                geoip_readers = getattr(app.state, "geoip_readers", None)
+                if geoip_readers is not None:
+                    geoip_readers.close()
 
             logger.info("Shutdown complete")

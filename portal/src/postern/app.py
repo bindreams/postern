@@ -74,6 +74,12 @@ class PosternApp(FastAPI):
                 except asyncio.CancelledError:
                     pass
                 await cleanup_all_containers()
-                app.state.geoip_readers.close()
+                # GeoIPReaders may have never been assigned if startup failed
+                # before that point (e.g. db.get_connection raised). Tolerate
+                # the absence so shutdown doesn't swallow the real cause behind
+                # an AttributeError.
+                geoip_readers = getattr(app.state, "geoip_readers", None)
+                if geoip_readers is not None:
+                    geoip_readers.close()
 
             logger.info("Shutdown complete")

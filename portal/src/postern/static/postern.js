@@ -168,11 +168,35 @@
       tickStartMs = now - oldProgress * tickMs;
     }
 
+    // Pre-build the two pause/play icon shapes once. Avoids innerHTML (which is a
+    // mild XSS footgun even with our own static strings, and avoids any chance of
+    // friction with stricter CSPs that disallow Trusted Types violations).
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    function makePauseShape() {
+      // Two bars.
+      const frag = document.createDocumentFragment();
+      const bar1 = document.createElementNS(SVG_NS, "rect");
+      bar1.setAttribute("x", "6"); bar1.setAttribute("y", "4");
+      bar1.setAttribute("width", "4"); bar1.setAttribute("height", "16");
+      bar1.setAttribute("rx", "1");
+      const bar2 = document.createElementNS(SVG_NS, "rect");
+      bar2.setAttribute("x", "14"); bar2.setAttribute("y", "4");
+      bar2.setAttribute("width", "4"); bar2.setAttribute("height", "16");
+      bar2.setAttribute("rx", "1");
+      frag.appendChild(bar1); frag.appendChild(bar2);
+      return frag;
+    }
+    function makePlayShape() {
+      const poly = document.createElementNS(SVG_NS, "polygon");
+      poly.setAttribute("points", "6 3 20 12 6 21 6 3");
+      return poly;
+    }
+
     function setPauseIcon() {
       if (!pauseIcon) return;
-      pauseIcon.innerHTML = paused
-        ? '<polygon points="6 3 20 12 6 21 6 3"/>'
-        : '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>';
+      // Clear previous children without using innerHTML.
+      while (pauseIcon.firstChild) pauseIcon.removeChild(pauseIcon.firstChild);
+      pauseIcon.appendChild(paused ? makePlayShape() : makePauseShape());
     }
 
     if (reseedBtn) reseedBtn.addEventListener("click", () => seed());

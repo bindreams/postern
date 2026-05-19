@@ -99,10 +99,22 @@ def test_lookup_uses_direct_when_no_header():
 
 
 def test_lookup_handles_missing_client():
-    """request.client can be None for some ASGI scopes; fall back gracefully."""
+    """request.client can be None for some ASGI scopes; trust X-Real-IP in that case.
+
+    When there's no direct socket peer to make a trust decision against, the request
+    necessarily reached us via in-process plumbing or a locally-configured proxy that
+    already terminated the connection; returning "" would force the identity card to
+    render "unknown" despite the upstream having told us exactly who the visitor is.
+    """
     req = _FakeRequest.make(None, x_real_ip="203.0.113.42")
     info = identity.lookup(req, readers=None)
-    # No private direct hop established -> X-Real-IP not trusted; falls back to ""
+    assert info.ip == "203.0.113.42"
+
+
+def test_lookup_handles_missing_client_and_no_header():
+    """request.client is None AND no X-Real-IP -> empty IP, no exception."""
+    req = _FakeRequest.make(None)
+    info = identity.lookup(req, readers=None)
     assert info.ip == ""
 
 
@@ -241,6 +253,65 @@ def test_db_mtime_change_triggers_reopen(tmp_path: Path):
 
         second = identity.lookup(req, readers=readers)
         assert second.country_code == "de"
+    finally:
+        readers.close()
+
+
+# Broken-DB pinning ====================================================================================================
+def test_broken_db_is_pinned_until_mtime_changes(tmp_path: Path, caplog):
+    """A corrupt MMDB must be retried at most once per mtime change.
+
+    Without the mtime-pinning, the failing open_database call would re-run on
+    EVERY request -- log-spamming WARN and burning CPU on a known-broken file.
+    Verifies that:
+      (1) the first failed open does NOT raise (lookup still returns IP-only),
+      (2) subsequent lookups do NOT call open_database again until the file's
+          mtime advances,
+      (3) the operator-controlled "I fixed it" signal (writing a new file with
+          fresh mtime) un-pins the broken state.
+    """
+    import logging
+    import os
+    from unittest.mock import patch
+
+    city_db = tmp_path / "GeoLite2-City.mmdb"
+    # Garbage bytes -- maxminddb.open_database will raise InvalidDatabaseError.
+    city_db.write_bytes(b"this is not an MMDB file")
+    readers = identity.GeoIPReaders(str(tmp_path))
+    real_open = identity.maxminddb.open_database
+    open_calls: list[str] = []
+
+    def counting_open(path: str):
+        open_calls.append(path)
+        return real_open(path)
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="postern.identity"), \
+             patch.object(identity.maxminddb, "open_database", side_effect=counting_open):
+            req = _FakeRequest.make("203.0.113.42")
+
+            # First lookup: tries to open, fails, returns IP-only.
+            info1 = identity.lookup(req, readers=readers)
+            assert info1.country_code is None
+            first_call_count = len(open_calls)
+            assert first_call_count >= 1
+
+            # Multiple subsequent lookups: must NOT re-attempt open_database
+            # because mtime hasn't changed.
+            for _ in range(5):
+                identity.lookup(req, readers=readers)
+            assert len(open_calls) == first_call_count, (f"open_database retried on unchanged mtime: {open_calls!r}")
+
+            # Operator rewrites the file with a valid MMDB and bumps mtime.
+            _make_city_db(city_db, {"203.0.113.0/24": {"country": {"iso_code": "AT", "names": {"en": "Austria"}}}})
+            future = time.time() + 5
+            os.utime(city_db, (future, future))
+
+            info2 = identity.lookup(req, readers=readers)
+            # Should now succeed and country_code is populated.
+            assert info2.country_code == "at"
+            # And open_database was called again (because mtime advanced).
+            assert len(open_calls) > first_call_count
     finally:
         readers.close()
 

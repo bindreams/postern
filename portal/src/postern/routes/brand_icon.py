@@ -27,8 +27,19 @@ router = APIRouter()
 
 # The built-in default is read once at module import: it ships in the wheel and never
 # changes at runtime. Keeping it in-memory avoids a stat+read on every /brand-icon hit.
+# A hard-coded 1x1 transparent SVG is used if the bundled default is missing for any
+# reason (e.g. packaging regression) so the route always has SOMETHING to serve and
+# importing this module never fails the whole app.
 _DEFAULT_PATH = Path(__file__).resolve().parent.parent / "static" / "brand-default.svg"
-_DEFAULT_BYTES = _DEFAULT_PATH.read_bytes()
+_FALLBACK_BYTES = (
+    b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'>"
+    b"<rect width='1' height='1' fill='none'/></svg>"
+)
+try:
+    _DEFAULT_BYTES = _DEFAULT_PATH.read_bytes()
+except OSError:
+    logger.warning("brand_icon: bundled default SVG missing at %s; using transparent 1x1 fallback", _DEFAULT_PATH)
+    _DEFAULT_BYTES = _FALLBACK_BYTES
 
 
 def _serve_default() -> Response:
@@ -48,6 +59,13 @@ async def brand_icon(request: Request) -> Response:
 
     try:
         path = Path(raw)
+        # Operator intent is "point at a known bind-mount path" -- never a relative
+        # path against the portal's CWD, which is implementation-detail and can move
+        # between releases. Refuse anything that isn't absolute up front; fall through
+        # to default rather than treat the relative path as resolved-against-CWD.
+        if not path.is_absolute():
+            logger.warning("brand_icon: PRODUCT_ICON_PATH %r is not absolute; serving default", raw)
+            return _serve_default()
         # Suffix allowlist must be checked BEFORE resolve() so a traversal attempt
         # like "../../../etc/passwd" never even reaches the filesystem layer.
         media_type = _ALLOWED_SUFFIXES.get(path.suffix.lower())
@@ -56,6 +74,17 @@ async def brand_icon(request: Request) -> Response:
             return _serve_default()
         # Resolve canonical path; FileNotFoundError -> default.
         resolved = path.resolve(strict=True)
+        # Re-check the suffix AFTER resolution to close the symlink TOCTOU:
+        # /brand/icon.svg -> /etc/passwd would otherwise pass the pre-resolve
+        # check and get served with image/svg+xml content-type.
+        resolved_media_type = _ALLOWED_SUFFIXES.get(resolved.suffix.lower())
+        if resolved_media_type is None:
+            logger.warning(
+                "brand_icon: resolved path %s has disallowed suffix; refusing to serve",
+                resolved,
+            )
+            return _serve_default()
+        media_type = resolved_media_type
         stat = resolved.stat()
         if stat.st_size > _MAX_BYTES:
             logger.warning("brand_icon: %s is %d bytes (> %d); serving default", resolved, stat.st_size, _MAX_BYTES)

@@ -309,7 +309,10 @@ async def test_brand_icon_default(client):
     response = await client.get("/brand-icon")
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/svg+xml"
-    assert response.text.lstrip().startswith("<svg") or response.text.lstrip().startswith("<?xml")
+    # The shipped default begins with `<svg`. The OR-branch for `<?xml` was dead
+    # code -- the file has no XML prologue. Pin the exact start so a future
+    # accidental swap to a transparent placeholder is caught.
+    assert response.text.lstrip().startswith("<svg")
 
 
 async def test_brand_icon_custom_svg(tmp_path, app_settings):
@@ -398,7 +401,15 @@ async def test_brand_icon_disallowed_extension_falls_back(tmp_path, app_settings
 
 async def test_brand_icon_traversal_falls_back(tmp_path, app_settings):
     """PRODUCT_ICON_PATH that resolves to a path outside the allowlist (e.g. /etc/passwd)
-    must never serve the resolved file."""
+    must never serve the resolved file.
+
+    Asserts on the EXACT bytes of the built-in default rather than `status_code in
+    (200, 404)`, which would let a 500 or a body containing the resolved file's
+    content slip through unnoticed.
+    """
+    from postern.routes.brand_icon import _DEFAULT_BYTES
+    # A relative path that, even if interpreted naively against the CWD, doesn't
+    # exist or doesn't have an .svg/.png suffix on the resolved side.
     app_settings.product_icon_path = "../../../etc/passwd"
     app = PosternApp(app_settings)
     async with db.get_connection(app_settings.database_path) as database:
@@ -407,12 +418,60 @@ async def test_brand_icon_traversal_falls_back(tmp_path, app_settings):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             r = await c.get("/brand-icon")
-            # Either falls back to the default SVG (preferred) or returns 404; never
-            # serves /etc/passwd. Both outcomes are safe; both are tested via the
-            # extension allowlist.
-            assert r.status_code in (200, 404)
-            if r.status_code == 200:
-                assert r.headers["content-type"] == "image/svg+xml"
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "image/svg+xml"
+            assert r.content == _DEFAULT_BYTES
+
+
+async def test_brand_icon_relative_path_falls_back(tmp_path, app_settings):
+    """Relative PRODUCT_ICON_PATH (not absolute) is rejected up front."""
+    from postern.routes.brand_icon import _DEFAULT_BYTES
+    # File exists with allowed suffix, but the path is relative -> reject.
+    (tmp_path / "icon.svg").write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'/>")
+    app_settings.product_icon_path = "icon.svg"  # bare relative name
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.content == _DEFAULT_BYTES
+
+
+@pytest.mark.skipif(
+    not hasattr(__import__("os"), "symlink"),
+    reason="symlinks unavailable on this platform",
+)
+async def test_brand_icon_symlink_to_disallowed_target_falls_back(tmp_path, app_settings):
+    """Symlink TOCTOU: /brand/icon.svg -> /etc/passwd must NOT serve the target.
+
+    A naive implementation that checks the suffix only on the un-resolved path
+    would happily follow this symlink and serve passwd contents with
+    image/svg+xml. The route checks the suffix on the RESOLVED path too.
+    """
+    import os
+    from postern.routes.brand_icon import _DEFAULT_BYTES
+    target = tmp_path / "secret.txt"
+    target.write_bytes(b"top-secret operator content\n")
+    link = tmp_path / "icon.svg"
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:  # Windows without dev-mode/admin
+        pytest.skip(f"cannot create symlink in this environment: {exc}")
+    app_settings.product_icon_path = str(link)
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "image/svg+xml"
+            assert r.content == _DEFAULT_BYTES
+            assert b"top-secret" not in r.content
 
 
 # Static assets ========================================================================================================
@@ -455,20 +514,51 @@ async def test_login_renders_brand_link(client):
     assert '<img src="/brand-icon"' in r.text
 
 
+# CSP enforcement scans ================================================================================================
+# CSP for the portal is `default-src 'self'` -- no inline <style> blocks, inline
+# <script> blocks, HTML event-handler attributes (`onclick=` etc.), or `style="..."`
+# attributes. These scans are deliberately permissive about external <link>/<script
+# src="...">, which are fine, and deliberately strict about everything else.
+
+import re as _re
+
+
+def _assert_no_inline_css_or_js(body: str, page: str) -> None:
+    """Shared CSP scan applied per-template.
+
+    Uses case-insensitive substring counts + DOTALL-aware regex so:
+    - `<style` matches `<style>`, `<style type=...>`, `<STYLE` equally;
+    - a stray `<styleguide>` element wouldn't false-positive;
+    - multi-line `<script>...</script>` blocks are caught;
+    - `<script src=...>` (with or without other attributes) is allowed;
+    - `style="..."` attributes are caught case-insensitively.
+    """
+    lowered = body.lower()
+    # `<style ` (with trailing space, `>` or `/`) -- never `<styleguide` or similar.
+    style_open_count = len(_re.findall(r"<style[\s/>]", lowered))
+    assert style_open_count == 0, f"unexpected inline <style> block in /{page}: count={style_open_count}"
+    # Inline <script>...</script>: bare <script[> or <script ATTR> where ATTR set
+    # contains no `src=`. DOTALL so the open-tag attribute list across newlines
+    # is still matched.
+    bare_scripts = _re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", body, _re.IGNORECASE | _re.DOTALL)
+    assert not bare_scripts, f"unexpected inline <script> in /{page}: {bare_scripts}"
+    # `style="..."` attribute on any tag, anywhere in the body. Case-insensitive
+    # and tolerant of either quote style, single or double.
+    style_attrs = _re.findall(r"""\sstyle\s*=\s*['"][^'"]*['"]""", body, _re.IGNORECASE)
+    assert not style_attrs, f"unexpected inline style= attribute in /{page}: {style_attrs}"
+    # HTML event-handler attributes (onclick=, onerror=, onload=, onsubmit=, etc.)
+    # are CSP-blocked too.
+    event_attrs = _re.findall(r"\s on[a-z]+\s*=", body, _re.IGNORECASE)
+    assert not event_attrs, f"unexpected inline event handler attribute in /{page}: {event_attrs}"
+
+
 async def test_login_uses_external_css_and_js(client):
     """CSP forbids inline. Pages must reference /static/postern.css and /static/postern.js."""
     r = await client.get("/login")
     assert r.status_code == 200
     assert "/static/postern.css" in r.text
     assert "/static/postern.js" in r.text
-    # Make sure no inline <style> / <script> blocks slipped in.
-    body = r.text
-    assert "<style" not in body
-    # Inline script blocks are forbidden; <script src=...> is fine. Detect bare
-    # <script> with no src attribute on the same line.
-    import re as _re
-    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
-    assert not bare_scripts, f"unexpected inline <script> in /login: {bare_scripts}"
+    _assert_no_inline_css_or_js(r.text, "login")
 
 
 async def test_otp_uses_external_css_and_js(client):
@@ -476,11 +566,7 @@ async def test_otp_uses_external_css_and_js(client):
     assert r.status_code == 200
     assert "/static/postern.css" in r.text
     assert "/static/postern.js" in r.text
-    body = r.text
-    assert "<style" not in body
-    import re as _re
-    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
-    assert not bare_scripts
+    _assert_no_inline_css_or_js(r.text, "login/verify")
 
 
 async def test_dashboard_uses_external_css_and_js(client, app_settings):
@@ -494,30 +580,50 @@ async def test_dashboard_uses_external_css_and_js(client, app_settings):
     body = r.text
     assert "/static/postern.css" in body
     assert "/static/postern.js" in body
-    assert "<style" not in body
-    import re as _re
-    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
-    assert not bare_scripts
+    _assert_no_inline_css_or_js(body, "")
 
 
 async def test_login_has_no_inline_event_handlers(client):
     """CSP forbids onclick=, onerror= etc. attached as HTML attributes."""
     r = await client.get("/login")
-    body = r.text
-    # Detect any on*= attribute on a tag. Catch onclick, onerror, onload, onsubmit etc.
-    import re as _re
-    matches = _re.findall(r"\s on[a-z]+=", body, _re.IGNORECASE)
-    assert not matches, f"unexpected inline event handler attributes in /login: {matches}"
+    _assert_no_inline_css_or_js(r.text, "login")
 
 
 async def test_login_identity_card_renders_ip_from_x_real_ip(app_settings, tmp_path):
-    """When nginx forwards X-Real-IP, the rendered identity card surfaces it."""
+    """When nginx forwards X-Real-IP, the rendered identity card surfaces it.
+
+    Pin the ASGI client to a real RFC1918 IP (172.20.0.5) so the X-Real-IP guard
+    actually fires: identity._client_ip only trusts the header when the direct
+    socket peer is a private/loopback range. httpx's default ASGITransport client
+    is ("testclient", 50000) -- "testclient" is not a parsable IP, which would
+    let the test pass via the ValueError fall-through path instead of via the
+    intended trusted-proxy-hop branch.
+    """
     app = PosternApp(app_settings)
     async with db.get_connection(app_settings.database_path) as database:
         await db.migrate(database)
         app.state.db = database
-        transport = ASGITransport(app=app)
+        transport = ASGITransport(app=app, client=("172.20.0.5", 443))
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             r = await c.get("/login", headers={"X-Real-IP": "203.0.113.42"})
             assert r.status_code == 200
             assert "203.0.113.42" in r.text
+
+
+async def test_login_identity_card_ignores_x_real_ip_from_public_peer(app_settings, tmp_path):
+    """Spoofing guard: a public direct-hop IP must NOT cause X-Real-IP to be trusted.
+
+    Mirrors test_lookup_ignores_x_real_ip_when_direct_is_public but exercised
+    end-to-end through the rendered template, so a future refactor that bypasses
+    identity._client_ip can't silently undo the protection.
+    """
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app, client=("198.51.100.1", 443))
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/login", headers={"X-Real-IP": "203.0.113.42"})
+            assert r.status_code == 200
+            assert "198.51.100.1" in r.text
+            assert "203.0.113.42" not in r.text

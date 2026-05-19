@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import maxminddb
+from user_agents import parse as _parse_user_agent
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -99,12 +100,23 @@ class GeoIPReaders:
             logger.warning("GeoIP DB %s stat failed; falling back to IP-only", path, exc_info=True)
             return current
         prior = self._mtimes.get(filename)
-        if current is not None and prior == mtime:
+        # Cache hit covers two cases under the same mtime: (a) we have a live
+        # reader open against this exact mtime -- return it; (b) we know this
+        # mtime represents a broken file we already failed to open -- skip the
+        # retry. Case (b) is the broken-file pin: without it, every request
+        # would re-attempt open_database on a known-bad file.
+        if prior == mtime:
             return current
         try:
             reader = maxminddb.open_database(str(path))
         except (maxminddb.InvalidDatabaseError, OSError):
-            logger.warning("GeoIP DB %s failed to open; falling back to IP-only", path, exc_info=True)
+            # Pin the failed mtime so subsequent requests don't retry the broken
+            # file on every hit -- that would log-spam and burn CPU. We only
+            # re-attempt once the operator writes a new mtime to the file, which
+            # is exactly the "I fixed it" signal we want to watch for. Logging
+            # happens at most once per mtime change.
+            logger.warning("GeoIP DB %s failed to open; pinning mtime, will retry on next change", path, exc_info=True)
+            self._mtimes[filename] = mtime
             return current
         if current is not None:
             try:
@@ -161,6 +173,15 @@ def _client_ip(request: Request) -> str:
     xri = request.headers.get("X-Real-IP", "").strip()
     if not xri:
         return direct
+    # `request.client` can be None for non-TCP ASGI scopes (lifespan-internal,
+    # synthetic test clients, etc.). In that case we have no direct socket peer
+    # to make the trust decision against; trust X-Real-IP, since (a) the only
+    # way the request reached the app at all is via in-process plumbing or a
+    # locally-configured proxy that already terminated the connection, and (b)
+    # returning "" instead would force the identity card to render "unknown"
+    # despite the upstream having told us exactly who the visitor is.
+    if not direct:
+        return xri
     try:
         addr = ipaddress.ip_address(direct)
     except ValueError:
@@ -196,8 +217,7 @@ def _summarize_user_agent(ua_string: str) -> str:
     if not ua_string:
         return "Unknown client"
     try:
-        from user_agents import parse  # lazy: avoid import cost for non-render code paths
-        ua = parse(ua_string)
+        ua = _parse_user_agent(ua_string)
     except Exception:  # noqa: BLE001
         return "Unknown client"
     browser = (ua.browser.family or "").strip()

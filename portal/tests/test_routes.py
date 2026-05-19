@@ -299,3 +299,123 @@ async def test_download_nonexistent_connection_returns_404(client, app_settings)
     client.cookies.set("session", "tok")
     response = await client.get("/connection/nonexistent-uuid/config")
     assert response.status_code == 404
+
+
+# Brand icon ===========================================================================================================
+async def test_brand_icon_default(client):
+    """No PRODUCT_ICON_PATH set -> serve the built-in gradient-square SVG."""
+    response = await client.get("/brand-icon")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/svg+xml"
+    assert response.text.lstrip().startswith("<svg") or response.text.lstrip().startswith("<?xml")
+
+
+async def test_brand_icon_custom_svg(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH pointing at an .svg file -> serve those bytes."""
+    svg = tmp_path / "icon.svg"
+    body = b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'><rect width='1' height='1'/></svg>"
+    svg.write_bytes(body)
+    app_settings.product_icon_path = str(svg)
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.headers["content-type"].startswith("image/svg+xml")
+            assert r.content == body
+
+
+async def test_brand_icon_custom_png(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH pointing at a .png file -> serve those bytes with PNG MIME."""
+    png = tmp_path / "icon.png"
+    body = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # PNG magic + dummy bytes
+    png.write_bytes(body)
+    app_settings.product_icon_path = str(png)
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "image/png"
+            assert r.content == body
+
+
+async def test_brand_icon_missing_path_falls_back(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH pointing at a nonexistent file -> serve the default."""
+    app_settings.product_icon_path = str(tmp_path / "does-not-exist.svg")
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "image/svg+xml"
+
+
+async def test_brand_icon_oversized_falls_back(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH file > 256 KB -> serve the default (does not 413 or error)."""
+    big = tmp_path / "huge.svg"
+    big.write_bytes(b"<svg>" + b"x" * (300 * 1024) + b"</svg>")
+    app_settings.product_icon_path = str(big)
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.headers["content-type"] == "image/svg+xml"
+            # The default is much smaller than 300 KB.
+            assert len(r.content) < 50 * 1024
+
+
+async def test_brand_icon_disallowed_extension_falls_back(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH with a non-allowed suffix (.html, .json, etc.) -> default."""
+    bad = tmp_path / "icon.html"
+    bad.write_bytes(b"<svg/>")
+    app_settings.product_icon_path = str(bad)
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            assert r.status_code == 200
+            assert r.content != b"<svg/>"  # not the disallowed file
+
+
+async def test_brand_icon_traversal_falls_back(tmp_path, app_settings):
+    """PRODUCT_ICON_PATH that resolves to a path outside the allowlist (e.g. /etc/passwd)
+    must never serve the resolved file."""
+    app_settings.product_icon_path = "../../../etc/passwd"
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/brand-icon")
+            # Either falls back to the default SVG (preferred) or returns 404; never
+            # serves /etc/passwd. Both outcomes are safe; both are tested via the
+            # extension allowlist.
+            assert r.status_code in (200, 404)
+            if r.status_code == 200:
+                assert r.headers["content-type"] == "image/svg+xml"
+
+
+# Static assets ========================================================================================================
+async def test_static_assets_are_served(client):
+    """The /static/ mount serves files from src/postern/static/."""
+    r = await client.get("/static/brand-default.svg")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("image/svg+xml")

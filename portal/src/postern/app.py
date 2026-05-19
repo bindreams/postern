@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 
 from postern import db, identity
 from postern.reconciler import cleanup_all_containers, reconciliation_loop
-from postern.routes import dashboard, login
+from postern.routes import brand_icon, dashboard, login
 from postern.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,13 @@ class PosternApp(FastAPI):
 
         self.include_router(login.router)
         self.include_router(dashboard.router)
+        self.include_router(brand_icon.router)
+
+        # Static assets ship inside the wheel; nothing here is operator-mutable. The
+        # /brand-icon route above is the only path that touches operator-controlled
+        # files (validated against a strict allowlist).
+        static_dir = Path(__file__).resolve().parent / "static"
+        self.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     @classmethod
     @asynccontextmanager

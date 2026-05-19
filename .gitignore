@@ -17,3 +17,6 @@ __pycache__/
 # Claude Code
 .claude/*.local.*
 CLAUDE.local.md
+
+# Brainstorming / mockup cache produced by the superpowers skill
+/.superpowers/

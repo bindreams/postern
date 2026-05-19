@@ -6,11 +6,29 @@ from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from postern import auth, db, email
+from postern import auth, db, email, identity
 
 router = APIRouter()
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_template_dir))
+
+
+def _identity_context(request: Request) -> dict:
+    """Build the template context bits shared by the login and OTP pages.
+
+    The identity card is shown on the login/OTP screens only (the dashboard mockup
+    drops it). ``geoip_attribution`` is rendered as a small MaxMind credit link
+    when -- and only when -- GeoIP DBs are configured AND have produced enrichment
+    on this hit; the MaxMind EULA only requires attribution where the data is in
+    use, not on every page that *could* use it.
+    """
+    readers = getattr(request.app.state, "geoip_readers", None)
+    info = identity.lookup(request, readers=readers)
+    enriched = info.country_code is not None or info.city is not None or info.isp is not None or info.asn is not None
+    return {
+        "identity": info,
+        "geoip_attribution": bool(readers and readers.db_dir is not None and enriched),
+    }
 
 
 @router.get("/login", response_class=HTMLResponse)
@@ -22,7 +40,7 @@ async def login_page(request: Request):
         if session:
             return RedirectResponse("/", status_code=303)
 
-    return templates.TemplateResponse(request, "login.html", {"message": None})
+    return templates.TemplateResponse(request, "login.html", {"message": None, **_identity_context(request)})
 
 
 @router.post("/login")
@@ -44,7 +62,11 @@ async def login_submit(request: Request, email_addr: str = Form(alias="email")):
 @router.get("/login/verify", response_class=HTMLResponse)
 async def verify_page(request: Request):
     email_addr = request.cookies.get("otp_email", "")
-    return templates.TemplateResponse(request, "otp.html", {"email": email_addr, "error": None})
+    return templates.TemplateResponse(
+        request,
+        "otp.html",
+        {"email": email_addr, "error": None, **_identity_context(request)},
+    )
 
 
 @router.post("/login/verify")
@@ -61,7 +83,7 @@ async def verify_submit(
         return templates.TemplateResponse(
             request,
             "otp.html",
-            {"email": email_addr, "error": "Invalid or expired code."},
+            {"email": email_addr, "error": "Invalid or expired code.", **_identity_context(request)},
             status_code=400,
         )
 

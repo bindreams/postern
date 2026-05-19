@@ -101,7 +101,8 @@ async def test_dashboard_with_valid_session(client, app_settings):
     client.cookies.set("session", "test-session-token")
     response = await client.get("/")
     assert response.status_code == 200
-    assert "Alice" in response.text
+    # The dashboard user chip renders the email and the first-letter avatar.
+    assert "alice@example.com" in response.text
 
 
 # Config download ======================================================================================================
@@ -170,7 +171,8 @@ async def test_product_name_default(client):
     """Without PRODUCT_NAME set, login renders the default 'Postern' brand."""
     response = await client.get("/login")
     assert response.status_code == 200
-    assert "<h1>Postern</h1>" in response.text
+    # The brand-name span (next to the header logo) carries the configured product name.
+    assert '<span class="brand-name">Postern</span>' in response.text
 
 
 async def test_product_name_override(tmp_path):
@@ -200,7 +202,7 @@ async def test_product_name_override(tmp_path):
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             login_resp = await c.get("/login")
-            assert "<h1>Foo</h1>" in login_resp.text
+            assert '<span class="brand-name">Foo</span>' in login_resp.text
             assert "Login — Foo" in login_resp.text
 
             c.cookies.set("session", "tok")
@@ -419,3 +421,103 @@ async def test_static_assets_are_served(client):
     r = await client.get("/static/brand-default.svg")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/svg+xml")
+
+
+# Redesigned templates =================================================================================================
+async def test_login_renders_identity_card(client):
+    """Login page renders the visitor identity panel ('You appear as') alongside the auth card."""
+    r = await client.get("/login")
+    assert r.status_code == 200
+    assert 'class="ipc"' in r.text or "ipc" in r.text  # class lookup
+    assert "You appear as" in r.text
+
+
+async def test_dashboard_renders_connections_card(client, app_settings):
+    """Dashboard renders the connections card and the user chip; identity card is dashboard-omitted."""
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
+        session = Session(token="dash-tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
+
+    client.cookies.set("session", "dash-tok")
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert 'class="cc"' in r.text or "cc-hdr" in r.text
+    assert "user-chip" in r.text
+    assert "Log out" in r.text
+
+
+async def test_login_renders_brand_link(client):
+    """The header brand mark references /brand-icon (never /static/brand-default.svg directly)."""
+    r = await client.get("/login")
+    assert r.status_code == 200
+    assert '<img src="/brand-icon"' in r.text
+
+
+async def test_login_uses_external_css_and_js(client):
+    """CSP forbids inline. Pages must reference /static/postern.css and /static/postern.js."""
+    r = await client.get("/login")
+    assert r.status_code == 200
+    assert "/static/postern.css" in r.text
+    assert "/static/postern.js" in r.text
+    # Make sure no inline <style> / <script> blocks slipped in.
+    body = r.text
+    assert "<style" not in body
+    # Inline script blocks are forbidden; <script src=...> is fine. Detect bare
+    # <script> with no src attribute on the same line.
+    import re as _re
+    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
+    assert not bare_scripts, f"unexpected inline <script> in /login: {bare_scripts}"
+
+
+async def test_otp_uses_external_css_and_js(client):
+    r = await client.get("/login/verify")
+    assert r.status_code == 200
+    assert "/static/postern.css" in r.text
+    assert "/static/postern.js" in r.text
+    body = r.text
+    assert "<style" not in body
+    import re as _re
+    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
+    assert not bare_scripts
+
+
+async def test_dashboard_uses_external_css_and_js(client, app_settings):
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
+        session = Session(token="d2-tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
+    client.cookies.set("session", "d2-tok")
+    r = await client.get("/")
+    body = r.text
+    assert "/static/postern.css" in body
+    assert "/static/postern.js" in body
+    assert "<style" not in body
+    import re as _re
+    bare_scripts = [m for m in _re.finditer(r"<script(?![^>]*\bsrc=)[^>]*>", body)]
+    assert not bare_scripts
+
+
+async def test_login_has_no_inline_event_handlers(client):
+    """CSP forbids onclick=, onerror= etc. attached as HTML attributes."""
+    r = await client.get("/login")
+    body = r.text
+    # Detect any on*= attribute on a tag. Catch onclick, onerror, onload, onsubmit etc.
+    import re as _re
+    matches = _re.findall(r"\s on[a-z]+=", body, _re.IGNORECASE)
+    assert not matches, f"unexpected inline event handler attributes in /login: {matches}"
+
+
+async def test_login_identity_card_renders_ip_from_x_real_ip(app_settings, tmp_path):
+    """When nginx forwards X-Real-IP, the rendered identity card surfaces it."""
+    app = PosternApp(app_settings)
+    async with db.get_connection(app_settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            r = await c.get("/login", headers={"X-Real-IP": "203.0.113.42"})
+            assert r.status_code == 200
+            assert "203.0.113.42" in r.text

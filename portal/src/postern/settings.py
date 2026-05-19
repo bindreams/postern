@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     # and stays "postern" by default).
     product_name: str = "Postern"
 
+    # Frontend =========================================================================================================
+    # Absolute path to a custom brand icon (SVG preferred, PNG accepted; <= 256 KB).
+    # Served via the /brand-icon route, which falls back to a built-in default SVG
+    # on any error (missing file, oversized, disallowed extension, etc.). Empty
+    # default means the built-in icon ships unchanged.
+    product_icon_path: str = ""
+    # Directory containing GeoLite2-City.mmdb + GeoLite2-ASN.mmdb. When set, the
+    # login page renders an "appear-as" identity card with country/city/ISP/ASN.
+    # When empty, the card still renders with the IP address only. See
+    # docs/frontend.md for the operator workflow.
+    geoip_db_dir: str = ""
+
     # MTA ==============================================================================================================
     mta_verify_dns: bool = True
     mta_require_dnssec: bool | Literal["auto"] = "auto"

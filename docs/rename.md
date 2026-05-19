@@ -5,9 +5,9 @@ Use this runbook when you need to change `DOMAIN` (e.g. moving from a production
 `DOMAIN` flows into nginx templates (rendered at container start), `mail.${DOMAIN}` MTA hostname, the wildcard TLS cert SAN set `{<domain>, *.<domain>}`, Traefik's `HostSNI(...)` label, and every DNS record the provisioner publishes (apex/wildcard A/AAAA/CAA, MX, SPF, DMARC, MTA-STS, TLS-RPT, TLSA, DKIM). Most of this is automatic on restart, but three things are not:
 
 1. **Provisioner state files** keep `last_published_*` markers tied to the OLD FQDN. On domain change the reconcilers compute new FQDNs but their drift logic compares against stale `last_published_*` values, so they would not republish for the new domain. Reset:
-    - `/etc/letsencrypt/state.json` (cert state)
-    - `/etc/letsencrypt/dns_records_state.json` (apex/wildcard A/AAAA/CAA reconciler)
-    - `/var/lib/opendkim/mta_records_state.json` (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA reconciler)
+   - `/etc/letsencrypt/state.json` (cert state)
+   - `/etc/letsencrypt/dns_records_state.json` (apex/wildcard A/AAAA/CAA reconciler)
+   - `/var/lib/opendkim/mta_records_state.json` (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA reconciler)
 2. **DKIM TXT for the new FQDN must be published by hand.** The rotation state machine in `provisioner/entrypoint.py` only publishes during `STABLE -> PROPAGATING` (i.e. on rotation). The MTA-records reconciler explicitly excludes DKIM. Mirror the first-deploy bootstrap and publish via `postern-dns txt-set`.
 3. **OLD records at `*.<old-domain>`** are not auto-retired — the deletion logic compares record values, not FQDNs. Delete them via your DNS provider's API.
 

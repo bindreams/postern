@@ -27,7 +27,7 @@ RUN wget -q -O /LICENSE \
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.1.0
+ARG GALOSHES_VERSION=v0.1.1
 RUN <<-EOF
 	set -eu
 	# Release asset names omit the leading `v`; tags include it.
@@ -43,7 +43,7 @@ RUN <<-EOF
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes-license
-ARG GALOSHES_VERSION=v0.1.0
+ARG GALOSHES_VERSION=v0.1.1
 RUN wget -q -O /LICENSE.md \
 	"https://raw.githubusercontent.com/bindreams/hole/refs/tags/releases/galoshes/${GALOSHES_VERSION}/crates/galoshes/LICENSE.md"
 

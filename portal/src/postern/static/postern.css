@@ -105,8 +105,8 @@ button { font-family: inherit; }
   position: relative;
   z-index: 2;
   display: flex; align-items: center; gap: 14px;
-  margin: 0 auto 24px;
-  max-width: 700px;
+  margin: 0 auto;                  /* header-to-card spacing is owned by .page's flex gap */
+  width: 100%; max-width: 700px;   /* full 700px column as a .page flex child, not shrink-to-content */
   padding: 0;
   color: var(--text-strong);
 }
@@ -393,7 +393,7 @@ button { font-family: inherit; }
   .cards-row { flex-direction: column; align-items: center; }
   .lc, .ipc { width: 90%; max-width: 340px; }
   .user-chip { top: 10px; right: 12px; padding: 4px 4px 4px 10px; }
-  .brand-head { margin-bottom: 16px; }
+  .page { gap: 16px; }   /* tighter header-to-card spacing on small screens */
   .brand-head .brand-name { font-size: 22px; }
 }
 

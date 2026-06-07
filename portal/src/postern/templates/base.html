@@ -12,13 +12,14 @@
   <canvas id="gol-canvas" aria-hidden="true"></canvas>
   <div class="gol-overlay" aria-hidden="true"></div>
 
-  <header class="brand-head">
-    <a href="/" class="brand-mark" aria-label="{{ product_name }}"><img src="/brand-icon" alt=""></a>
-    <span class="brand-name">{{ product_name }}</span>
-  </header>
-
   {% block topright %}{% endblock %}
-  <main class="page">{% block body %}{% endblock %}</main>
+  <main class="page">
+    <header class="brand-head">
+      <a href="/" class="brand-mark" aria-label="{{ product_name }}"><img src="/brand-icon" alt=""></a>
+      <span class="brand-name">{{ product_name }}</span>
+    </header>
+    {% block body %}{% endblock %}
+  </main>
 
   <footer class="gol-foot" aria-label="Game of Life background controls">
     <div class="counters">

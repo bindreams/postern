@@ -514,6 +514,57 @@ async def test_login_renders_brand_link(client):
     assert '<img src="/brand-icon"' in r.text
 
 
+def _assert_brand_head_inside_page(body: str, page: str) -> None:
+    """The brand header must render INSIDE <main class="page">.
+
+    `.page` is the full-height flex column that vertically centers its children
+    (`min-height:100vh; justify-content:center`). If `.brand-head` is a sibling
+    of `.page` instead of a child, it falls outside that centering and gets
+    pinned to the very top of the viewport with no padding (GitHub issue #140).
+    This guards the nesting structurally rather than via a headless browser.
+    """
+    main_open = body.find('<main class="page">')
+    assert main_open != -1, f"/{page}: no '<main class=\"page\">' in rendered body"
+    main_close = body.find("</main>", main_open)
+    assert main_close != -1, f"/{page}: '<main class=\"page\">' is never closed"
+    brand = body.find('class="brand-head"')
+    assert brand != -1, f"/{page}: no element with class=\"brand-head\" found"
+    assert main_open < brand < main_close, (
+        f"/{page}: the brand header must be nested inside '<main class=\"page\">' so it is "
+        f"vertically centered with the cards, not pinned to the top of the viewport "
+        f"(brand at {brand}, main spans [{main_open}, {main_close}])"
+    )
+
+
+async def test_login_brand_head_centered_in_page(client):
+    """Login: brand header is nested in the centered .page container (issue #140)."""
+    r = await client.get("/login")
+    assert r.status_code == 200
+    _assert_brand_head_inside_page(r.text, "login")
+
+
+async def test_otp_brand_head_centered_in_page(client):
+    """OTP: brand header is nested in the centered .page container (issue #140)."""
+    r = await client.get("/login/verify")
+    assert r.status_code == 200
+    _assert_brand_head_inside_page(r.text, "login/verify")
+
+
+async def test_dashboard_brand_head_centered_in_page(client, app_settings):
+    """Dashboard: brand header is nested in .page even with the top-right user chip
+    block populated (issue #140)."""
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
+        session = Session(token="brand-tok", user_id=user.id, expires_at=_expires_str())
+        await db.create_session(database, session)
+
+    client.cookies.set("session", "brand-tok")
+    r = await client.get("/")
+    assert r.status_code == 200
+    _assert_brand_head_inside_page(r.text, "")
+
+
 # CSP enforcement scans ================================================================================================
 # CSP for the portal is `default-src 'self'` -- no inline <style> blocks, inline
 # <script> blocks, HTML event-handler attributes (`onclick=` etc.), or `style="..."`

@@ -31,10 +31,10 @@ services:
     environment:
       # Auto-enable PROXY-v2 acceptance in gateway mode (issue #98, "option 1").
       # In gateway mode nginx's host ports are stripped (reachable only in-cluster),
-      # so trusting the private ranges is safe. Override in .env with your gateway's
+      # so trusting the private ranges (IPv4 RFC1918 + IPv6 ULA fc00::/7) is safe. Override in .env with your gateway's
       # exact subnet to tighten the trust boundary. Pairs with the proxyProtocol
       # label below -- enabling one without the other breaks :443.
-      PROXY_PROTOCOL_FROM: ${PROXY_PROTOCOL_FROM:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      PROXY_PROTOCOL_FROM: ${PROXY_PROTOCOL_FROM:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7}
     labels:
       traefik.enable: "true"
       traefik.expose: "true"

@@ -34,6 +34,8 @@ render_templates() {
 	else
 		proxy_protocol_listen=""
 	fi
+	# Runs before the file loop below; the two functions share globals (dst/tmp/
+	# target_dir) but never overlap because this completes first. POSIX sh has no `local`.
 	_write_real_ip_conf "$target_dir" || return 1
 
 	# Collect sources into a filelist first so the loop runs in THIS shell. A

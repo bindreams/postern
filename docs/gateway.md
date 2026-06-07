@@ -46,7 +46,7 @@ Under TCP+SNI passthrough the gateway terminates no TLS and proxies raw bytes to
 `compose.gateway.yaml` fixes this automatically with PROXY protocol v2:
 
 - It tells Traefik to send a PROXY-v2 header ahead of the passthrough bytes (`traefik.tcp.services.postern.loadbalancer.proxyProtocol.version: "2"`).
-- It sets `PROXY_PROTOCOL_FROM` to the in-cluster private ranges, which makes postern's nginx accept PROXY-v2 on `:443` and recover the real client IP (`set_real_ip_from` + `real_ip_header proxy_protocol`). This default is safe because, in gateway mode, nginx's host ports are stripped — it's reachable only over the gateway network.
+- It sets `PROXY_PROTOCOL_FROM` to the in-cluster private ranges (IPv4 RFC1918 + IPv6 ULA `fc00::/7`), which makes postern's nginx accept PROXY-v2 on `:443` and recover the real client IP (`set_real_ip_from` + `real_ip_header proxy_protocol`). This default is safe because, in gateway mode, nginx's host ports are stripped — it's reachable only over the gateway network.
 
 No action is required for the reference deployment. To tighten the trust boundary, set `PROXY_PROTOCOL_FROM` in `.env` to your gateway's exact subnet (CIDR; comma/space-separated for multiple).
 

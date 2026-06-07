@@ -59,11 +59,12 @@ def test_render_with_proxy_protocol_emits_directives(tmp_path):
 
 
 def test_render_with_multiple_cidrs(tmp_path):
-    out = _render(tmp_path, proxy_from="10.0.0.0/8,172.16.0.0/12 192.168.0.0/16")
+    out = _render(tmp_path, proxy_from="10.0.0.0/8,172.16.0.0/12 192.168.0.0/16,fc00::/7")
     real_ip = (out / "conf.d" / "real_ip.conf").read_text()
     assert "set_real_ip_from 10.0.0.0/8;" in real_ip
     assert "set_real_ip_from 172.16.0.0/12;" in real_ip
     assert "set_real_ip_from 192.168.0.0/16;" in real_ip
+    assert "set_real_ip_from fc00::/7;" in real_ip
 
 
 def test_render_substitutes_domain(tmp_path):

@@ -58,7 +58,7 @@ def _launch_sslocal(ssclient_config_path: str) -> None:
     parametrization's sslocal still bound on 1080, `nc -z` would report READY
     immediately, and the new test's curl would tunnel through the WRONG
     sslocal (still configured for the prior connection). That is precisely
-    the failure mode that lets a galoshes-xfail "pass" for an unrelated
+    the failure mode that lets the galoshes UDP test "pass" for an unrelated
     reason."""
     # Stop and reap any existing sslocal.
     subprocess.run(
@@ -112,23 +112,7 @@ def _launch_sslocal(ssclient_config_path: str) -> None:
 
 
 # Tunnel happy path ====================================================================================================
-@pytest.mark.parametrize(
-    "plugin",
-    [
-        "v2ray-plugin",
-        pytest.param(
-            "galoshes",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "galoshes v0.1.0 has a SIP003 bind-vs-connect direction bug under "
-                    "shadowsocks-rust 1.24.0 (EADDRINUSE on SS_LOCAL_HOST:SS_LOCAL_PORT). "
-                    "Tracked upstream as bindreams/hole#353. Re-enable when fixed."
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("plugin", ["v2ray-plugin", "galoshes"])
 def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_user, fresh_connection, plugin):
     """The single most important test: prove a byte tunnels end-to-end.
     Parametrized over both plugins -- galoshes wraps v2ray-plugin via yamux,
@@ -226,14 +210,6 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
 
 
 # UDP through galoshes =================================================================================================
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "galoshes v0.1.0 has a SIP003 bind-vs-connect direction bug under "
-        "shadowsocks-rust 1.24.0 (EADDRINUSE on SS_LOCAL_HOST:SS_LOCAL_PORT). "
-        "Tracked upstream as bindreams/hole#353. Re-enable when fixed."
-    ),
-)
 def test_galoshes_tunnel_routes_udp(portal_client, mailpit_client, fresh_user, fresh_connection):
     """Galoshes adds UDP transport on top of v2ray-plugin via yamux. Send a
     UDP datagram through SOCKS5 UDP-ASSOCIATE; the echo MUST come back.

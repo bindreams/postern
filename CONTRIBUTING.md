@@ -48,19 +48,25 @@ uv run pytest -m e2e -v
 **Prerequisites (all required, all one-time):**
 
 - **Linux + docker.** Same constraint as the production stack. WSL2 works.
+
 - **`/etc/hosts`** must map `postern.test` to localhost so the host-side pytest client resolves the test domain to the nginx container's exposed port:
+
   ```bash
   echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
   ```
+
 - **DHI auth.** Same prerequisite as building any production image. `docker login dhi.io` with a Docker Hub PAT (any free Docker Hub account works; the DHI catalog is free under Apache 2.0).
 
   Renovate (Mend Cloud App) authenticates to `dhi.io` independently of GitHub Actions. Credentials live in the Mend UI at [developer.mend.io](https://developer.mend.io) under the repo's Credentials section, as `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` — referenced from [.github/renovate.json](.github/renovate.json) via `{{ secrets.NAME }}`. Rotating the Docker Hub PAT requires updating GitHub Actions secrets and Mend Credentials together.
 
 - **`local/shadowsocks-server` image** must exist before the suite starts. Build it from the repo root:
+
   ```bash
   docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
   ```
+
 - **Compose images** (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) must also exist before the suite starts. The session fixture only does `compose up --wait` so the build is not subject to the per-test timeout. Build them once from the repo root:
+
   ```bash
   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
   ```
@@ -174,6 +180,7 @@ The admin CLI works regardless: `docker compose exec portal postern user list`.
 The `mta` and `provisioner` services are gated by the `with-mta` Compose profile and turned on by default via `COMPOSE_PROFILES=with-mta` in `.env.example`. For local development you have two options:
 
 - **Comment out `COMPOSE_PROFILES=with-mta`** in `.env` and use a fake SMTP for OTP testing. The simplest pattern matches the e2e suite: bring up [mailpit](https://github.com/axllent/mailpit) on the side, set `SMTP_HOST=mailpit`, read OTPs from its HTTP UI at `:8025`. No DNS / cert setup needed.
+
 - **Bring up the real built-in MTA with `MTA_VERIFY_DNS=false`** and locally-trusted certs for `mail.<dev-domain>` and `mta-sts.<dev-domain>` (extending the mkcert pattern above):
 
   ```bash
@@ -194,7 +201,7 @@ Prek (a Rust-based drop-in replacement for `pre-commit`) enforces everything; ju
 - **yapf** — formatter.
 - **ty** — type checker (Astral's pyright-compatible checker), run as `uvx ty check`.
 - **format-section-comments** — [scripts/format-section-comments.py](scripts/format-section-comments.py) aligns the project's section-comment convention: `# <name> =====` for primary sections, `# <name> -----` for subsections.
-- **prettier** — normalizes Markdown; it WILL reflow new .md files. Commit the reflowed output rather than fight the tool.
+- **mdformat** (with the `mdformat-gfm` plugin for GitHub-Flavored Markdown) — normalizes Markdown; it WILL reformat .md files. Commit the reformatted output rather than fight the tool.
 - **editorconfig-checker**, **mixed-line-ending**, **check-executables-have-shebangs**, **check-shebang-scripts-are-executable** — file hygiene.
 
 To run every hook on the whole tree:

@@ -73,21 +73,26 @@ def test_client_config_per_plugin(plugin_name):
 
 
 def test_client_config_galoshes_enables_udp():
-    """Galoshes' value-add over v2ray-plugin is UDP via yamux. The client
-    config must opt sslocal into tcp_and_udp so UDP-ASSOCIATE opens
-    automatically -- without this, the operator gets TCP-only galoshes
-    silently and has to hand-edit JSON."""
+    """Galoshes' value-add over v2ray-plugin is UDP via yamux. The client config
+    must opt sslocal into tcp_and_udp in three places (top-level listener mode,
+    per-server relay mode, and plugin_mode) so UDP-ASSOCIATE opens and the
+    datagrams route through the plugin -- see ss_config.client_config."""
     conn = _make_connection().model_copy(update={"plugin": "galoshes"})
     cfg = client_config(conn, DOMAIN)
+    assert cfg["mode"] == "tcp_and_udp"
     assert cfg["servers"][0]["mode"] == "tcp_and_udp"
+    assert cfg["servers"][0]["plugin_mode"] == "tcp_and_udp"
 
 
 def test_client_config_v2ray_stays_tcp_only():
     """v2ray-plugin has no UDP path; advertising tcp_and_udp would let sslocal
-    open UDP-ASSOCIATE that the server cannot service. Keep absence."""
+    open UDP-ASSOCIATE that the server cannot service. Keep absence -- the
+    top-level listener mode, per-server relay mode, and plugin_mode stay unset."""
     conn = _make_connection()  # default plugin = v2ray-plugin
     cfg = client_config(conn, DOMAIN)
+    assert "mode" not in cfg
     assert "mode" not in cfg["servers"][0]
+    assert "plugin_mode" not in cfg["servers"][0]
 
 
 # Connection plugin field ==============================================================================================

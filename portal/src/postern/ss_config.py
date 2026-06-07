@@ -49,6 +49,20 @@ def client_config(conn: Connection, domain: str) -> dict:
     v2ray-plugin connections stay TCP-only (the historical default) since
     plain v2ray-plugin has no UDP path; advertising tcp_and_udp there would
     open UDP-ASSOCIATE on sslocal but UDP traffic would be dropped server-side.
+
+    For galoshes the mode is set in THREE places, mirroring the server config
+    (these are shadowsocks-rust 1.24.0 config semantics, independent of the
+    galoshes version):
+      - top-level `mode`: sslocal derives the local SOCKS5 listener's mode from
+        it (it defaults to tcp_only for the `local_port`/`local_address` config
+        form -- see shadowsocks-rust config.rs `global_mode`) and gates the
+        UDP-ASSOCIATE command on that listener mode.
+      - server `mode`: governs server-side relay.
+      - server `plugin_mode`: defaults to tcp_only, which routes UDP *directly*
+        to the server (`udp_external_addr` -> real addr) bypassing the plugin,
+        so datagrams are dropped. tcp_and_udp routes UDP through galoshes'
+        local plugin socket. SIP003 plugins are TCP-only by spec; this is the
+        SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
     server: dict = {
         "address": domain,
@@ -58,14 +72,17 @@ def client_config(conn: Connection, domain: str) -> dict:
         "plugin": conn.plugin,
         "plugin_opts": f"tls;fast-open;path=/t/{conn.path_token};host={domain}",
     }
-    if conn.plugin == "galoshes":
-        server["mode"] = "tcp_and_udp"
-
-    return {
+    config: dict = {
         "servers": [server],
         "local_port": 1080,
         "local_address": "127.0.0.1",
     }
+    if conn.plugin == "galoshes":
+        server["mode"] = "tcp_and_udp"
+        server["plugin_mode"] = "tcp_and_udp"
+        config["mode"] = "tcp_and_udp"
+
+    return config
 
 
 def server_config_json(conn: Connection, domain: str) -> str:

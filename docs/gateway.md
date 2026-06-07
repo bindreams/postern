@@ -39,6 +39,15 @@ A separate compose stack (yours or someone else's) must provide:
 
 The mta keeps its host `:25` binding directly — Traefik is not an SMTP proxy and the gateway pattern only covers HTTPS.
 
-## What the gateway never sees
+## Real client IP (PROXY protocol)
 
-Under TCP+SNI passthrough, the gateway terminates no TLS, sees no HTTP, and proxies the raw TLS bytes to postern's nginx. Postern's nginx still gets the TLS handshake and the rest of the connection, but the source IP is the gateway container's IP — not the real client. This affects nginx variables derived from the connection peer (`$binary_remote_addr` in `limit_req` zones, access-log client IP, any per-IP logic). The PROXY-v2 protocol can bridge this when the gateway supports it; tracked separately at <https://github.com/bindreams/postern/issues/98>.
+Under TCP+SNI passthrough the gateway terminates no TLS and proxies raw bytes to postern's nginx, so without help nginx sees the *gateway's* container IP, not the client. That would break the login identity card, the per-IP `limit_req` rate-limit buckets (they'd collapse onto one gateway IP), access logs, and any per-IP logic.
+
+`compose.gateway.yaml` fixes this automatically with PROXY protocol v2:
+
+- It tells Traefik to send a PROXY-v2 header ahead of the passthrough bytes (`traefik.tcp.services.postern.loadbalancer.proxyProtocol.version: "2"`).
+- It sets `PROXY_PROTOCOL_FROM` to the in-cluster private ranges, which makes postern's nginx accept PROXY-v2 on `:443` and recover the real client IP (`set_real_ip_from` + `real_ip_header proxy_protocol`). This default is safe because, in gateway mode, nginx's host ports are stripped — it's reachable only over the gateway network.
+
+No action is required for the reference deployment. To tighten the trust boundary, set `PROXY_PROTOCOL_FROM` in `.env` to your gateway's exact subnet (CIDR; comma/space-separated for multiple).
+
+**Caveat:** `proxy_protocol` is a listening-socket option, so once enabled it applies to *every* server block sharing `:443` (the portal, the `mta-sts.<domain>` vhost, and the catch-all). Any other SNI you route to postern's nginx through the gateway must therefore also be sent with PROXY-v2, and you must never set `PROXY_PROTOCOL_FROM` unless a PROXY-v2-sending proxy is actually in front *and* nginx's `:443` is unreachable except through it (host ports stripped, as `compose.gateway.yaml` does, or firewalled) — otherwise nginx drops every `:443` connection with a "broken header" error, and a client that can reach `:443` directly could forge a PROXY header to spoof its source IP.

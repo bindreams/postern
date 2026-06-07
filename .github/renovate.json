@@ -31,9 +31,9 @@
       "groupName": "libdns ecosystem"
     },
     {
-      "description": "Filter bindreams/hole tags to the v2ray-plugin track only and strip the per-track prefix. Renovate disallows extractVersion on custom managers, so it lives here.",
-      "matchDepNames": ["bindreams/hole-v2ray-plugin"],
-      "extractVersion": "^releases/v2ray-plugin/(?<version>v\\d+\\.\\d+\\.\\d+(?:-hole\\.\\d+)?)$"
+      "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. Renovate disallows extractVersion on custom managers, so it lives here.",
+      "matchDepNames": ["bindreams/hole-ex-ray"],
+      "extractVersion": "^releases/ex-ray/(?<version>v\\d+\\.\\d+\\.\\d+(?:-[\\w.]+)?)$"
     },
     {
       "description": "Filter bindreams/hole tags to the galoshes track only and strip the per-track prefix.",
@@ -65,22 +65,22 @@
       "depNameTemplate": "github.com/go-acme/lego/v4"
     },
     {
-      "description": "v2ray-plugin from bindreams/hole. Tags follow `releases/v2ray-plugin/v<X.Y.Z[-hole.N]>`. depNameTemplate carries a track-unique logical name so the matchDepNames packageRule (above) can apply extractVersion to filter to this track only and strip the prefix. packageNameTemplate is the real GitHub repo Renovate queries.",
+      "description": "ex-ray from bindreams/hole, installed under the wire-compatible `v2ray-plugin` name. Tags follow `releases/ex-ray/v<X.Y.Z>`. depNameTemplate carries a track-unique logical name so the matchDepNames packageRule (above) can apply extractVersion to filter to this track only and strip the prefix. packageNameTemplate is the real GitHub repo Renovate queries.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^shadowsocks/Dockerfile$/",
         "/^portal/tests/e2e/ssclient\\.Dockerfile$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=github-tags depName=bindreams/hole\\s*\\nARG V2RAY_PLUGIN_VERSION=(?<currentValue>v\\S+)"
+        "# renovate: datasource=github-tags depName=bindreams/hole\\s*\\nARG EX_RAY_VERSION=(?<currentValue>v\\S+)"
       ],
       "datasourceTemplate": "github-tags",
-      "depNameTemplate": "bindreams/hole-v2ray-plugin",
+      "depNameTemplate": "bindreams/hole-ex-ray",
       "packageNameTemplate": "bindreams/hole",
       "versioningTemplate": "loose"
     },
     {
-      "description": "galoshes from bindreams/hole. Same dual-name pattern as the v2ray-plugin manager above.",
+      "description": "galoshes from bindreams/hole. Same dual-name pattern as the ex-ray manager above.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^shadowsocks/Dockerfile$/",

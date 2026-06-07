@@ -20,7 +20,7 @@ Postern VPN is a self-hosted, multi-user Shadowsocks portal. It pairs a small Fa
 
 - **nginx** — TLS termination, HTTP→HTTPS redirect, path-based WebSocket routing, security headers, rate limiting on `/login*`. Periodically self-reloads to pick up renewed Let's Encrypt certs.
 - **portal** — Python 3.13 / FastAPI. OTP email login, dashboard, JSON config download, admin CLI, and a background reconciliation loop that manages per-connection Shadowsocks containers via the Docker API.
-- **ss-{token} containers** — one Shadowsocks-rust instance per enabled connection, fronted by either v2ray-plugin (default) or galoshes (adds UDP via yamux multiplexing) in TLS + WebSocket mode. `{token}` is a 24-hex-char path token; Nginx proxies `wss://<domain>/t/{token}` to `ss-{token}:80`. The plugin choice is set per-connection via `postern connection add ... --plugin {v2ray-plugin,galoshes}`.
+- **ss-{token} containers** — one Shadowsocks-rust instance per enabled connection, fronted by either v2ray-plugin (default) or galoshes (adds UDP via yamux multiplexing) in TLS + WebSocket mode. `{token}` is a 24-hex-char path token; Nginx proxies `wss://<domain>/t/{token}` to `ss-{token}:80`. The plugin choice is set per-connection via `postern connection add ... --plugin {v2ray-plugin,galoshes}`. The `v2ray-plugin` binary is [ex-ray](https://github.com/bindreams/hole), a wire-compatible v2ray-core SIP003 shim installed under the `v2ray-plugin` name, so existing clients need no change.
 - **docker-proxy** — [tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), a restricted Docker API exposed to the portal over TCP. The portal never sees the raw `/var/run/docker.sock`.
 
 ## Prerequisites
@@ -199,7 +199,7 @@ shadowsocks/                    # Per-connection tunnel image (Go + Rust multi-s
 docs/                           # Deployer guides
     mta.md
 external/                       # Vendored upstreams, managed as git-subrepos
-    shadowsocks-rust/             # v2ray-plugin and galoshes are downloaded from bindreams/hole release assets at image build time -- no subrepo.
+    shadowsocks-rust/             # ex-ray (installed as v2ray-plugin) and galoshes are downloaded from bindreams/hole release assets at image build time -- no subrepo.
 scripts/                        # Prek (pre-commit) helpers
 .github/workflows/              # subrepo-pull.yaml: Renovate-driven subrepo updates
 ```

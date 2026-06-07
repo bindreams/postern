@@ -1,26 +1,29 @@
 # syntax=docker/dockerfile:1
 
-FROM dhi.io/alpine-base:3.23-dev AS download-v2ray-plugin
+FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG V2RAY_PLUGIN_VERSION=v1.3.3-hole.1
+ARG EX_RAY_VERSION=v0.1.0
+# ex-ray installed under the wire-compatible `v2ray-plugin` name (see
+# shadowsocks/Dockerfile). Raw per-arch binary, not a tarball.
 RUN <<-EOF
 	set -eu
-	asset="v2ray-plugin-linux-${TARGETARCH}-${V2RAY_PLUGIN_VERSION}.tar.gz"
-	base="https://github.com/bindreams/hole/releases/download/releases/v2ray-plugin/${V2RAY_PLUGIN_VERSION}"
+	v="${EX_RAY_VERSION#v}"
+	asset="ex-ray-${v}-linux-${TARGETARCH}"
+	base="https://github.com/bindreams/hole/releases/download/releases/ex-ray/${EX_RAY_VERSION}"
 	cd /tmp
 	wget -q -O "${asset}" "${base}/${asset}"
 	wget -q -O SHA256SUMS "${base}/SHA256SUMS"
 	grep -F "  ${asset}" SHA256SUMS > SHA256SUMS.one
 	sha256sum -c SHA256SUMS.one
-	tar -xzf "${asset}" -C /
-	test -x /v2ray-plugin
+	install -m 0755 "${asset}" /ex-ray
+	test -x /ex-ray
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.1.0
+ARG GALOSHES_VERSION=v0.2.0
 RUN <<-EOF
 	set -eu
 	v="${GALOSHES_VERSION#v}"
@@ -52,7 +55,7 @@ RUN apt-get update \
 		procps \
 		python3 \
 	&& rm -rf /var/lib/apt/lists/*
-COPY --from=download-v2ray-plugin /v2ray-plugin /usr/local/bin/v2ray-plugin
+COPY --from=download-ex-ray /ex-ray /usr/local/bin/v2ray-plugin
 COPY --from=download-galoshes /galoshes /usr/local/bin/galoshes
 COPY --from=build-shadowsocks /src/target/release/sslocal /usr/local/bin/sslocal
 

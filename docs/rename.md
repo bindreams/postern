@@ -8,8 +8,8 @@ Use this runbook when you need to change `DOMAIN` (e.g. moving from a production
    - `/etc/letsencrypt/state.json` (cert state)
    - `/etc/letsencrypt/dns_records_state.json` (apex/wildcard A/AAAA/CAA reconciler)
    - `/var/lib/opendkim/mta_records_state.json` (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA reconciler)
-2. **DKIM TXT for the new FQDN must be published by hand.** The rotation state machine in `provisioner/entrypoint.py` only publishes during `STABLE -> PROPAGATING` (i.e. on rotation). The MTA-records reconciler explicitly excludes DKIM. Mirror the first-deploy bootstrap and publish via `postern-dns txt-set`.
-3. **OLD records at `*.<old-domain>`** are not auto-retired — the deletion logic compares record values, not FQDNs. Delete them via your DNS provider's API.
+1. **DKIM TXT for the new FQDN must be published by hand.** The rotation state machine in `provisioner/entrypoint.py` only publishes during `STABLE -> PROPAGATING` (i.e. on rotation). The MTA-records reconciler explicitly excludes DKIM. Mirror the first-deploy bootstrap and publish via `postern-dns txt-set`.
+1. **OLD records at `*.<old-domain>`** are not auto-retired — the deletion logic compares record values, not FQDNs. Delete them via your DNS provider's API.
 
 Reverse DNS (PTR) is set at the VPS provider control panel and has no API from inside Postern.
 
@@ -182,8 +182,8 @@ curl -sS -X GET -I https://${NEW_DOMAIN}/login
 If anything goes wrong:
 
 1. Revert `.env` on the host to the OLD `DOMAIN` and `SMTP_FROM`.
-2. `docker compose down` and re-run step 2 (state files were cleared by the failed run; this re-clears any markers `docker compose up` wrote back).
-3. Restore PTR to `mail.<OLD_DOMAIN>.` at the VPS provider.
-4. `docker compose up -d`. The provisioner republishes the OLD apex/MTA records and re-issues the cert.
+1. `docker compose down` and re-run step 2 (state files were cleared by the failed run; this re-clears any markers `docker compose up` wrote back).
+1. Restore PTR to `mail.<OLD_DOMAIN>.` at the VPS provider.
+1. `docker compose up -d`. The provisioner republishes the OLD apex/MTA records and re-issues the cert.
 
 Volumes are never destroyed in either direction; bounded recovery time is dominated by DNS propagation (~5 min) plus one ACME issuance (~2 min).

@@ -43,10 +43,10 @@ docker compose exec portal postern cert show
 ### What happens on first start
 
 1. Provisioner starts, runs DKIM init, then enters the cert state machine: `NO_CERT → ISSUING`.
-2. Lego runs DNS-01 — talks to the DNS provider directly (no nginx required).
-3. Cert files written via symlink-flip to `/etc/letsencrypt/live/<domain>/`. State → `INSTALLED`. Healthcheck flips healthy.
-4. nginx and mta start (they were waiting on `depends_on: condition: service_healthy`).
-5. The provisioner ticks every 60 minutes thereafter; renews when `not_after - now < 30 days` (configurable via `CERT_RENEWAL_DAYS_BEFORE_EXPIRY`).
+1. Lego runs DNS-01 — talks to the DNS provider directly (no nginx required).
+1. Cert files written via symlink-flip to `/etc/letsencrypt/live/<domain>/`. State → `INSTALLED`. Healthcheck flips healthy.
+1. nginx and mta start (they were waiting on `depends_on: condition: service_healthy`).
+1. The provisioner ticks every 60 minutes thereafter; renews when `not_after - now < 30 days` (configurable via `CERT_RENEWAL_DAYS_BEFORE_EXPIRY`).
 
 ### Test against LE staging first
 
@@ -92,7 +92,7 @@ FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried
 Two layers protect Let's Encrypt's 5-issuances-per-7-days limit:
 
 1. **24-hour guard** (`last_issued_iso` recorded BEFORE Lego call): refuses any new issuance within 24h regardless of state, even on partial-failure paths like a successful Lego run that fails to install.
-2. **`CERT_FORCE_REISSUE=true` operator override**: one-shot bypass of the 24-hour guard, used after a cert revocation or compromise.
+1. **`CERT_FORCE_REISSUE=true` operator override**: one-shot bypass of the 24-hour guard, used after a cert revocation or compromise.
 
 ### Threat model notes
 

@@ -56,6 +56,6 @@ rev = "v0.43.0"
 hooks = [{ id = "yapf" }]
 
 [[repos]]
-repo = "https://github.com/rbubley/mirrors-prettier"
-rev = "v3.8.3"
-hooks = [{ id = "prettier", types = ["markdown"] }]
+repo = "https://github.com/hukkin/mdformat"
+rev = "1.0.0"
+hooks = [{ id = "mdformat", additional_dependencies = ["mdformat-gfm==1.0.0"] }]

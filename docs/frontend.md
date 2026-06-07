@@ -15,7 +15,7 @@ mark:
 1. Place an SVG (preferred) or 96x96 PNG anywhere readable by the portal
    container; the conventional location is `/var/lib/postern/brand.svg` on the
    host.
-2. Add a read-only bind mount under the `portal` service in `compose.yaml`
+1. Add a read-only bind mount under the `portal` service in `compose.yaml`
    (commented snippet already there):
    ```yaml
    - type: bind
@@ -23,14 +23,14 @@ mark:
      target: /brand/icon.svg
      read_only: true
    ```
-3. Set in `.env`:
+1. Set in `.env`:
    ```ini
    PRODUCT_ICON_PATH=/brand/icon.svg
    ```
-4. `docker compose up -d portal`.
+1. `docker compose up -d portal`.
 
 The route enforces a strict allowlist: suffix must be `.svg` or `.png`, file
-size <= 256 KB. Anything else (missing file, oversized, wrong extension, path
+size \<= 256 KB. Anything else (missing file, oversized, wrong extension, path
 traversal) silently falls back to the built-in default so a misconfiguration
 never takes the portal down.
 
@@ -47,15 +47,15 @@ To enable:
 
 1. Create a free MaxMind account at <https://www.maxmind.com/en/geolite2/signup>
    and generate a license key.
-2. Download the latest **GeoLite2-City.mmdb** and **GeoLite2-ASN.mmdb** files
+1. Download the latest **GeoLite2-City.mmdb** and **GeoLite2-ASN.mmdb** files
    (see <https://dev.maxmind.com/geoip/geolite2-free-geolocation-data> for the
    download URLs and the recommended `geoipupdate` tool).
-3. Place both files in a host directory, e.g. `/var/lib/postern/geoip/`:
+1. Place both files in a host directory, e.g. `/var/lib/postern/geoip/`:
    ```
    /var/lib/postern/geoip/GeoLite2-City.mmdb
    /var/lib/postern/geoip/GeoLite2-ASN.mmdb
    ```
-4. Uncomment the GeoIP bind mount in `compose.yaml` and the `GEOIP_DB_DIR`
+1. Uncomment the GeoIP bind mount in `compose.yaml` and the `GEOIP_DB_DIR`
    line in `.env`:
    ```yaml
    - type: bind
@@ -66,7 +66,7 @@ To enable:
    ```ini
    GEOIP_DB_DIR=/geoip
    ```
-5. `docker compose up -d portal`.
+1. `docker compose up -d portal`.
 
 The portal opens the DBs on first request, not at startup, so missing files
 degrade silently to "IP only". File names must be exactly `GeoLite2-City.mmdb`

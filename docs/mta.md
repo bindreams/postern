@@ -126,10 +126,10 @@ DKIM keys rotate every `MTA_DKIM_ROTATION_DAYS` (default 180 days). Selectors ar
 The provisioner generates the initial key on first start, then exits. To rotate:
 
 1. `docker compose run --rm provisioner` — generates a new selector and key, writes the next state.
-2. Run `docker compose exec portal postern mta show-dns` to see the new TXT record.
-3. Publish it at your DNS provider; wait for propagation (~24h max).
-4. The mta auto-picks up the new key on its next reload trigger.
-5. After ~7 days of overlap, retire the old TXT record manually.
+1. Run `docker compose exec portal postern mta show-dns` to see the new TXT record.
+1. Publish it at your DNS provider; wait for propagation (~24h max).
+1. The mta auto-picks up the new key on its next reload trigger.
+1. After ~7 days of overlap, retire the old TXT record manually.
 
 This is a once-per-six-months chore.
 
@@ -216,7 +216,7 @@ The hermetic suite is a working reference for `MTA_VERIFY_DNS=false` + `DNS_PROV
 The `e2e_mta_real` suite ([portal/tests/e2e/test_mta_real.py](../portal/tests/e2e/test_mta_real.py)) covers the two boundaries the hermetic suite cannot exercise:
 
 1. **libdns round-trip** (`test_libdns_provider_round_trip`) — the provisioner's Go binary actually publishes and retires a TXT record via the configured provider, and the change becomes visible via public resolvers. Pins the libdns wrapper against API breakage.
-2. **DNSSEC AD-bit detection** (`test_dnssec_status_detects_signed_domain`) — `postern.mta.dnssec.check()` returns clean against a known-signed zone (default `iana.org`).
+1. **DNSSEC AD-bit detection** (`test_dnssec_status_detects_signed_domain`) — `postern.mta.dnssec.check()` returns clean against a known-signed zone (default `iana.org`).
 
 End-to-end `mta_dns.verify()` against fully-configured baseline records (MX/SPF/DMARC/MTA-STS/TLS-RPT + a publicly-trusted MTA-STS HTTPS endpoint) is intentionally **not** in this tier. That much zone setup is incompatible with a CI job that runs on every PR; the full pipeline is exercised by the `e2e_mta_outbound` (VPS-only) suite.
 

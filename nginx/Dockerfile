@@ -20,6 +20,7 @@ FROM dhi.io/nginx:1-alpine3.23
 # image's own /etc/nginx/{mime.types,fastcgi*,scgi*,uwsgi*,modules} remain
 # untouched.
 COPY etc/ /etc/nginx/templates/
+COPY --chmod=755 render.sh /usr/local/bin/render.sh
 COPY --chmod=755 nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/nginx-entrypoint.sh"]

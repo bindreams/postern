@@ -220,7 +220,7 @@ git subrepo pull external/shadowsocks-rust
 git subrepo push external/shadowsocks-rust
 ```
 
-`v2ray-plugin` and `galoshes` are NOT subrepos — they are downloaded as pre-built release assets from [bindreams/hole](https://github.com/bindreams/hole)'s `releases/v2ray-plugin/v*` and `releases/galoshes/v*` tracks at image build time, with the version pinned via `ARG V2RAY_PLUGIN_VERSION=` / `ARG GALOSHES_VERSION=` in [shadowsocks/Dockerfile](shadowsocks/Dockerfile) and SHA256-verified against the release's `SHA256SUMS`. Renovate bumps both versions via two `github-tags` custom managers in [.github/renovate.json](.github/renovate.json).
+The `v2ray-plugin` and `galoshes` binaries are NOT subrepos — they are downloaded as pre-built release assets from [bindreams/hole](https://github.com/bindreams/hole)'s `releases/ex-ray/v*` and `releases/galoshes/v*` tracks at image build time (the `v2ray-plugin` binary is **ex-ray**, a wire-compatible v2ray-core SIP003 shim installed under the `v2ray-plugin` name), with the version pinned via `ARG EX_RAY_VERSION=` / `ARG GALOSHES_VERSION=` in [shadowsocks/Dockerfile](shadowsocks/Dockerfile) and SHA256-verified against the release's `SHA256SUMS`. Renovate bumps both versions via two `github-tags` custom managers in [.github/renovate.json](.github/renovate.json).
 
 These directories are:
 

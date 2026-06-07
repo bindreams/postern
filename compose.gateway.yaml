@@ -28,6 +28,13 @@ services:
     ports: !reset []
     networks:
       gateway: {}
+    environment:
+      # Auto-enable PROXY-v2 acceptance in gateway mode (issue #98, "option 1").
+      # In gateway mode nginx's host ports are stripped (reachable only in-cluster),
+      # so trusting the private ranges is safe. Override in .env with your gateway's
+      # exact subnet to tighten the trust boundary. Pairs with the proxyProtocol
+      # label below -- enabling one without the other breaks :443.
+      PROXY_PROTOCOL_FROM: ${PROXY_PROTOCOL_FROM:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
     labels:
       traefik.enable: "true"
       traefik.expose: "true"
@@ -40,6 +47,11 @@ services:
       # default rule-length tiebreak.
       traefik.tcp.routers.postern.priority: "100"
       traefik.tcp.services.postern.loadbalancer.server.port: "443"
+      # Send PROXY-v2 ahead of the passthrough TLS bytes so postern-nginx can
+      # recover the real client IP. Pairs with PROXY_PROTOCOL_FROM above.
+      # Traefik TCP-service ProxyProtocol label (supported Traefik v2.3+ and v3;
+      # see doc.traefik.io "Services" -> TCP -> proxyProtocol).
+      traefik.tcp.services.postern.loadbalancer.proxyProtocol.version: "2"
 
   portal:
     container_name: postern-portal

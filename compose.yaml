@@ -7,6 +7,10 @@ services:
       # Required: the entrypoint renders nginx/etc/*.tmpl with ${DOMAIN} at startup.
       # Unset/empty value -> nginx refuses to start. See nginx/nginx-entrypoint.sh.
       DOMAIN: ${DOMAIN:-postern.example.com}
+      # Real client IP behind a TLS-passthrough gateway (issue #98). Empty ->
+      # direct-listen, no PROXY protocol (browsers connect to nginx directly).
+      # compose.gateway.yaml sets a working default automatically.
+      PROXY_PROTOCOL_FROM: ${PROXY_PROTOCOL_FROM:-}
     ports:
       - "80:80/tcp"
       - "443:443/tcp"

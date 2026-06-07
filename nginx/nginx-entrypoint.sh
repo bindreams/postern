@@ -11,6 +11,7 @@
 # symlink-flip reliably across Docker bind mounts).
 set -eu
 
+# shellcheck source=/dev/null  # installed in the image at build time; not resolvable at lint time
 . /usr/local/bin/render.sh
 
 # render_templates returns non-zero on missing DOMAIN; set -e makes that fatal

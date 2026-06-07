@@ -26,8 +26,7 @@ def _proxy_v2_tcp4(src_ip: str, src_port: int, dst_ip: str, dst_port: int) -> by
     2-byte address-block length, then src/dst IPv4 (4+4) and src/dst port (2+2).
     """
     sig = b"\r\n\r\n\x00\r\nQUIT\n"
-    addr = (socket.inet_aton(src_ip) + socket.inet_aton(dst_ip)
-            + struct.pack("!HH", src_port, dst_port))
+    addr = (socket.inet_aton(src_ip) + socket.inet_aton(dst_ip) + struct.pack("!HH", src_port, dst_port))
     return sig + bytes([0x21, 0x11]) + struct.pack("!H", len(addr)) + addr
 
 

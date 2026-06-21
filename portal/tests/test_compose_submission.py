@@ -45,7 +45,7 @@ def _env_value(relpath: str, key: str) -> str | None:
     return None
 
 
-# Production ============================================================================================================
+# Production ===========================================================================================================
 def test_production_mta_carries_mta_submit_alias():
     aliases = _mta_submit_aliases(_load_compose("compose.yaml"))
     assert SUBMIT_ALIAS in aliases, (

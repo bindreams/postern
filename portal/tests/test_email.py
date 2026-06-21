@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from postern.email import send_otp_email
 from postern.settings import Settings
 
@@ -77,11 +79,13 @@ async def test_send_otp_email_other_port_is_plaintext(mock_send):
 
 
 @patch("postern.email.aiosmtplib.send", new_callable=AsyncMock)
-async def test_send_otp_email_skips_cert_validation_for_builtin_mta(mock_send):
-    """When SMTP_HOST=mta, the cert is for `mail.<domain>` not `mta`; verify is skipped."""
-    settings = _make_settings(smtp_host="mta", smtp_port=587)
+@pytest.mark.parametrize("host", ["mta", "mta-submit"])
+async def test_send_otp_email_skips_cert_validation_for_builtin_mta(mock_send, host):
+    """SMTP_HOST in {mta, mta-submit} targets the built-in MTA, whose cert is for
+    `mail.<domain>` (not the service/alias name), so cert verification is skipped
+    on that internal hop. 'mta-submit' is the production default (issue #151)."""
+    settings = _make_settings(smtp_host=host, smtp_port=587)
     await send_otp_email("alice@example.com", "123456", settings)
-
     assert mock_send.call_args.kwargs["validate_certs"] is False
 
 

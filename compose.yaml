@@ -101,7 +101,18 @@ services:
         read_only: true
         source: /etc/letsencrypt
         target: /etc/letsencrypt
-    networks: [default, mta-submit]
+    networks:
+      # `default:` (null) attaches with defaults, matching the existing
+      # e2e-mta.compose.yaml form so the two files stay shape-identical.
+      default:
+      # The bare `mta`/`postern-mta` service name is multi-homed (default +
+      # mta-submit) and Docker DNS resolves it to the *default*-network IP
+      # (issue #151), which is outside Postfix mynetworks (172.30.42.0/29) ->
+      # submission rejected. This alias makes SMTP_HOST=mta-submit resolve to the
+      # internal IP so the portal's source is in mynetworks. Keep in sync with
+      # SMTP_HOST in .env.example.
+      mta-submit:
+        aliases: [mta-submit]
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; s=socket.create_connection(('127.0.0.1',25),3); s.close(); s=socket.create_connection(('127.0.0.1',587),3); s.close()"]
       interval: 30s

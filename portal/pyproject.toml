@@ -33,6 +33,7 @@ dev = [
     "yapf>=0.43",
     "asgi-lifespan>=2.1.0",
     "mmdb-writer>=0.2",
+    "pyyaml>=6.0",
 ]
 e2e = [
     {include-group = "dev"},

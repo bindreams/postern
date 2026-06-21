@@ -23,14 +23,15 @@ async def send_otp_email(to: str, code: str, settings: Settings) -> bool:
         f"If you did not request this code, ignore this email."
     )
 
-    # Built-in mta presents a cert for `mail.<domain>` but the portal connects via
-    # the docker-DNS service name `mta` (or a network-scoped alias on the
-    # internal-only `mta-submit` network). The mta-submit network is internal
-    # with mynetworks scoping, so skipping cert verification on this hop is
-    # safe; external relays keep strict validation. The list includes
-    # `mta-submit` because the e2e overlay aliases mta on that network only to
-    # avoid docker-DNS round-robining the connection through the default
-    # network -- which would fail Postfix's mynetworks check.
+    # Built-in mta presents a cert for `mail.<domain>` but the portal connects to
+    # it by the docker-DNS name `mta-submit` (a network-scoped alias on the
+    # internal-only `mta-submit` network). That network is internal with
+    # mynetworks scoping, so skipping cert verification on this hop is safe;
+    # external relays keep strict validation. Both production compose.yaml and
+    # the e2e overlays alias mta as `mta-submit` (not the bare, multi-homed
+    # `mta` name, which resolves to the default-network IP and fails Postfix's
+    # mynetworks check -- issue #151). `mta` stays in the list for operators who
+    # still set the bare name manually.
     validate_certs = settings.smtp_host not in ("mta", "mta-submit")
 
     try:

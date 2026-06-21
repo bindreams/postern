@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import dns.exception
 import dns.flags
+import dns.name
+import dns.resolver
 import pytest
 
 from postern.mta import dnssec
@@ -21,6 +23,91 @@ def _resolver_answer(ad: bool) -> MagicMock:
     answer = MagicMock()
     answer.response = _ad_response(ad)
     return answer
+
+
+def _soa_resolver(*, ad: bool, nodata: bool) -> MagicMock:
+    """Resolver mock mirroring a validating resolver's SOA behaviour.
+
+    nodata=True  -> NODATA: raise NoAnswer on a default (raise_on_no_answer=True)
+                    query; return an Answer carrying the AD-flagged response when
+                    the caller passes raise_on_no_answer=False.
+    nodata=False -> normal ANSWER: always return the Answer.
+    """
+    resolver = MagicMock()
+
+    def _resolve(name, rdtype, *a, raise_on_no_answer=True, **kw):
+        if nodata and raise_on_no_answer:
+            raise dns.resolver.NoAnswer(response=_ad_response(ad))
+        return _resolver_answer(ad)
+
+    resolver.resolve.side_effect = _resolve
+    return resolver
+
+
+def _nxdomain_resolver(*, ad: bool, empty: bool = False) -> MagicMock:
+    resolver = MagicMock()
+    name = dns.name.from_text("sub.example.com.")
+
+    def _resolve(qname, rdtype, *a, **kw):
+        responses = {} if empty else {name: _ad_response(ad)}
+        raise dns.resolver.NXDOMAIN(qnames=[name], responses=responses)
+
+    resolver.resolve.side_effect = _resolve
+    return resolver
+
+
+# _soa_response ========================================================================================================
+class TestSoaResponse:
+
+    def test_apex_answer_returns_response_with_ad(self):
+        resolver = _soa_resolver(ad=True, nodata=False)
+        resp = dnssec._soa_response(resolver, "example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_signed_nodata_subdomain_returns_response_with_ad(self):
+        # The bug: a validating resolver raises NoAnswer here, but the AD bit is
+        # on the response. _soa_response must read it via raise_on_no_answer=False.
+        resolver = _soa_resolver(ad=True, nodata=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_unsigned_nodata_returns_response_without_ad(self):
+        resolver = _soa_resolver(ad=False, nodata=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is False
+
+    def test_signed_nxdomain_returns_response_with_ad(self):
+        resolver = _nxdomain_resolver(ad=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_unsigned_nxdomain_returns_response_without_ad(self):
+        resolver = _nxdomain_resolver(ad=False)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is False
+
+    def test_nxdomain_without_responses_propagates(self):
+        resolver = _nxdomain_resolver(ad=True, empty=True)
+        with pytest.raises(dns.resolver.NXDOMAIN):
+            dnssec._soa_response(resolver, "sub.example.com")
+
+    def test_nxdomain_reads_ad_off_the_queried_name(self):
+        # Defensive: if a resolver captured multiple denials (search expansion),
+        # read AD off the entry for the queried name, not an arbitrary one. The
+        # WRONG (AD-unset) entry is inserted first so `next(iter(...))` would fail.
+        queried = dns.name.from_text("sub.example.com")
+        other = dns.name.from_text("sub.example.com.search.example.")
+        responses = {other: _ad_response(False), queried: _ad_response(True)}
+        resolver = MagicMock()
+        resolver.resolve.side_effect = dns.resolver.NXDOMAIN(qnames=list(responses), responses=responses)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_transient_servfail_propagates(self):
+        resolver = MagicMock()
+        resolver.resolve.side_effect = dns.resolver.NoNameservers()
+        with pytest.raises(dns.exception.DNSException):
+            dnssec._soa_response(resolver, "example.com")
 
 
 # check ================================================================================================================

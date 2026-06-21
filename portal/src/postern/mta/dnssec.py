@@ -124,6 +124,34 @@ def _query_with_ad(domain: str, resolver_ip: str, *, timeout: float = 5.0) -> tu
     return (bool(resp.flags & dns.flags.AD), None)
 
 
+def _soa_response(resolver: dns.resolver.Resolver, domain: str) -> dns.message.Message:
+    """Query SOA via ``resolver`` and return the raw response message.
+
+    The AD bit is read off the *response*, not the answer section, so this is
+    uniform across apex (SOA in ANSWER), signed-NODATA subdomains (SOA in
+    AUTHORITY, empty ANSWER -- ``resolve`` would otherwise raise ``NoAnswer``),
+    and signed NXDOMAIN (NSEC/NSEC3 denial carried on the exception). Genuine
+    transient failures (SERVFAIL while Unbound's trust chain warms, timeouts)
+    propagate as ``dns.exception.DNSException`` for the caller to retry/report.
+
+    The query is an absolute name with ``search=False`` so the response set is
+    exactly the queried name -- a caller resolver with a search list would
+    otherwise expand a relative name into several denials and the AD read would
+    be ambiguous.
+    """
+    name = dns.name.from_text(domain)  # absolute (default origin = root)
+    try:
+        return resolver.resolve(name, "SOA", raise_on_no_answer=False, search=False).response
+    except dns.resolver.NXDOMAIN as e:
+        # A signed NXDOMAIN denial is AD-set too; the validated response lives on
+        # the exception, keyed by the queried name (str keys are not coerced, so
+        # look up the dns.name.Name). next(iter(...)) is a defensive fallback.
+        responses = e.responses()
+        if not responses:
+            raise
+        return responses.get(name) or next(iter(responses.values()))
+
+
 def _resolve_local(
     domain: str,
     resolver: dns.resolver.Resolver,

@@ -576,6 +576,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
     { name = "ty" },
     { name = "yapf" },
 ]
@@ -587,6 +588,7 @@ e2e = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-timeout" },
+    { name = "pyyaml" },
     { name = "ty" },
     { name = "yapf" },
 ]
@@ -616,6 +618,7 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-timeout", specifier = ">=2.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ty", specifier = ">=0.0.29" },
     { name = "yapf", specifier = ">=0.43" },
 ]
@@ -627,6 +630,7 @@ e2e = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.25" },
     { name = "pytest-timeout", specifier = ">=2.3" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ty", specifier = ">=0.0.29" },
     { name = "yapf", specifier = ">=0.43" },
 ]

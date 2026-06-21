@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import dns.exception
 import dns.flags
+import dns.name
+import dns.resolver
 import pytest
 
 from postern.mta import dnssec
@@ -21,6 +23,93 @@ def _resolver_answer(ad: bool) -> MagicMock:
     answer = MagicMock()
     answer.response = _ad_response(ad)
     return answer
+
+
+def _soa_resolver(*, ad: bool, nodata: bool) -> MagicMock:
+    """Resolver mock mirroring a validating resolver's SOA behaviour.
+
+    nodata=True  -> NODATA: raise NoAnswer on a default (raise_on_no_answer=True)
+                    query; return an Answer carrying the AD-flagged response when
+                    the caller passes raise_on_no_answer=False.
+    nodata=False -> normal ANSWER: always return the Answer.
+    """
+    resolver = MagicMock()
+
+    def _resolve(name, rdtype, *a, raise_on_no_answer=True, **kw):
+        if nodata and raise_on_no_answer:
+            raise dns.resolver.NoAnswer(response=_ad_response(ad))
+        return _resolver_answer(ad)
+
+    resolver.resolve.side_effect = _resolve
+    return resolver
+
+
+def _nxdomain_resolver(*, ad: bool, empty: bool = False) -> MagicMock:
+    resolver = MagicMock()
+    name = dns.name.from_text("sub.example.com.")
+
+    def _resolve(qname, rdtype, *a, **kw):
+        responses = {} if empty else {name: _ad_response(ad)}
+        raise dns.resolver.NXDOMAIN(qnames=[name], responses=responses)
+
+    resolver.resolve.side_effect = _resolve
+    return resolver
+
+
+# _soa_response ========================================================================================================
+class TestSoaResponse:
+
+    def test_apex_answer_returns_response_with_ad(self):
+        resolver = _soa_resolver(ad=True, nodata=False)
+        resp = dnssec._soa_response(resolver, "example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_signed_nodata_subdomain_returns_response_with_ad(self):
+        # The bug: a validating resolver raises NoAnswer here, but the AD bit is
+        # on the response. _soa_response must read it via raise_on_no_answer=False.
+        resolver = _soa_resolver(ad=True, nodata=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_unsigned_nodata_returns_response_without_ad(self):
+        resolver = _soa_resolver(ad=False, nodata=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is False
+
+    def test_signed_nxdomain_returns_response_with_ad(self):
+        resolver = _nxdomain_resolver(ad=True)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_unsigned_nxdomain_returns_response_without_ad(self):
+        resolver = _nxdomain_resolver(ad=False)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is False
+
+    def test_nxdomain_without_responses_propagates(self):
+        resolver = _nxdomain_resolver(ad=True, empty=True)
+        with pytest.raises(dns.resolver.NXDOMAIN):
+            dnssec._soa_response(resolver, "sub.example.com")
+
+    def test_nxdomain_reads_ad_off_the_queried_name(self):
+        # Defensive contract: _soa_response reads AD off the entry for the queried
+        # name even if a resolver captured multiple denials. (Production prevents
+        # this upstream via an absolute name + search=False, but the helper takes
+        # an arbitrary resolver.) The WRONG (AD-unset) entry is inserted first so
+        # a bare next(iter(...)) would read it instead of responses.get(name).
+        queried = dns.name.from_text("sub.example.com")
+        other = dns.name.from_text("sub.example.com.search.example.")
+        responses = {other: _ad_response(False), queried: _ad_response(True)}
+        resolver = MagicMock()
+        resolver.resolve.side_effect = dns.resolver.NXDOMAIN(qnames=list(responses), responses=responses)
+        resp = dnssec._soa_response(resolver, "sub.example.com")
+        assert bool(resp.flags & dns.flags.AD) is True
+
+    def test_transient_servfail_propagates(self):
+        resolver = MagicMock()
+        resolver.resolve.side_effect = dns.resolver.NoNameservers()
+        with pytest.raises(dns.exception.DNSException):
+            dnssec._soa_response(resolver, "example.com")
 
 
 # check ================================================================================================================
@@ -128,6 +217,14 @@ class TestResolveRequiredPassthrough:
 
 class TestResolveRequiredAutoLocal:
 
+    @staticmethod
+    def _freeze_clock(monkeypatch):
+        """No real sleeping; virtual monotonic that jumps past any deadline after
+        the first read (so a retry loop bails immediately instead of sleeping)."""
+        monkeypatch.setattr(dnssec.time, "sleep", lambda _s: None)
+        clock = iter([0.0] + [9999.0] * 256)
+        monkeypatch.setattr(dnssec.time, "monotonic", lambda: next(clock))
+
     def test_returns_true_when_ad_bit_set(self, caplog):
         resolver = MagicMock()
         resolver.resolve.return_value = _resolver_answer(ad=True)
@@ -143,6 +240,28 @@ class TestResolveRequiredAutoLocal:
             result = dnssec.resolve_required("auto", "example.com", resolver=resolver)
         assert result is False
         assert any("is unsigned" in r.message and "Not enforcing" in r.message for r in caplog.records)
+
+    def test_signed_nodata_subdomain_enforces(self, monkeypatch, caplog):
+        # Subdomain SOA is NODATA; the OLD code retried to the deadline and
+        # returned False (fail open). The fix reads AD off the response -> True.
+        self._freeze_clock(monkeypatch)
+        resolver = _soa_resolver(ad=True, nodata=True)
+        with caplog.at_level(logging.INFO, logger=dnssec.logger.name):
+            result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is True
+        assert any("is signed" in r.message and "Enforcing" in r.message for r in caplog.records)
+
+    def test_signed_nxdomain_enforces(self, monkeypatch):
+        self._freeze_clock(monkeypatch)
+        resolver = _nxdomain_resolver(ad=True)
+        result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is True
+
+    def test_unsigned_nodata_subdomain_does_not_enforce(self, monkeypatch):
+        self._freeze_clock(monkeypatch)
+        resolver = _soa_resolver(ad=False, nodata=True)
+        result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is False
 
     def test_retries_on_transient_dns_exception_then_succeeds(self, monkeypatch):
         resolver = MagicMock()

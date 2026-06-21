@@ -27,6 +27,8 @@ import dns.rdatatype
 import dns.resolver
 import dns.reversename
 
+from . import dnssec  # sibling module; relative import resolves under both `postern.mta` and `postern_mta`
+
 logger = logging.getLogger(__name__)
 
 # MTA-STS policy template ==============================================================================================
@@ -380,7 +382,7 @@ def _check_dkim(resolver: dns.resolver.Resolver, domain: str, selector: str, exp
 def _check_dnssec_ad_bit(resolver: dns.resolver.Resolver, domain: str) -> list[str]:
     """Send a query and check the AD bit. Caller must use a validating resolver."""
     try:
-        msg = resolver.resolve(domain, "SOA").response
+        msg = dnssec._soa_response(resolver, domain)
     except dns.exception.DNSException as e:
         return [f"DNSSEC {domain}: SOA lookup failed ({e})"]
     if not (msg.flags & dns.flags.AD):

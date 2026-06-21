@@ -69,7 +69,12 @@ services:
         read_only: true
         source: ${POSTERN_E2E_TLS_DIR}
         target: /etc/letsencrypt/live/mail.${MTA_TEST_DOMAIN}
-    networks: [default, mta-submit]
+    # Mirror production: alias `mta-submit` on the internal network so the portal
+    # submits from a mynetworks source (issue #151). See compose.yaml.
+    networks:
+      default:
+      mta-submit:
+        aliases: [mta-submit]
     depends_on:
       provisioner:
         condition: service_started
@@ -126,7 +131,7 @@ services:
 
   portal:
     environment:
-      SMTP_HOST: mta
+      SMTP_HOST: mta-submit
       SMTP_PORT: "587"
       SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
       DOMAIN: ${MTA_TEST_DOMAIN}

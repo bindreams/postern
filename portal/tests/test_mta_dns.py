@@ -235,9 +235,31 @@ class TestVerify:
         soa_resp.flags = dns.flags.AD
         ans_soa = MagicMock()
         ans_soa.response = soa_resp
-        resolver.resolve.side_effect = lambda name, rdtype, *a, **kw: (
-            ans_soa if rdtype == "SOA" else _fake_resolver(ans).resolve(name, rdtype)
-        )
+
+        original = resolver.resolve.side_effect
+
+        def _resolve(name, rdtype, *a, **kw):
+            if rdtype == "SOA":
+                return ans_soa
+            return original(name, rdtype)
+
+        resolver.resolve.side_effect = _resolve
+
+        with patch.object(mta_dns, "urllib") as mock_urllib:
+            mock_urllib.request.urlopen.return_value.__enter__.return_value.read.return_value = (
+                f"version: STSv1\nmode: enforce\nmx: mail.{DOMAIN}".encode()
+            )
+            mock_urllib.error = type("E", (), {"URLError": Exception, "HTTPError": Exception})
+            failures = mta_dns.verify(
+                DOMAIN,
+                {"postern-2026-04": PUBKEY},
+                admin_email=ADMIN,
+                server_ip="203.0.113.10",
+                require_dnssec=True,
+                resolver=resolver,
+            )
+
+        assert not any("DNSSEC" in f for f in failures)
 
     def test_require_dnssec_fails_when_ad_bit_missing(self):
         ans = _good_answers()
@@ -271,6 +293,61 @@ class TestVerify:
             )
 
         assert any("DNSSEC" in f for f in failures)
+
+
+# _check_dnssec_ad_bit -------------------------------------------------------------------------------------------------
+class TestCheckDnssecAdBit:
+
+    @staticmethod
+    def _resp(ad):
+        m = MagicMock()
+        m.flags = dns.flags.AD if ad else 0
+        return m
+
+    def _resolver_nodata(self, ad):
+        resolver = MagicMock()
+
+        def _resolve(name, rdtype, *a, raise_on_no_answer=True, **kw):
+            if raise_on_no_answer:
+                raise dns.resolver.NoAnswer(response=self._resp(ad))
+            ans = MagicMock()
+            ans.response = self._resp(ad)
+            return ans
+
+        resolver.resolve.side_effect = _resolve
+        return resolver
+
+    def test_signed_nodata_subdomain_passes(self):
+        # The bug: OLD code did resolver.resolve(domain,"SOA").response and the
+        # NoAnswer raised -> "SOA lookup failed" failure -> mta crash-loops.
+        assert mta_dns._check_dnssec_ad_bit(self._resolver_nodata(ad=True), "sub.example.com") == []
+
+    def test_unsigned_nodata_subdomain_fails(self):
+        failures = mta_dns._check_dnssec_ad_bit(self._resolver_nodata(ad=False), "sub.example.com")
+        assert any("AD bit not set" in f for f in failures)
+
+    def test_signed_nxdomain_passes(self):
+        resolver = MagicMock()
+        name = dns.name.from_text("sub.example.com.")
+
+        def _resolve(qname, rdtype, *a, **kw):
+            raise dns.resolver.NXDOMAIN(qnames=[name], responses={name: self._resp(True)})
+
+        resolver.resolve.side_effect = _resolve
+        assert mta_dns._check_dnssec_ad_bit(resolver, "sub.example.com") == []
+
+    def test_apex_answer_signed_passes(self):
+        resolver = MagicMock()
+        ans = MagicMock()
+        ans.response = self._resp(True)
+        resolver.resolve.return_value = ans
+        assert mta_dns._check_dnssec_ad_bit(resolver, "example.com") == []
+
+    def test_transient_servfail_reports_lookup_failure(self):
+        resolver = MagicMock()
+        resolver.resolve.side_effect = dns.resolver.NoNameservers()
+        failures = mta_dns._check_dnssec_ad_bit(resolver, "example.com")
+        assert any("SOA lookup failed" in f for f in failures)
 
 
 # DKIM-field parser ----------------------------------------------------------------------------------------------------

@@ -163,13 +163,15 @@ def _resolve_local(
 
     Unbound may answer SERVFAIL on the very first SOA query if its trust chain
     is still warming. We retry until we either get a definitive AD-set or
-    AD-unset answer, or the deadline elapses.
+    AD-unset answer, or the deadline elapses. Signed NODATA (subdomain) and
+    signed NXDOMAIN are definitive answers, not transient errors -- _soa_response
+    surfaces their AD bit so they short-circuit the retry loop.
     """
     deadline = time.monotonic() + deadline_s
     last_error: dns.exception.DNSException | None = None
     while True:
         try:
-            ans = resolver.resolve(domain, "SOA")
+            response = _soa_response(resolver, domain)
         except dns.exception.DNSException as e:
             last_error = e
             if time.monotonic() >= deadline:
@@ -181,7 +183,7 @@ def _resolve_local(
                 return False
             time.sleep(poll_interval_s)
             continue
-        if ans.response.flags & dns.flags.AD:
+        if response.flags & dns.flags.AD:
             logger.info(
                 "DNSSEC auto-detect: %s is signed (AD bit set on local Unbound). Enforcing.",
                 domain,

@@ -215,6 +215,14 @@ class TestResolveRequiredPassthrough:
 
 class TestResolveRequiredAutoLocal:
 
+    @staticmethod
+    def _freeze_clock(monkeypatch):
+        """No real sleeping; virtual monotonic that jumps past any deadline after
+        the first read (so a retry loop bails immediately instead of sleeping)."""
+        monkeypatch.setattr(dnssec.time, "sleep", lambda _s: None)
+        clock = iter([0.0] + [9999.0] * 256)
+        monkeypatch.setattr(dnssec.time, "monotonic", lambda: next(clock))
+
     def test_returns_true_when_ad_bit_set(self, caplog):
         resolver = MagicMock()
         resolver.resolve.return_value = _resolver_answer(ad=True)
@@ -230,6 +238,28 @@ class TestResolveRequiredAutoLocal:
             result = dnssec.resolve_required("auto", "example.com", resolver=resolver)
         assert result is False
         assert any("is unsigned" in r.message and "Not enforcing" in r.message for r in caplog.records)
+
+    def test_signed_nodata_subdomain_enforces(self, monkeypatch, caplog):
+        # Subdomain SOA is NODATA; the OLD code retried to the deadline and
+        # returned False (fail open). The fix reads AD off the response -> True.
+        self._freeze_clock(monkeypatch)
+        resolver = _soa_resolver(ad=True, nodata=True)
+        with caplog.at_level(logging.INFO, logger=dnssec.logger.name):
+            result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is True
+        assert any("is signed" in r.message and "Enforcing" in r.message for r in caplog.records)
+
+    def test_signed_nxdomain_enforces(self, monkeypatch):
+        self._freeze_clock(monkeypatch)
+        resolver = _nxdomain_resolver(ad=True)
+        result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is True
+
+    def test_unsigned_nodata_subdomain_does_not_enforce(self, monkeypatch):
+        self._freeze_clock(monkeypatch)
+        resolver = _soa_resolver(ad=False, nodata=True)
+        result = dnssec.resolve_required("auto", "sub.example.com", resolver=resolver, deadline_s=5.0)
+        assert result is False
 
     def test_retries_on_transient_dns_exception_then_succeeds(self, monkeypatch):
         resolver = MagicMock()

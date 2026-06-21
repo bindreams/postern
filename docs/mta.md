@@ -10,7 +10,7 @@ If you'd rather not run your own MTA: comment `COMPOSE_PROFILES=with-mta` in `.e
 
 The MTA is split across two containers, deliberately:
 
-- **`mta`** — Postfix on public port 25 (in/out), submission on internal-only port 587. Runs opendkim (signs outbound), Unbound (DNSSEC validation that DANE outbound requires), postsrsd (SRS rewriting for forwarded reports), and postfix-mta-sts-resolver (consumes recipient MTA-STS policies). Holds the DKIM signing key.
+- **`mta`** — Postfix on public port 25 (in/out), submission on internal-only port 587 (reached by the portal via the `mta-submit` network-scoped alias; see the `mta-submit` network note below). Runs opendkim (signs outbound), Unbound (DNSSEC validation that DANE outbound requires), postsrsd (SRS rewriting for forwarded reports), and postfix-mta-sts-resolver (consumes recipient MTA-STS policies). Holds the DKIM signing key.
 - **`provisioner`** — Generates DKIM keys, advances the rotation state machine, talks to your DNS provider's API to publish/retire TXT records. Holds the DNS provider API token. Has zero inbound listeners.
 
 The split is the threat-model story: a Postfix RCE on public port 25 cannot escalate to DNS-record hijack because the credentials live in a different container.
@@ -196,7 +196,7 @@ After a few days of running you should see DMARC aggregate reports landing in yo
 Why these specific choices:
 
 - **mta and provisioner split.** Postfix has had RCEs historically. Keeping the DNS provider API token out of the container exposed on port 25 means a hypothetical RCE leaks the DKIM signing key (an operator can rotate to recover) but cannot redirect MX records or hijack ACME issuance.
-- **`mta-submit` internal /29 network.** Postfix `mynetworks` is scoped to this subnet, not the shared `default` bridge. Only the portal joins it. Other containers on `default` (nginx, docker-proxy) cannot relay through mta even if compromised.
+- **`mta-submit` internal /29 network.** Postfix `mynetworks` is scoped to this subnet, not the shared `default` bridge. Only the portal joins it. Other containers on `default` (nginx, docker-proxy) cannot relay through mta even if compromised. The portal reaches submission through the `mta-submit` network alias (`SMTP_HOST=mta-submit`), not the bare `mta` name: `mta` is multi-homed and resolves to its default-network IP, which is outside `mynetworks` and is rejected (issue #151).
 - **DANE outbound + DNSSEC.** DANE TLSA records published by recipient MTAs are only meaningful if your sender validates DNSSEC. The mta runs Unbound on 127.0.0.1 with auto-trust-anchor for exactly this reason.
 - **MTA-STS enforce mode.** Recipient MTA-STS policies are honored via postfix-mta-sts-resolver. Outbound TLS is then either DANE-validated, MTA-STS-enforced, or opportunistic — strictest available.
 - **`milter_default_action = tempfail`.** If opendkim is down, mail queues. Sending unsigned mail from an MTA whose entire purpose is auth-aligned outbound would defeat DMARC `p=reject`.

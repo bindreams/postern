@@ -92,9 +92,11 @@ class TestSoaResponse:
             dnssec._soa_response(resolver, "sub.example.com")
 
     def test_nxdomain_reads_ad_off_the_queried_name(self):
-        # Defensive: if a resolver captured multiple denials (search expansion),
-        # read AD off the entry for the queried name, not an arbitrary one. The
-        # WRONG (AD-unset) entry is inserted first so `next(iter(...))` would fail.
+        # Defensive contract: _soa_response reads AD off the entry for the queried
+        # name even if a resolver captured multiple denials. (Production prevents
+        # this upstream via an absolute name + search=False, but the helper takes
+        # an arbitrary resolver.) The WRONG (AD-unset) entry is inserted first so
+        # a bare next(iter(...)) would read it instead of responses.get(name).
         queried = dns.name.from_text("sub.example.com")
         other = dns.name.from_text("sub.example.com.search.example.")
         responses = {other: _ad_response(False), queried: _ad_response(True)}

@@ -144,8 +144,11 @@ def _soa_response(resolver: dns.resolver.Resolver, domain: str) -> dns.message.M
         return resolver.resolve(name, "SOA", raise_on_no_answer=False, search=False).response
     except dns.resolver.NXDOMAIN as e:
         # A signed NXDOMAIN denial is AD-set too; the validated response lives on
-        # the exception, keyed by the queried name (str keys are not coerced, so
-        # look up the dns.name.Name). next(iter(...)) is a defensive fallback.
+        # the exception. With an absolute name + search=False dnspython tries a
+        # single qname, so the denial is keyed by exactly `name` and
+        # responses.get(name) is the total path here. next(iter(...)) only
+        # backstops dnspython keying drift across versions, and stays correct
+        # because every captured denial is for the same name's zone.
         responses = e.responses()
         if not responses:
             raise

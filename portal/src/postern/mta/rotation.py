@@ -8,10 +8,10 @@ shared `postern-mta-data` volume — same pattern as the reconciler's
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import logging
 import os
+import re
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -135,7 +135,22 @@ def trigger_opendkim_reload(keydir: Path | None = None) -> Path:
 
 
 # Selector naming ======================================================================================================
-def make_selector(prefix: str, *, now: dt.datetime | None = None) -> str:
-    """Date-suffixed selector name: ``{prefix}-YYYY-MM``."""
-    when = now if now is not None else dt.datetime.now(dt.timezone.utc)
-    return f"{prefix}-{when.year:04d}-{when.month:02d}"
+def next_selector(base: str, active_selectors: list[str]) -> str:
+    """Toggle selector name: the partner of the currently-active selector.
+
+    ``{base}1`` / ``{base}2`` alternate. A fresh install (empty active set) or any
+    active set holding neither name yields ``{base}1``. Dateless and common-looking, so a DKIM
+    TXT lookup at ``{base}1._domainkey.<domain>`` hits Postern and a large crowd of
+    unrelated senders alike -- unlike the old ``{prefix}-YYYY-MM`` scheme, whose
+    exact dated string fingerprinted Postern.
+    """
+    if not re.fullmatch(r"[a-z]+", base):
+        raise ValueError(
+            f"DKIM selector base must be a bare lowercase-alpha label (got {base!r}); "
+            "it becomes the stem of '<base>1'/'<base>2', so a trailing digit or empty "
+            "value yields malformed selector names."
+        )
+    s1, s2 = f"{base}1", f"{base}2"
+    assert not (s1 in active_selectors and s2 in active_selectors), \
+        "both toggle selectors active; STABLE must hold at most one"
+    return s2 if s1 in active_selectors else s1

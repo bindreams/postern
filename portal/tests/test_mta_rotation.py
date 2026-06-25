@@ -1,6 +1,5 @@
 """Tests for postern.mta.rotation -- state schema, persistence, triggers."""
 
-import datetime as dt
 import json
 from pathlib import Path
 
@@ -82,16 +81,31 @@ def test_trigger_opendkim_reload_creates_file(tmp_path: Path):
 
 
 # Selector naming ======================================================================================================
-def test_make_selector_uses_year_month():
-    when = dt.datetime(2026, 4, 27, tzinfo=dt.timezone.utc)
-    assert rotation.make_selector("postern", now=when) == "postern-2026-04"
+def test_next_selector_fresh_install_yields_s1():
+    assert rotation.next_selector("s", []) == "s1"
 
 
-def test_make_selector_pads_month_to_two_digits():
-    when = dt.datetime(2026, 1, 5, tzinfo=dt.timezone.utc)
-    assert rotation.make_selector("postern", now=when) == "postern-2026-01"
+def test_next_selector_toggles_s1_to_s2():
+    assert rotation.next_selector("s", ["s1"]) == "s2"
 
 
-def test_make_selector_respects_custom_prefix():
-    when = dt.datetime(2026, 4, 27, tzinfo=dt.timezone.utc)
-    assert rotation.make_selector("custom", now=when) == "custom-2026-04"
+def test_next_selector_toggles_s2_to_s1():
+    assert rotation.next_selector("s", ["s2"]) == "s1"
+
+
+def test_next_selector_respects_custom_base():
+    assert rotation.next_selector("selector", []) == "selector1"
+    assert rotation.next_selector("selector", ["selector1"]) == "selector2"
+
+
+def test_next_selector_rejects_non_alpha_base():
+    with pytest.raises(ValueError):
+        rotation.next_selector("s1", [])  # trailing digit -> would yield "s11"
+    with pytest.raises(ValueError):
+        rotation.next_selector("", [])  # empty -> would yield bare "1"
+
+
+def test_next_selector_asserts_when_both_active():
+    # Degenerate: STABLE should never hold both toggle names. Debug assert catches it.
+    with pytest.raises(AssertionError):
+        rotation.next_selector("s", ["s1", "s2"])

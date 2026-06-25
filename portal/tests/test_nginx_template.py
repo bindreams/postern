@@ -86,7 +86,7 @@ def test_tunnel_misses_reroute_to_at_miss_in_both_nginx_configs():
     sync."""
     for path in ((NGINX_ETC / "nginx.conf.tmpl"), E2E_NGINX_CONF):
         body = path.read_text()
-        assert "error_page 418 502 503 504 = @miss;" in body, f"V7 error_page reroute missing in {path}"
+        assert "error_page 418 502 503 504 = @miss;" in body, f"error_page reroute missing in {path}"
         assert "location @miss {" in body, f"@miss named location missing in {path}"
         assert "return 418;" in body, f"non-WS 418 sentinel missing in {path}"
 

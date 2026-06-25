@@ -81,6 +81,17 @@ def test_trigger_opendkim_reload_creates_file(tmp_path: Path):
 
 
 # Selector naming ======================================================================================================
+@pytest.mark.parametrize("base", ["s", "postern", "mail"])
+def test_validate_selector_base_accepts_lowercase_alpha(base: str):
+    assert rotation.validate_selector_base(base) == base
+
+
+@pytest.mark.parametrize("base", ["s1", "", "a-b", "S"])
+def test_validate_selector_base_rejects_non_alpha(base: str):
+    with pytest.raises(ValueError):
+        rotation.validate_selector_base(base)
+
+
 def test_next_selector_fresh_install_yields_s1():
     assert rotation.next_selector("s", []) == "s1"
 

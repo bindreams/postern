@@ -94,6 +94,12 @@ class Settings(BaseSettings):
         from postern.mta.dnssec import parse_setting
         return parse_setting(v)
 
+    @field_validator("mta_dkim_selector_prefix")
+    @classmethod
+    def _validate_dkim_selector_base(cls, v: str) -> str:
+        from postern.mta.rotation import validate_selector_base
+        return validate_selector_base(v)
+
     @model_validator(mode="after")
     def _check_cert_settings(self) -> Self:
         if self.cert_renewal:

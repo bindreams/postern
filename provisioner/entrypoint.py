@@ -499,6 +499,10 @@ def run_combined_loop(
 def main() -> NoReturn:
     domain = _require("DOMAIN")
     selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "s")
+    try:
+        rotation.validate_selector_base(selector_prefix)
+    except ValueError as e:
+        die(str(e))
     dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
     cert_renewal = _bool_env("CERT_RENEWAL", False)
 

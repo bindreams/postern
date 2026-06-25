@@ -81,3 +81,16 @@ class TestSecretKeyPlaceholder:
         monkeypatch.setenv("SECRET_KEY", "REPLACE_WITH_HEX_STRING")
         with pytest.raises(ValidationError, match="placeholder"):
             Settings()
+
+
+# mta_dkim_selector_prefix =============================================================================================
+class TestDkimSelectorPrefix:
+
+    def test_accepts_lowercase_alpha(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("MTA_DKIM_SELECTOR_PREFIX", raising=False)
+        assert Settings(**_kw(mta_dkim_selector_prefix="s")).mta_dkim_selector_prefix == "s"
+
+    def test_rejects_non_alpha(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("MTA_DKIM_SELECTOR_PREFIX", raising=False)
+        with pytest.raises(ValidationError):
+            Settings(**_kw(mta_dkim_selector_prefix="bad-1"))

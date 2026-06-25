@@ -112,14 +112,14 @@ mta-sts.<your-domain>.                          IN A      <your-nginx-ip>
 _dmarc.<your-domain>.                           IN TXT    "v=DMARC1; p=reject; adkim=s; aspf=s; rua=mailto:<MTA_ADMIN_EMAIL>; ruf=mailto:<MTA_ADMIN_EMAIL>"
 _mta-sts.<your-domain>.                         IN TXT    "v=STSv1; id=<unix-ts>"
 _smtp._tls.<your-domain>.                       IN TXT    "v=TLSRPTv1; rua=mailto:<MTA_ADMIN_EMAIL>"
-postern-<YYYY-MM>._domainkey.<your-domain>.     IN TXT    "v=DKIM1; k=rsa; p=<base64-pubkey>"
+s1._domainkey.<your-domain>.                    IN TXT    "v=DKIM1; k=rsa; p=<base64-pubkey>"
 ```
 
 Note on DMARC reports: when `rua=`/`ruf=` point at a mailbox **outside** the policy's domain (i.e., your `MTA_ADMIN_EMAIL` is on a different domain), RFC 7489 §7.1 requires the receiving domain to publish an opt-in TXT record at `<your-domain>._report._dmarc.<receiver-domain>`. Most mainstream providers (Gmail, Outlook) work without it; if you don't see DMARC aggregate reports after a week, this is why.
 
 ## DKIM rotation
 
-DKIM keys rotate every `MTA_DKIM_ROTATION_DAYS` (default 180 days). Selectors are date-suffixed: `postern-2026-04`, `postern-2026-10`, etc.
+DKIM keys rotate every `MTA_DKIM_ROTATION_DAYS` (default 180 days). Selectors toggle between `s1` and `s2` across rotations (configurable base via `MTA_DKIM_SELECTOR_PREFIX`).
 
 ### Manual rotation (when `DNS_PROVIDER=none`)
 

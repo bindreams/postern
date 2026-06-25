@@ -7,6 +7,7 @@ breaks routing.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -72,3 +73,38 @@ def test_mta_sts_server_name_uses_domain_placeholder():
 def test_mta_sts_policy_mx_uses_domain_placeholder():
     body = (NGINX_ETC / "conf.d" / "mta-sts" / "policy.txt.tmpl").read_text()
     assert "mx: mail.${DOMAIN}" in body
+
+
+# /t/ response uniformity ==============================================================================================
+E2E_NGINX_CONF = REPO_ROOT / "portal" / "tests" / "e2e" / "nginx.conf"
+
+
+def test_tunnel_misses_reroute_to_at_miss_in_both_nginx_configs():
+    """Every non-live-token /t/ request must fall through to @miss so the tunnel
+    route is indistinguishable from a generic 404. Must hold in both the production
+    template and the static e2e config (bind-mounted, not rendered), which stay in
+    sync."""
+    for path in ((NGINX_ETC / "nginx.conf.tmpl"), E2E_NGINX_CONF):
+        body = path.read_text()
+        assert "error_page 418 502 503 504 = @miss;" in body, f"error_page reroute missing in {path}"
+        assert "location @miss {" in body, f"@miss named location missing in {path}"
+        assert "return 418;" in body, f"non-WS 418 sentinel missing in {path}"
+
+
+def _location_block_body(config_text: str, location_re: str) -> list[str]:
+    """Non-comment directive lines inside a flat `location <X> { ... }` block
+    (no nested braces, which holds for `@miss` and `location /`)."""
+    m = re.search(location_re + r"\s*\{([^}]*)\}", config_text)
+    assert m, f"location block {location_re!r} not found"
+    return [ln.strip() for ln in m.group(1).splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+
+def test_at_miss_body_identical_to_location_root_in_both_configs():
+    """The /t/ obfuscation requires @miss to produce a byte-identical response to
+    `location /`; pin that they carry the same proxy_pass + proxy_set_header set in
+    both the production template and the static e2e config, so divergence fails at
+    unit time, not only in the e2e stack."""
+    for path in ((NGINX_ETC / "nginx.conf.tmpl"), E2E_NGINX_CONF):
+        body = path.read_text()
+        assert _location_block_body(body, r"location @miss") == _location_block_body(body, r"location /"), \
+            f"@miss and location / diverged in {path}; a /t/ miss is no longer indistinguishable"

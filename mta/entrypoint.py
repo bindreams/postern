@@ -280,7 +280,7 @@ def main() -> NoReturn:
         die(str(e))
     admin_email = os.environ.get("MTA_ADMIN_EMAIL", "").strip()
     bounce_local_part = (parseaddr(os.environ.get("SMTP_FROM", ""))[1] or "noreply@x").rsplit("@", 1)[0] or "noreply"
-    dkim_selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")
+    dkim_selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "s")
     mta_submit_cidr = os.environ.get("MTA_SUBMIT_CIDR", "172.30.42.0/29")
     e2e_transport_override = os.environ.get("MTA_E2E_TRANSPORT_OVERRIDE", "").strip()
 

@@ -281,6 +281,38 @@ sys.stdout.write(data[off:].decode())
     assert result.stdout == "postern-udp-probe", (f"UDP echo did not round-trip cleanly: got {result.stdout!r}")
 
 
+# /t/ response uniformity ==============================================================================================
+# These assert BODY-uniformity (status + headers + body) of a /t/ miss vs a generic
+# miss. Timing is not equalized: a dead-token WS upgrade still incurs one extra
+# resolver round-trip -- an accepted residual.
+def _body_fingerprint(r):
+    # Comparable response fields, minus the per-response Date.
+    return (r.status_code, r.headers.get("content-type"), r.headers.get("content-length"), r.text)
+
+
+def test_tunnel_dead_token_ws_upgrade_is_indistinguishable_from_generic_miss(portal_client):
+    dead = "a" * 24  # valid /t/ shape, no live container
+    ws_headers = {"Upgrade": "websocket", "Connection": "Upgrade"}
+
+    ws_miss = portal_client.get(f"/t/{dead}", headers=ws_headers)
+    # Control: prove the Upgrade header reached nginx, so this exercises the
+    # proxy_pass -> 502 -> @miss branch, not the non-WS 418 branch.
+    assert ws_miss.request.headers.get("upgrade") == "websocket"
+
+    generic_miss = portal_client.get("/this-path-does-not-exist")
+    assert ws_miss.status_code == 404
+    assert _body_fingerprint(ws_miss) == _body_fingerprint(generic_miss)
+
+
+def test_tunnel_non_ws_request_is_indistinguishable_from_generic_miss(portal_client):
+    dead = "b" * 24
+    non_ws = portal_client.get(f"/t/{dead}")
+    generic_miss = portal_client.get("/this-path-does-not-exist")
+
+    assert non_ws.status_code == 404
+    assert _body_fingerprint(non_ws) == _body_fingerprint(generic_miss)
+
+
 # Auth-flow assertions =================================================================================================
 def test_invalid_otp_rejected(portal_client, mailpit_client, fresh_user):
     email = "wrongotp@postern.test"

@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     # Branding =========================================================================================================
     # Cosmetic display name shown in UI page titles, the OTP-email subject, and the
     # downloaded-config filename prefix. Decoupled from `domain` and from
-    # `mta_dkim_selector_prefix` (which is part of the public DKIM record namespace
-    # and stays "postern" by default).
+    # `mta_dkim_selector_prefix` (the base for `<base>1`/`<base>2` rotating DKIM
+    # selectors, defaulting to the common, non-identifying "s").
     product_name: str = "Postern"
 
     # Frontend =========================================================================================================
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # MTA ==============================================================================================================
     mta_verify_dns: bool = True
     mta_require_dnssec: bool | Literal["auto"] = "auto"
-    mta_dkim_selector_prefix: str = "postern"
+    mta_dkim_selector_prefix: str = "s"
     mta_admin_email: str = ""
     mta_dkim_rotation_days: int = 180
 
@@ -93,6 +93,12 @@ class Settings(BaseSettings):
         # Imported lazily to keep module-load cheap and avoid any chance of a cycle.
         from postern.mta.dnssec import parse_setting
         return parse_setting(v)
+
+    @field_validator("mta_dkim_selector_prefix")
+    @classmethod
+    def _validate_dkim_selector_base(cls, v: str) -> str:
+        from postern.mta.rotation import validate_selector_base
+        return validate_selector_base(v)
 
     @model_validator(mode="after")
     def _check_cert_settings(self) -> Self:

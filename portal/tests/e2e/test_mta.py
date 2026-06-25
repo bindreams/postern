@@ -24,7 +24,7 @@ from ._mta_helpers import (
     read_dkim_volume_file,
 )
 
-SELECTOR_RE = re.compile(r"^postern-\d{4}-\d{2}$")
+SELECTOR_RE = re.compile(r"^s[12]$")
 
 
 # Fixtures =============================================================================================================
@@ -38,7 +38,7 @@ def active_selector(mta_e2e_stack) -> str:
     selectors = state.get("active_selectors", [])
     assert len(selectors) == 1, f"expected exactly 1 active selector, got {selectors!r}"
     selector = selectors[0]
-    assert SELECTOR_RE.match(selector), f"selector {selector!r} does not match postern-YYYY-MM"
+    assert SELECTOR_RE.match(selector), f"selector {selector!r} does not match s1/s2"
     return selector
 
 
@@ -129,13 +129,13 @@ def test_dkim_signature_verifies(
 
 def test_provisioner_generates_initial_state_json(mta_e2e_stack):
     """The provisioner writes state.json with state=STABLE and a single
-    date-suffixed selector before the mta is allowed to start (mta's
+    toggling selector (s1) before the mta is allowed to start (mta's
     ``depends_on: provisioner: service_completed_successfully`` enforces order)."""
     state = get_provisioner_state()
     assert state.get("state") == "STABLE", f"expected state=STABLE, got {state.get('state')!r}"
     selectors = state.get("active_selectors", [])
     assert len(selectors) == 1, f"expected 1 active selector, got {selectors!r}"
-    assert SELECTOR_RE.match(selectors[0]), f"selector {selectors[0]!r} not in postern-YYYY-MM form"
+    assert SELECTOR_RE.match(selectors[0]), f"selector {selectors[0]!r} not in s1/s2 form"
     assert state.get("retiring_selector"
                      ) in (None,
                            ""), (f"unexpected retiring_selector at session start: {state.get('retiring_selector')!r}")
@@ -236,7 +236,7 @@ def test_opendkim_table_signs_with_latest_selector(mta_e2e_stack, active_selecto
     keytable = mta_exec("cat", "/etc/opendkim/KeyTable").stdout
     signingtable = mta_exec("cat", "/etc/opendkim/SigningTable").stdout
 
-    # SigningTable: `*@postern.test postern-YYYY-MM._domainkey.postern.test`
+    # SigningTable: `*@postern.test s1._domainkey.postern.test`
     expected_signing = f"*@postern.test {active_selector}._domainkey.postern.test"
     assert expected_signing in signingtable, (
         f"SigningTable does not contain {expected_signing!r}; got:\n{signingtable!r}"

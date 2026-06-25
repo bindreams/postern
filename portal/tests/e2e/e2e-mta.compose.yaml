@@ -107,7 +107,7 @@ services:
     environment:
       DOMAIN: postern.test
       DNS_PROVIDER: "none"
-      MTA_DKIM_SELECTOR_PREFIX: postern
+      MTA_DKIM_SELECTOR_PREFIX: s
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

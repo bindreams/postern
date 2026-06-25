@@ -10,7 +10,7 @@ trigger files on the shared `postern-mta-data` volume:
 Responsibilities:
 
 1. On startup, ensure a DKIM keypair exists. If state.json is absent, generate
-   the first selector (`<prefix>-<YYYY-MM>`) and write a STABLE state. This runs
+   the first selector (`s1`) and write a STABLE state. This runs
    regardless of DNS_PROVIDER -- the mta needs a key to sign with even on
    manual-rotation deployments.
 
@@ -104,7 +104,7 @@ def ensure_initial_key(domain: str, selector_prefix: str) -> rotation.RotationSt
     if state.state != "NO_KEYS":
         return state
 
-    selector = rotation.make_selector(selector_prefix)
+    selector = rotation.next_selector(selector_prefix, state.active_selectors)
     generate_keypair(domain, selector)
     now = dt.datetime.now(dt.timezone.utc)
     rotation_days = int(os.environ.get("MTA_DKIM_ROTATION_DAYS", "180"))
@@ -163,10 +163,7 @@ def advance_state(state: rotation.RotationState, domain: str, selector_prefix: s
     if state.state == "STABLE":
         if not time_to_rotate(state) and not _has_explicit_trigger():
             return state
-        new_selector = rotation.make_selector(selector_prefix)
-        if new_selector in state.active_selectors:
-            # Same month; treat as already-rotated.
-            return state
+        new_selector = rotation.next_selector(selector_prefix, state.active_selectors)
         generate_keypair(domain, new_selector)
         pubkey = mta_dkim.read_local_pubkey(new_selector, keydir=KEYDIR)
         fqdn = f"{new_selector}._domainkey.{domain}"
@@ -501,7 +498,7 @@ def run_combined_loop(
 
 def main() -> NoReturn:
     domain = _require("DOMAIN")
-    selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "postern")
+    selector_prefix = os.environ.get("MTA_DKIM_SELECTOR_PREFIX", "s")
     dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
     cert_renewal = _bool_env("CERT_RENEWAL", False)
 

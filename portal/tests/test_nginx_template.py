@@ -72,3 +72,20 @@ def test_mta_sts_server_name_uses_domain_placeholder():
 def test_mta_sts_policy_mx_uses_domain_placeholder():
     body = (NGINX_ETC / "conf.d" / "mta-sts" / "policy.txt.tmpl").read_text()
     assert "mx: mail.${DOMAIN}" in body
+
+
+# V7: /t/ response uniformity ==========================================================================================
+E2E_NGINX_CONF = REPO_ROOT / "portal" / "tests" / "e2e" / "nginx.conf"
+
+
+def test_tunnel_misses_reroute_to_at_miss_in_both_nginx_configs():
+    """V7: every non-live-token /t/ request must fall through to @miss -- the same
+    portal backend that serves unknown paths -- so the tunnel route is
+    indistinguishable from a generic 404. This MUST hold in BOTH the production
+    template and the static e2e config (the e2e stack bind-mounts the latter and
+    does not render the template); they must stay in sync."""
+    for path in ((NGINX_ETC / "nginx.conf.tmpl"), E2E_NGINX_CONF):
+        body = path.read_text()
+        assert "error_page 418 502 503 504 = @miss;" in body, f"V7 error_page reroute missing in {path}"
+        assert "location @miss {" in body, f"@miss named location missing in {path}"
+        assert "return 418;" in body, f"non-WS 418 sentinel missing in {path}"

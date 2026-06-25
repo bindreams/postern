@@ -97,7 +97,7 @@ Environment variables are loaded from `.env` (copied from `.env.example`) into t
 | `MTA_VERIFY_DNS`              | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                                                                |
 | `MTA_REQUIRE_DNSSEC`          | `auto`                     | Tri-state. `auto` (default) probes DNSSEC at startup and enforces if signed. `true` always enforces (fail-closed). `false` skips.                                         |
 | `MTA_ADMIN_EMAIL`             | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.                                                           |
-| `MTA_DKIM_SELECTOR_PREFIX`    | `postern`                  | DKIM selectors take the form `<prefix>-<YYYY-MM>` (date-suffixed for rotation).                                                                                           |
+| `MTA_DKIM_SELECTOR_PREFIX`    | `s`                        | Base of the DKIM selector; selectors toggle `<base>1`/`<base>2` across rotations (default `s` -> `s1`/`s2`).                                                              |
 | `MTA_DKIM_ROTATION_DAYS`      | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                                                                              |
 | `DNS_PROVIDER`                | `none`                     | libdns provider name for DKIM auto-rotation and (optional) TLS cert renewal (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).                   |
 

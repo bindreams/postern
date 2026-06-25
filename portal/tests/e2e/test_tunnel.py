@@ -281,9 +281,12 @@ sys.stdout.write(data[off:].decode())
     assert result.stdout == "postern-udp-probe", (f"UDP echo did not round-trip cleanly: got {result.stdout!r}")
 
 
-# /t/ response uniformity (V7) =========================================================================================
+# /t/ response uniformity ==============================================================================================
+# These assert BODY-uniformity (status + headers + body) of a /t/ miss vs a generic
+# miss. Timing is not equalized: a dead-token WS upgrade still incurs one extra
+# resolver round-trip -- an accepted residual.
 def _body_fingerprint(r):
-    # Everything a prober can compare, minus the per-response Date.
+    # Comparable response fields, minus the per-response Date.
     return (r.status_code, r.headers.get("content-type"), r.headers.get("content-length"), r.text)
 
 
@@ -292,8 +295,7 @@ def test_tunnel_dead_token_ws_upgrade_is_indistinguishable_from_generic_miss(por
     ws_headers = {"Upgrade": "websocket", "Connection": "Upgrade"}
 
     ws_miss = portal_client.get(f"/t/{dead}", headers=ws_headers)
-    # Control: prove the Upgrade header was actually sent (no intermediary between
-    # httpx and nginx over the direct TLS socket), so this genuinely exercises the
+    # Control: prove the Upgrade header reached nginx, so this exercises the
     # proxy_pass -> 502 -> @miss branch, not the non-WS 418 branch.
     assert ws_miss.request.headers.get("upgrade") == "websocket"
 

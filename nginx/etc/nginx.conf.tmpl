@@ -43,11 +43,10 @@ http {
 
 		# VPN tunnel endpoints (path-based, WebSocket only, no logs) -----
 		location ~ "^/t/([a-f0-9]{24})$" {
-			# Anything that is not a live-token WebSocket upgrade must look like any
-			# other unknown path. Non-WS (418 sentinel) and dead/unresolvable upstreams
-			# (502/503/504) both fall through to @miss -- the portal backend that serves
-			# unknown paths -- so a prober who knows /t/{24-hex} from our source cannot
-			# tell this route from a generic 404. Only a live 96-bit token yields 101.
+			# Non-WS (418) and dead/unresolvable upstreams (502/503/504) all fall through
+			# to @miss, so a /t/ miss is body-identical to a generic 404. (A dead-token WS
+			# upgrade still costs one extra resolver round-trip -- a timing-only residual
+			# we accept.) Only a live token yields a 101 upgrade.
 			error_page 418 502 503 504 = @miss;
 
 			if ($http_upgrade != "websocket") {
@@ -103,8 +102,7 @@ http {
 			proxy_set_header X-Forwarded-Proto $scheme;
 		}
 
-		# Unknown-path / dead-tunnel fallthrough: identical to `location /` so a /t/
-		# miss is indistinguishable from any other miss. -----
+		# Unknown-path / dead-tunnel fallthrough so a /t/ miss looks like any other miss. -----
 		location @miss {
 			proxy_pass http://portal:8000;
 			proxy_set_header Host $host;

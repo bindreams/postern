@@ -119,6 +119,20 @@ def test_edge_real_event_triggers_reload(tmp_path):
     assert "no range files" in r.stderr  # empty at arm time => reload was NOT an initial reconcile
 
 
+# entrypoint wiring =====
+def test_entrypoint_sources_and_gates_edge_watcher():
+    ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
+    assert ". /usr/local/bin/edge.sh" in ep
+    assert "edge_start_watcher || exit 1" in ep
+    # watcher armed before the exec so its inotifyd child (like the 6h loop) survives it
+    assert ep.index("edge_start_watcher || exit 1") < ep.index("exec nginx")
+
+
+def test_dockerfile_ships_edge_sh():
+    df = (_REPO_ROOT / "nginx" / "Dockerfile").read_text()
+    assert "COPY --chmod=755 edge.sh /usr/local/bin/edge.sh" in df
+
+
 def test_edge_reload_failure_references_6h_backstop(tmp_path):
     bindir = tmp_path / "bin"; bindir.mkdir()
     nginx_log = tmp_path / "nginx.log"

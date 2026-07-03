@@ -25,6 +25,7 @@ COPY etc/ /etc/nginx/templates/
 # ssl_client_certificate. SHA256-pinned in portal/tests/test_nginx_edge.py.
 COPY --chmod=644 etc/cloudflare-origin-pull-ca.pem /etc/nginx/cloudflare-origin-pull-ca.pem
 COPY --chmod=755 render.sh /usr/local/bin/render.sh
+COPY --chmod=755 edge.sh /usr/local/bin/edge.sh
 COPY --chmod=755 nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/nginx-entrypoint.sh"]

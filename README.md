@@ -49,7 +49,7 @@ git clone <this repo>
 cd hole-server
 
 # 2. Create your environment file
-cp .env.example .env
+cp example.env .env
 
 # 3. Generate a SECRET_KEY and paste it into .env
 python -c "import secrets; print(secrets.token_hex(32))"
@@ -70,7 +70,7 @@ The portal is served from `https://<your-domain>/`. First login requires that yo
 
 ## Configuration
 
-Environment variables are loaded from `.env` (copied from `.env.example`) into the `portal` container only. All settings are read by [portal/src/postern/settings.py](portal/src/postern/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
+Environment variables are loaded from `.env` (copied from `example.env`) into the `portal` container only. All settings are read by [portal/src/postern/settings.py](portal/src/postern/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
 
 | Variable                      | Default                    | Purpose                                                                                                                                                                   |
 | ----------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

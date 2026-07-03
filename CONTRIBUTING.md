@@ -177,7 +177,7 @@ The admin CLI works regardless: `docker compose exec portal postern user list`.
 
 ### Built-in MTA
 
-The `mta` and `provisioner` services are gated by the `with-mta` Compose profile and turned on by default via `COMPOSE_PROFILES=with-mta` in `.env.example`. For local development you have two options:
+The `mta` and `provisioner` services are gated by the `with-mta` Compose profile and turned on by default via `COMPOSE_PROFILES=with-mta` in `example.env`. For local development you have two options:
 
 - **Comment out `COMPOSE_PROFILES=with-mta`** in `.env` and use a fake SMTP for OTP testing. The simplest pattern matches the e2e suite: bring up [mailpit](https://github.com/axllent/mailpit) on the side, set `SMTP_HOST=mailpit`, read OTPs from its HTTP UI at `:8025`. No DNS / cert setup needed.
 

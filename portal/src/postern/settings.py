@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     def _reject_placeholder(cls, v: str) -> str:
         if v == "REPLACE_WITH_HEX_STRING":
             raise ValueError(
-                "SECRET_KEY is still the .env.example placeholder; "
+                "SECRET_KEY is still the example.env placeholder; "
                 "generate one with: python -c \"import secrets; print(secrets.token_hex(32))\""
             )
         return v

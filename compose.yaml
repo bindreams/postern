@@ -110,7 +110,7 @@ services:
       # (issue #151), which is outside Postfix mynetworks (172.30.42.0/29) ->
       # submission rejected. This alias makes SMTP_HOST=mta-submit resolve to the
       # internal IP so the portal's source is in mynetworks. Keep in sync with
-      # SMTP_HOST in .env.example.
+      # SMTP_HOST in example.env.
       mta-submit:
         aliases: [mta-submit]
     healthcheck:

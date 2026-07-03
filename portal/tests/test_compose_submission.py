@@ -55,10 +55,10 @@ def test_production_mta_carries_mta_submit_alias():
     )
 
 
-def test_env_example_smtp_host_is_mta_submit_alias():
-    value = _env_value(".env.example", "SMTP_HOST")
+def test_example_env_smtp_host_is_mta_submit_alias():
+    value = _env_value("example.env", "SMTP_HOST")
     assert value == SUBMIT_ALIAS, (
-        f".env.example SMTP_HOST must be {SUBMIT_ALIAS!r} (issue #151), got {value!r}: "
+        f"example.env SMTP_HOST must be {SUBMIT_ALIAS!r} (issue #151), got {value!r}: "
         "the bare 'mta' name resolves to the default network and fails mynetworks."
     )
 

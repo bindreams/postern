@@ -1,0 +1,135 @@
+"""Tests for the edge (CDN / reverse-proxy) settings validator."""
+
+import pytest
+from pydantic import ValidationError
+
+from postern.settings import Settings
+
+
+def _settings(**overrides) -> Settings:
+    return Settings(
+        secret_key="x" * 64,
+        domain="postern.test",
+        **overrides,
+    )
+
+
+# Defaults =============================================================================================================
+def test_edge_defaults_are_none_profile():
+    s = _settings()
+    assert s.edge_profile == "none"
+    assert s.edge_trusted_cidrs == ""
+    assert s.edge_realip_header == ""
+    assert s.edge_cf_authenticated_origin_pull is True
+
+
+def test_edge_profile_none_ignores_edge_fields():
+    # "none" imposes no requirements even with the edge knobs left unset.
+    s = _settings(edge_profile="none")
+    assert s.edge_profile == "none"
+
+
+# cloudflare profile ==================================================================================================
+def test_cloudflare_requires_dns_provider_cloudflare():
+    with pytest.raises(ValidationError, match="DNS_PROVIDER=cloudflare"):
+        _settings(edge_profile="cloudflare", dns_provider="none", public_ipv4="1.2.3.4")
+
+
+def test_cloudflare_requires_public_ipv4():
+    with pytest.raises(ValidationError, match="PUBLIC_IPV4"):
+        _settings(edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="")
+
+
+def test_cloudflare_rejects_whitespace_public_ipv4():
+    with pytest.raises(ValidationError, match="PUBLIC_IPV4"):
+        _settings(edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="   ")
+
+
+def test_cloudflare_full_config_valid():
+    s = _settings(edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="1.2.3.4")
+    assert s.edge_profile == "cloudflare"
+    assert s.dns_provider == "cloudflare"
+    assert s.public_ipv4 == "1.2.3.4"
+    assert s.edge_cf_authenticated_origin_pull is True
+
+
+def test_cloudflare_accepts_aop_disabled():
+    # Positive test (panel #20): cloudflare + AOP=False is a valid, accepted config
+    # -- the operator is opting out of Authenticated Origin Pull deliberately.
+    s = _settings(
+        edge_profile="cloudflare",
+        dns_provider="cloudflare",
+        public_ipv4="1.2.3.4",
+        edge_cf_authenticated_origin_pull=False,
+    )
+    assert s.edge_cf_authenticated_origin_pull is False
+
+
+# generic profile =====================================================================================================
+def test_generic_requires_trusted_cidrs():
+    with pytest.raises(ValidationError, match="EDGE_TRUSTED_CIDRS"):
+        _settings(edge_profile="generic", edge_trusted_cidrs="", edge_realip_header="X-Real-IP")
+
+
+def test_generic_rejects_whitespace_trusted_cidrs():
+    # Panel #5: strip-before-emptiness -- a whitespace-only CIDR list must NOT pass.
+    with pytest.raises(ValidationError, match="EDGE_TRUSTED_CIDRS"):
+        _settings(edge_profile="generic", edge_trusted_cidrs="   ", edge_realip_header="X-Real-IP")
+
+
+def test_generic_requires_realip_header():
+    with pytest.raises(ValidationError, match="EDGE_REALIP_HEADER"):
+        _settings(edge_profile="generic", edge_trusted_cidrs="10.0.0.0/8", edge_realip_header="")
+
+
+def test_generic_rejects_whitespace_realip_header():
+    with pytest.raises(ValidationError, match="EDGE_REALIP_HEADER"):
+        _settings(edge_profile="generic", edge_trusted_cidrs="10.0.0.0/8", edge_realip_header="  ")
+
+
+def test_generic_full_config_valid():
+    s = _settings(
+        edge_profile="generic",
+        edge_trusted_cidrs="10.0.0.0/8, 172.16.0.0/12",
+        edge_realip_header="X-Real-IP",
+    )
+    assert s.edge_profile == "generic"
+    assert s.edge_trusted_cidrs == "10.0.0.0/8, 172.16.0.0/12"
+    assert s.edge_realip_header == "X-Real-IP"
+
+
+# edge_cf_authenticated_origin_pull is cloudflare-only ================================================================
+def test_aop_explicit_under_none_rejected():
+    with pytest.raises(ValidationError, match="only meaningful under EDGE_PROFILE=cloudflare"):
+        _settings(edge_profile="none", edge_cf_authenticated_origin_pull=False)
+
+
+def test_aop_explicit_under_generic_rejected():
+    with pytest.raises(ValidationError, match="only meaningful under EDGE_PROFILE=cloudflare"):
+        _settings(
+            edge_profile="generic",
+            edge_trusted_cidrs="10.0.0.0/8",
+            edge_realip_header="X-Real-IP",
+            edge_cf_authenticated_origin_pull=True,
+        )
+
+
+# Environment-variable parsing ========================================================================================
+class TestEdgeFromEnv:
+
+    def test_whitespace_trusted_cidrs_from_env_rejected(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("SECRET_KEY", "test-secret-not-the-placeholder")
+        monkeypatch.setenv("EDGE_PROFILE", "generic")
+        monkeypatch.setenv("EDGE_TRUSTED_CIDRS", "   ")
+        monkeypatch.setenv("EDGE_REALIP_HEADER", "X-Real-IP")
+        with pytest.raises(ValidationError, match="EDGE_TRUSTED_CIDRS"):
+            Settings()
+
+    def test_cloudflare_from_env_valid(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("SECRET_KEY", "test-secret-not-the-placeholder")
+        monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
+        monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+        monkeypatch.setenv("PUBLIC_IPV4", "1.2.3.4")
+        s = Settings()
+        assert s.edge_profile == "cloudflare"
+        assert s.edge_cf_authenticated_origin_pull is True

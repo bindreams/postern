@@ -335,11 +335,19 @@ def _build_dns_settings(domain: str) -> dns_driver.DnsRecordsSettings:
     dns_driver.validate_ipv4(public_ipv4)
     if public_ipv6:
         dns_driver.validate_ipv6(public_ipv6)
+    dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
+    edge_profile = os.environ.get("EDGE_PROFILE", "none").strip().lower()
     return dns_driver.DnsRecordsSettings(
         domain=domain,
-        dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
+        dns_provider=dns_provider,
         public_ipv4=public_ipv4,
         public_ipv6=public_ipv6,
+        # cert_enabled: the caller (_try_advance_dns) is gated on CERT_RENEWAL=true
+        cert_enabled=_bool_env("CERT_RENEWAL", False),
+        # mta_enabled: same gate as the DKIM/MTA-records loop
+        mta_enabled=(dns_provider != "none"),
+        # edge_enabled: Cloudflare edge profile -> proxied A/AAAA records
+        edge_enabled=(edge_profile == "cloudflare"),
     )
 
 

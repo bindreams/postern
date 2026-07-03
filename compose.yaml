@@ -11,6 +11,14 @@ services:
       # direct-listen, no PROXY protocol (browsers connect to nginx directly).
       # compose.gateway.yaml sets a working default automatically.
       PROXY_PROTOCOL_FROM: ${PROXY_PROTOCOL_FROM:-}
+      # Edge fronting (issue #155). "none" (default) -> render.sh emits no
+      # edge config; the RO postern-edge mount below stays empty. "cloudflare"/
+      # "generic" activate real-IP restoration. render.sh reads these raw --
+      # pydantic Settings do not gate this container.
+      EDGE_PROFILE: ${EDGE_PROFILE:-none}
+      # Cloudflare Authenticated Origin Pull mTLS; only meaningful under
+      # EDGE_PROFILE=cloudflare. render.sh FAILs LOUD on an unrecognized value.
+      EDGE_CF_AUTHENTICATED_ORIGIN_PULL: ${EDGE_CF_AUTHENTICATED_ORIGIN_PULL:-true}
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
@@ -29,6 +37,10 @@ services:
       - type: bind
         source: ./nginx/log
         target: /var/log/nginx
+      # CF edge IP-range allowlists written by the provisioner (rw sole-writer);
+      # nginx reads RO. render.sh globs /var/lib/postern-edge/*.conf into both
+      # :443 server blocks. Empty when EDGE_PROFILE=none.
+      - postern-edge:/var/lib/postern-edge:ro
     networks: [default, shadowsocks]
     init: true
     restart: unless-stopped
@@ -129,7 +141,7 @@ services:
     container_name: provisioner
     # Multiple profiles -- a service starts when ANY listed profile is active.
     # with-cert-renewal lets cert auto-renewal run even without MTA.
-    profiles: [with-mta, with-cert-renewal]
+    profiles: [with-mta, with-cert-renewal, with-edge]
     user: "110:110"
     env_file: .env
     cap_drop: [ALL]
@@ -138,6 +150,8 @@ services:
     tmpfs: [/tmp]
     volumes:
       - postern-mta-data:/var/lib/opendkim
+      # Sole writer of the CF edge IP-range allowlists nginx consumes RO.
+      - postern-edge:/var/lib/postern-edge
     networks: [default]
     init: true
     restart: "no"
@@ -178,6 +192,10 @@ networks:
 volumes:
   postern-data:
     name: postern-data
+  # CF edge IP-range allowlists: provisioner writes (rw sole-writer), nginx
+  # reads (ro). Empty in non-edge deployments. See compose.edge.yaml + docs/edge.md.
+  postern-edge:
+    name: postern-edge
   postern-mta-data:
     name: postern-mta-data
   postern-mta-queue:

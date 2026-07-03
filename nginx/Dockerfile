@@ -20,6 +20,10 @@ FROM dhi.io/nginx:1-alpine3.23
 # image's own /etc/nginx/{mime.types,fastcgi*,scgi*,uwsgi*,modules} remain
 # untouched.
 COPY etc/ /etc/nginx/templates/
+# Cloudflare Authenticated Origin-Pull CA. render.sh's conf.d/edge.conf (cloudflare
+# profile) references this at /etc/nginx/cloudflare-origin-pull-ca.pem for
+# ssl_client_certificate. SHA256-pinned in portal/tests/test_nginx_edge.py.
+COPY --chmod=644 etc/cloudflare-origin-pull-ca.pem /etc/nginx/cloudflare-origin-pull-ca.pem
 COPY --chmod=755 render.sh /usr/local/bin/render.sh
 COPY --chmod=755 nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 

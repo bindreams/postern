@@ -7,7 +7,7 @@ WORKDIR /src/postern-dns
 # sum.golang.org). Renovate tracks both files.
 COPY provisioner/postern-dns/go.mod provisioner/postern-dns/go.sum ./
 RUN go mod download
-COPY provisioner/postern-dns/main.go provisioner/postern-dns/cloudflare_tlsa.go ./
+COPY provisioner/postern-dns/main.go provisioner/postern-dns/cloudflare_tlsa.go provisioner/postern-dns/cloudflare_proxied.go ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 
 # Lego (ACME DNS-01 client). Pin a specific tag; Renovate's customManager regex

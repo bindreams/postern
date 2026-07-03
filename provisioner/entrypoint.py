@@ -45,6 +45,7 @@ from postern.cert import state as cert_state  # noqa: E402
 from postern.cert import dns_records as dns_records_state  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
 from postern_provisioner import dns_records as dns_driver  # noqa: E402
+from postern_provisioner import edge_ranges  # noqa: E402
 from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s provisioner %(levelname)s: %(message)s")
@@ -462,6 +463,30 @@ def _try_advance_mta_records(domain: str, counters: dict[str, int]) -> None:
     except Exception:
         counters["mta_records"] = counters.get("mta_records", 0) + 1
         logger.exception("mta-dns reconcile step failed (%d consecutive)", counters["mta_records"])
+
+
+# Edge IP-range publisher (Cloudflare real-IP allowlist) ===============================================================
+def _try_advance_edge(counters: dict[str, int]) -> None:
+    """Refresh the nginx real-IP allowlist from Cloudflare's published ranges.
+
+    Runs only under EDGE_PROFILE=cloudflare (the caller gates on
+    enablement.edge_enabled -- owned by the enable-gate+loop task). Expected
+    failures (network, decode, CF success=false) arrive as result.error, already
+    carrying the exception type name; we bump counters['edge'] and warn, leaving
+    the last-known-good file in place. An UNEXPECTED exception type propagates out
+    of reconcile_edge_ranges and crashes the tick loudly -- intentionally NOT
+    caught here (contrast the dkim/cert/dns/mta wrappers' broad except)."""
+    result = edge_ranges.reconcile_edge_ranges(
+        fetcher=edge_ranges.CloudflareIpsFetcher(),
+        out_path=edge_ranges.edge_ranges_path(),
+    )
+    if result.error:
+        counters["edge"] = counters.get("edge", 0) + 1
+        logger.warning("edge: range reconcile failed (%d consecutive): %s", counters["edge"], result.error)
+        return
+    counters["edge"] = 0
+    if result.changed:
+        logger.info("edge: refreshed Cloudflare ranges (%d ipv4, %d ipv6)", result.ipv4_count, result.ipv6_count)
 
 
 def _sleep_with_triggers() -> None:

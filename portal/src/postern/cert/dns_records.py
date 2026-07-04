@@ -17,13 +17,42 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_CERTDIR = Path("/etc/letsencrypt")
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# Scalar fields written by the pre-v3 (schema 2) reconciler. read_state stashes
+# whichever are present so the driver can reconstruct the v3 snapshot on upgrade.
+_LEGACY_SCALAR_KEYS = (
+    "last_published_ipv4",
+    "last_published_ipv6",
+    "last_published_caa",
+    "last_published_apex_proxied",
+    "last_published_mta_sts_present",
+)
+
+
+@dataclass(frozen=True)
+class DnsRecord:
+    """One DNS record the apex/cert reconciler manages -- used both as a
+    "desired" record (computed from settings) and as a "last-published" snapshot
+    entry (persisted, then diffed against desired next tick). Frozen so it is
+    hashable.
+
+    Defined in the state module (not the provisioner driver) so the schema can
+    persist it without importing the driver; the driver re-exports it as
+    `DesiredRecord`.
+    """
+    name: str  # FQDN
+    type: str  # A | AAAA | CAA
+    # Per-type payload (A: (ipv4,); AAAA: (ipv6,); CAA: (flags, tag, value)).
+    args: tuple[str, ...] = ()
+    # Cloudflare orange-cloud. Only meaningful for A/AAAA under DNS_PROVIDER=cloudflare.
+    proxied: bool = False
 
 
 @dataclass
@@ -33,29 +62,16 @@ class DnsRecordsState:
     A separate file (`dns_records_state.json`) from `cert/state.json` so the
     cert state machine's schema-version handling stays uncluttered. Provisioner
     is the only writer.
+
+    Set-diff model (schema 3): `last_published` is the full snapshot of records
+    the reconciler put on the wire last tick. Each tick diffs the freshly-computed
+    desired set against it -- records that dropped out are deleted, changed ones
+    (IP or proxied) re-set.
     """
     schema_version: int = SCHEMA_VERSION
 
-    # Last successfully-published IPs. Used to detect "previously set, now unset"
-    # transitions so PUBLIC_IPV6 unset triggers AAAA deletion. Empty strings
-    # mean "never published" (initial state) or "deleted" (post-unset).
-    last_published_ipv4: str = ""
-    last_published_ipv6: str = ""
-
-    # Last successfully-published CAA value. Stored as the canonical zone-file
-    # form ("0 issue \"letsencrypt.org\"") so a CERT_ACME_DIRECTORY flip from
-    # staging to prod is a no-op (both use letsencrypt.org for CAA purposes).
-    last_published_caa: str = ""
-
-    # Whether the apex A/AAAA (and the mta-sts host, which shares the edge
-    # dimension) were last published orange-clouded. Drift here (edge toggled)
-    # forces a re-publish so the CF-direct PATCH flips the proxied bit.
-    last_published_apex_proxied: bool = False
-
-    # Whether the explicit mta-sts.<domain> A/AAAA record was last published.
-    # Only true under an edge profile *and* the MTA; used to retract the record
-    # when either is turned off (a gray wildcard covers the non-edge case).
-    last_published_mta_sts_present: bool = False
+    # Full snapshot of last-published records (the diff baseline for next tick).
+    last_published: list[DnsRecord] = field(default_factory=list)
 
     # ISO timestamp of the last successful reconcile. Surfaces via
     # `postern dns show`; used by the healthcheck to gate first-issuance
@@ -66,6 +82,13 @@ class DnsRecordsState:
     # them between ticks would mask transient provider hiccups. The reconciler
     # treats each tick as a fresh attempt.
     consecutive_failures: int = 0
+
+    # Transient: populated by read_state ONLY when upgrading a pre-v3 (scalar)
+    # file, carrying the old scalar values to the driver so it can reconstruct
+    # `last_published` against the settings-known domain. Never persisted
+    # (write_state omits it) and excluded from equality so a migrated read still
+    # compares equal to a fresh write on the fields that matter.
+    legacy_scalars: dict[str, object] | None = field(default=None, compare=False, repr=False)
 
 
 # Persistence ==========================================================================================================
@@ -83,8 +106,25 @@ def trigger_path(certdir: Path | None = None) -> Path:
     return _resolve_certdir(certdir) / ".publish-dns"
 
 
+def _record_from_dict(d: dict) -> DnsRecord:
+    """Parse one persisted snapshot entry. Unknown keys are ignored (forward-compat)
+    and `args` is coerced back to a tuple so the diff's `==` matches desired records
+    (JSON round-trips tuples as lists, and `[x] != (x,)` in Python)."""
+    return DnsRecord(
+        name=d["name"],
+        type=d["type"],
+        args=tuple(d.get("args", ())),
+        proxied=bool(d.get("proxied", False)),
+    )
+
+
 def read_state(certdir: Path | None = None) -> DnsRecordsState:
-    """Read dns_records_state.json. Returns a default empty state if absent."""
+    """Read dns_records_state.json. Returns a default empty state if absent.
+
+    A pre-v3 (scalar) file has no `last_published`; its scalar values are stashed
+    in the returned state's transient `legacy_scalars` so the driver can rebuild
+    the snapshot against the settings-known domain on the first v3 tick.
+    """
     path = state_path(certdir)
     if not path.exists():
         return DnsRecordsState()
@@ -102,15 +142,68 @@ def read_state(certdir: Path | None = None) -> DnsRecordsState:
             "fields we don't recognise will be ignored", schema_version, SCHEMA_VERSION
         )
 
-    fields_known = set(DnsRecordsState.__dataclass_fields__)
-    return DnsRecordsState(**{k: v for k, v in raw.items() if k in fields_known})
+    if "last_published" in raw:
+        last_published = [_record_from_dict(d) for d in raw["last_published"]]
+        legacy_scalars = None
+    else:
+        # Pre-v3 scalar file: no snapshot. Carry the present scalar values so the
+        # driver can reconstruct (and thus correctly diff) the last-published set.
+        last_published = []
+        legacy_scalars = {k: raw[k] for k in _LEGACY_SCALAR_KEYS if k in raw} or None
+
+    return DnsRecordsState(
+        schema_version=schema_version if schema_version else SCHEMA_VERSION,
+        last_published=last_published,
+        last_reconciled_iso=raw.get("last_reconciled_iso"),
+        consecutive_failures=raw.get("consecutive_failures", 0),
+        legacy_scalars=legacy_scalars,
+    )
+
+
+def published_summary(state: DnsRecordsState, domain: str) -> tuple[str, str, str]:
+    """(ipv4, ipv6, caa) as last published, for `postern dns show`. Reads the v3
+    snapshot's apex records; falls back to the stashed pre-v3 scalars right after
+    an upgrade (before the first v3 reconcile rebuilds the snapshot)."""
+    if not state.last_published and state.legacy_scalars is not None:
+        s = state.legacy_scalars
+        return (
+            str(s.get("last_published_ipv4", "") or ""),
+            str(s.get("last_published_ipv6", "") or ""),
+            str(s.get("last_published_caa", "") or ""),
+        )
+    # Prefer the apex records; fall back to any managed A/AAAA (e.g. mail. in an
+    # MTA-only deployment that publishes no apex) so the IP still surfaces.
+    ipv4 = ipv6 = caa = ""
+    for r in state.last_published:
+        if r.type == "A" and r.args and (not ipv4 or r.name == domain):
+            ipv4 = r.args[0]
+        elif r.type == "AAAA" and r.args and (not ipv6 or r.name == domain):
+            ipv6 = r.args[0]
+        elif r.type == "CAA" and r.name == domain and len(r.args) == 3:
+            caa = f'{r.args[0]} {r.args[1]} "{r.args[2]}"'
+    return ipv4, ipv6, caa
 
 
 def write_state(state: DnsRecordsState, *, certdir: Path | None = None) -> None:
-    """Atomically replace dns_records_state.json. Provisioner-only writer."""
+    """Atomically replace dns_records_state.json. Provisioner-only writer.
+
+    Hand-serialises the persistent fields (never the transient `legacy_scalars`);
+    `last_published` order is preserved (sort_keys only reorders object keys, not
+    array elements) so the no-op diff path holds across restarts."""
     path = state_path(certdir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    serialised = json.dumps(asdict(state), indent=2, sort_keys=True)
+    payload = {
+        "schema_version": state.schema_version,
+        "last_published": [{
+            "name": r.name,
+            "type": r.type,
+            "args": list(r.args),
+            "proxied": r.proxied,
+        } for r in state.last_published],
+        "last_reconciled_iso": state.last_reconciled_iso,
+        "consecutive_failures": state.consecutive_failures,
+    }
+    serialised = json.dumps(payload, indent=2, sort_keys=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".dns_records_state.", suffix=".json.tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

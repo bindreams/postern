@@ -20,3 +20,6 @@ CLAUDE.local.md
 
 # Brainstorming / mockup cache produced by the superpowers skill
 /.superpowers/
+
+# Per-worktree Claude Code scratch directory (CLAUDE.md)
+.tmp/

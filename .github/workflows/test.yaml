@@ -20,6 +20,25 @@ jobs:
       - run: uv run pytest -m "not e2e and not e2e_mta and not e2e_mta_real and not e2e_mta_outbound" --timeout=30
         working-directory: portal
 
+  go-unit:
+    name: postern-dns Go unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: provisioner/postern-dns
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          # Stay pinned to the toolchain the module declares. GOTOOLCHAIN=auto
+          # then fetches the exact `toolchain` (go1.26.4) at build time.
+          go-version-file: provisioner/postern-dns/go.mod
+          cache-dependency-path: provisioner/postern-dns/go.sum
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./... -count=1
+
   e2e:
     name: End-to-end tests
     runs-on: ubuntu-latest

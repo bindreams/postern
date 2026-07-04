@@ -18,6 +18,10 @@ def _patch_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(healthcheck.cert_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.dns_records_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.mta_records_state, "DEFAULT_KEYDIR", keydir)
+    # Clean baseline so a test that relies on "MTA not deployed" isn't polluted by
+    # an ambient COMPOSE_PROFILES/EDGE_PROFILE. Tests opt in explicitly.
+    monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
+    monkeypatch.delenv("EDGE_PROFILE", raising=False)
     return keydir, certdir
 
 
@@ -50,17 +54,35 @@ def test_healthy_when_dkim_initialised(monkeypatch, _patch_paths):
     _seed_mta_records_reconciled(keydir)
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta")
     assert healthcheck.main() == 0
 
 
 def test_unhealthy_when_mta_records_not_reconciled(monkeypatch, _patch_paths):
-    """DKIM is initialised but the MTA-records reconciler hasn't completed yet (#118)."""
+    """MTA is deployed (with-mta) and DKIM is initialised, but the MTA-records
+    reconciler hasn't completed yet (#118)."""
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     # No mta_records_state.json -> read_state returns default (last_reconciled_iso=None).
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta")
     assert healthcheck.main() == 1
+
+
+def test_healthy_when_provider_set_but_mta_not_deployed(monkeypatch, _patch_paths):
+    """Cert-only / edge-only: DNS_PROVIDER is set (edge and cert both require it)
+    but the with-mta profile is absent, so the mta_records tick never runs. The
+    healthcheck must NOT wait on mta_records here, or `service_healthy` would
+    deadlock forever (last_reconciled_iso stays null)."""
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    # No mta_records_state.json on purpose -- nothing publishes it without with-mta.
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-edge")  # NO with-mta
+    assert healthcheck.main() == 0
 
 
 def test_unhealthy_when_cert_renewal_on_but_no_cert(monkeypatch, _patch_paths):
@@ -86,6 +108,7 @@ def test_healthy_when_cert_renewal_on_and_cert_installed(monkeypatch, _patch_pat
     _seed_mta_records_reconciled(keydir)
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "true")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal")
     assert healthcheck.main() == 0
 
 

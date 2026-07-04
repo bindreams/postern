@@ -69,6 +69,22 @@ class Settings(BaseSettings):
     cert_renewal_days_before_expiry: int = 30
     cert_force_reissue: bool = False
 
+    # Edge (CDN / reverse-proxy fronting the public :443 endpoint) =====================================================
+    # "none" (default) is direct-to-origin. "cloudflare" orange-clouds the apex
+    # through Cloudflare (real client IP recovered from CF's published ranges,
+    # optional Authenticated Origin Pull mTLS). "generic" is any other trusted
+    # reverse proxy that sets a real-IP header. See docs/edge.md.
+    edge_profile: Literal["none", "cloudflare", "generic"] = "none"
+    # generic profile only: the CIDR(s) allowed to set EDGE_REALIP_HEADER, and the
+    # header name to trust. The CIDR list is comma/space/tab/newline-separated.
+    edge_trusted_cidrs: str = ""
+    edge_realip_header: str = ""
+    # cloudflare profile only: require Cloudflare Authenticated Origin Pull (mTLS
+    # against CF's global origin-pull CA). On by default; turning it off drops a
+    # defence-in-depth layer. Meaningful ONLY under edge_profile=cloudflare --
+    # setting it under any other profile fails loud.
+    edge_cf_authenticated_origin_pull: bool = True
+
     # Public IPs (cert manager publishes apex/wildcard A/AAAA when CERT_RENEWAL=true) ==================================
     # IPv4 required when CERT_RENEWAL=true. IPv6 optional; if set, AAAA records are
     # published; if previously published and now unset, AAAA records are deleted
@@ -121,4 +137,37 @@ class Settings(BaseSettings):
                 validate_ipv6(self.public_ipv6)
         if self.cert_renewal_days_before_expiry < 1:
             raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
+        return self
+
+    @model_validator(mode="after")
+    def _check_edge_settings(self) -> Self:
+        # Strip before the emptiness test: a whitespace-only value is a
+        # misconfiguration, not a valid setting, and must be rejected loudly.
+        if self.edge_profile == "cloudflare":
+            if self.dns_provider != "cloudflare":
+                raise ValueError(
+                    "EDGE_PROFILE=cloudflare requires DNS_PROVIDER=cloudflare "
+                    "(the provisioner publishes proxied apex records via the Cloudflare API)"
+                )
+            if not self.public_ipv4.strip():
+                raise ValueError(
+                    "EDGE_PROFILE=cloudflare requires PUBLIC_IPV4 "
+                    "(the origin address Cloudflare proxies the apex A record to)"
+                )
+        elif self.edge_profile == "generic":
+            if not self.edge_trusted_cidrs.strip():
+                raise ValueError(
+                    "EDGE_PROFILE=generic requires EDGE_TRUSTED_CIDRS "
+                    "(the CIDR(s) allowed to set the real-IP header)"
+                )
+            if not self.edge_realip_header.strip():
+                raise ValueError(
+                    "EDGE_PROFILE=generic requires EDGE_REALIP_HEADER "
+                    "(the header name carrying the real client IP)"
+                )
+        # AOP is a Cloudflare-only knob. Explicitly configuring it under any other
+        # profile is silently ignored today; fail loud instead of misleading the
+        # operator into thinking mTLS is (dis)engaged.
+        if (self.edge_profile != "cloudflare" and "edge_cf_authenticated_origin_pull" in self.model_fields_set):
+            raise ValueError("EDGE_CF_AUTHENTICATED_ORIGIN_PULL is only meaningful under EDGE_PROFILE=cloudflare")
         return self

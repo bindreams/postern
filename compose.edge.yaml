@@ -1,0 +1,24 @@
+# Compose override that runs the provisioner's Cloudflare edge IP-range loop as
+# a long-lived service (issue #155).
+#
+# Apply by setting (in .env):
+#   COMPOSE_FILE=compose.yaml:compose.edge.yaml   (edge LAST; layer after
+#                                                  compose.cert.yaml when certs on)
+#   COMPOSE_PROFILES=with-edge                     (add with-mta / with-cert-renewal as needed)
+#   EDGE_PROFILE=cloudflare
+#   DNS_PROVIDER=cloudflare
+#   PUBLIC_IPV4=<origin IPv4>
+#
+# The base provisioner uses restart: "no" -- correct for the one-shot DKIM-init
+# path under DNS_PROVIDER=none. The edge reconciler runs forever, so a crash
+# must be restarted; this override switches the policy to unless-stopped, the
+# same way compose.cert.yaml does for the cert tick loop.
+#
+# See docs/edge.md for the operator runbook.
+
+services:
+  provisioner:
+    # Restate the full activation set so with-edge survives compose merge
+    # regardless of overlay order. Keep in sync with compose.yaml's provisioner.
+    profiles: [with-mta, with-cert-renewal, with-edge]
+    restart: unless-stopped

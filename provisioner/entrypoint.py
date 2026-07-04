@@ -30,6 +30,7 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
@@ -45,7 +46,14 @@ from postern.cert import state as cert_state  # noqa: E402
 from postern.cert import dns_records as dns_records_state  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
 from postern_provisioner import dns_records as dns_driver  # noqa: E402
+from postern_provisioner import edge_ranges  # noqa: E402
 from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
+from postern_provisioner.enablement import (  # noqa: E402
+    Enablement,
+    compute_enablement,
+    mta_deployed_from_profiles,
+    run_enabled_ticks,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s provisioner %(levelname)s: %(message)s")
 logger = logging.getLogger("entrypoint")
@@ -315,19 +323,22 @@ def _build_cert_settings(domain: str) -> cert_driver.CertSettings:
     )
 
 
-def _build_dns_settings(domain: str) -> dns_driver.DnsRecordsSettings:
-    """Build DnsRecordsSettings for the apex/wildcard A/AAAA + CAA reconciler.
+def _build_dns_settings(domain: str, enablement: Enablement) -> dns_driver.DnsRecordsSettings:
+    """Build DnsRecordsSettings for the apex/wildcard/mail/mta-sts A/AAAA + CAA
+    reconciler. Refuses to start without PUBLIC_IPV4 -- every record group this
+    publisher writes derives from it.
 
-    Refuses to start if PUBLIC_IPV4 is unset -- the portal Settings already
-    validates this when CERT_RENEWAL=true, but the provisioner's entrypoint
-    runs without loading portal Settings, so we re-check here for clarity."""
+    Enablement flags come straight from `compute_enablement` (the single source
+    of truth). In particular `mta_enabled` means "the built-in MTA is deployed"
+    (with-mta profile + a provider), NOT merely "DNS_PROVIDER is set" -- so an
+    edge-only deployment publishes ONLY the proxied apex, never mail/mta-sts."""
     public_ipv4 = os.environ.get("PUBLIC_IPV4", "").strip()
     public_ipv6 = os.environ.get("PUBLIC_IPV6", "").strip()
     if not public_ipv4:
         raise RuntimeError(
-            "CERT_RENEWAL=true but PUBLIC_IPV4 is unset. "
-            "The cert manager publishes A records for ${DOMAIN}, *.${DOMAIN}, and mail.${DOMAIN} "
-            "from PUBLIC_IPV4 -- it can't proceed without one."
+            "DNS publishing is enabled (cert renewal, a Cloudflare edge profile, or the "
+            "built-in MTA) but PUBLIC_IPV4 is unset. The publisher writes A records for "
+            "${DOMAIN}, *.${DOMAIN}, mail.${DOMAIN}, and mta-sts.${DOMAIN} from PUBLIC_IPV4."
         )
     # Validate the IP format eagerly so a typo doesn't only surface as a
     # provider-side error mid-reconcile.
@@ -339,6 +350,9 @@ def _build_dns_settings(domain: str) -> dns_driver.DnsRecordsSettings:
         dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
         public_ipv4=public_ipv4,
         public_ipv6=public_ipv6,
+        cert_enabled=enablement.cert_enabled,
+        mta_enabled=enablement.mta_enabled,
+        edge_enabled=enablement.edge_enabled,
     )
 
 
@@ -393,14 +407,16 @@ def _consume_dns_trigger() -> None:
         pass
 
 
-def _try_advance_dns(domain: str, counters: dict[str, int]) -> None:
-    """Reconcile apex/wildcard A/AAAA + CAA records. Runs only when
-    CERT_RENEWAL=true (caller's gate). Matches the dkim/cert tick pattern."""
+def _try_advance_dns(domain: str, counters: dict[str, int], enablement: Enablement) -> None:
+    """Reconcile apex/wildcard/mail/mta-sts A/AAAA + CAA records. Runs whenever
+    cert renewal, a Cloudflare edge profile, or the built-in MTA needs address
+    records (caller's gate: enablement.dns_enabled). Matches the dkim/cert tick
+    pattern; the pure-function reconciler makes a no-drift tick a cheap no-op."""
     try:
-        settings = _build_dns_settings(domain)
+        settings = _build_dns_settings(domain, enablement)
         state = dns_records_state.read_state()
         had_trigger = _has_dns_trigger()
-        runner = dns_driver.PosternDnsRunner()
+        runner = dns_driver.PosternDnsRunner(dns_provider=settings.dns_provider)
         new_state = dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
         if had_trigger:
             _consume_dns_trigger()
@@ -409,9 +425,11 @@ def _try_advance_dns(domain: str, counters: dict[str, int]) -> None:
             # Only log on meaningful transitions; consecutive_failures bumps are noisy.
             if new_state.last_reconciled_iso != state.last_reconciled_iso:
                 logger.info(
-                    "dns: reconciled apex/wildcard A/AAAA + CAA (v4=%s v6=%s)",
+                    "dns: reconciled A/AAAA + CAA (v4=%s v6=%s apex_proxied=%s mta_sts=%s)",
                     new_state.last_published_ipv4 or "(unset)",
                     new_state.last_published_ipv6 or "(unset)",
+                    new_state.last_published_apex_proxied,
+                    new_state.last_published_mta_sts_present,
                 )
         counters["dns"] = 0
     except Exception:
@@ -464,6 +482,30 @@ def _try_advance_mta_records(domain: str, counters: dict[str, int]) -> None:
         logger.exception("mta-dns reconcile step failed (%d consecutive)", counters["mta_records"])
 
 
+# Edge IP-range publisher (Cloudflare real-IP allowlist) ===============================================================
+def _try_advance_edge(counters: dict[str, int]) -> None:
+    """Refresh the nginx real-IP allowlist from Cloudflare's published ranges.
+
+    Runs only under EDGE_PROFILE=cloudflare (the caller gates on
+    enablement.edge_enabled -- owned by the enable-gate+loop task). Expected
+    failures (network, decode, CF success=false) arrive as result.error, already
+    carrying the exception type name; we bump counters['edge'] and warn, leaving
+    the last-known-good file in place. An UNEXPECTED exception type propagates out
+    of reconcile_edge_ranges and crashes the tick loudly -- intentionally NOT
+    caught here (contrast the dkim/cert/dns/mta wrappers' broad except)."""
+    result = edge_ranges.reconcile_edge_ranges(
+        fetcher=edge_ranges.CloudflareIpsFetcher(),
+        out_path=edge_ranges.edge_ranges_path(),
+    )
+    if result.error:
+        counters["edge"] = counters.get("edge", 0) + 1
+        logger.warning("edge: range reconcile failed (%d consecutive): %s", counters["edge"], result.error)
+        return
+    counters["edge"] = 0
+    if result.changed:
+        logger.info("edge: refreshed Cloudflare ranges (%d ipv4, %d ipv6)", result.ipv4_count, result.ipv6_count)
+
+
 def _sleep_with_triggers() -> None:
     """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
     slept = 0
@@ -474,25 +516,19 @@ def _sleep_with_triggers() -> None:
         slept += TRIGGER_POLL_SECONDS
 
 
-def run_combined_loop(
-    domain: str,
-    selector_prefix: str,
-    *,
-    dkim_enabled: bool,
-    cert_enabled: bool,
-    dns_enabled: bool,
-    mta_records_enabled: bool,
-) -> NoReturn:
-    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0}
+def run_combined_loop(domain: str, selector_prefix: str, enablement: Enablement) -> NoReturn:
+    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0}
+    ticks: dict[str, Callable[[], None]] = {
+        "dkim": lambda: _try_advance_dkim(domain, selector_prefix, counters),
+        "cert": lambda: _try_advance_cert(domain, counters),
+        "dns": lambda: _try_advance_dns(domain, counters, enablement),
+        "mta_records": lambda: _try_advance_mta_records(domain, counters),
+        # _try_advance_edge takes only `counters` -- Cloudflare's ranges are
+        # global, so there is no per-domain argument.
+        "edge": lambda: _try_advance_edge(counters),
+    }
     while True:
-        if dkim_enabled:
-            _try_advance_dkim(domain, selector_prefix, counters)
-        if cert_enabled:
-            _try_advance_cert(domain, counters)
-        if dns_enabled:
-            _try_advance_dns(domain, counters)
-        if mta_records_enabled:
-            _try_advance_mta_records(domain, counters)
+        run_enabled_ticks(enablement, ticks)
         _sleep_with_triggers()
 
 
@@ -503,37 +539,33 @@ def main() -> NoReturn:
         rotation.validate_selector_base(selector_prefix)
     except ValueError as e:
         die(str(e))
-    dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
-    cert_renewal = _bool_env("CERT_RENEWAL", False)
+
+    enablement = compute_enablement(
+        dns_provider=os.environ.get("DNS_PROVIDER", "none"),
+        cert_renewal=_bool_env("CERT_RENEWAL", False),
+        edge_profile=os.environ.get("EDGE_PROFILE", "none"),
+        # "MTA deployed" is the with-mta compose profile, injected into this
+        # container's env as COMPOSE_PROFILES. NOT inferred from DNS_PROVIDER:
+        # the Cloudflare edge profile also sets DNS_PROVIDER=cloudflare without
+        # deploying the MTA.
+        mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
+    )
 
     # DKIM init is unconditional (matches the pre-cert-renewal behaviour).
     # The mta container blocks startup waiting for state.json regardless of
     # DNS_PROVIDER, so we always emit a key. Cost is a few KB on the
-    # postern-mta-data volume even in cert-only deployments without mta.
+    # postern-mta-data volume even in cert-only / edge-only deployments.
     state = ensure_initial_key(domain, selector_prefix)
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
 
-    dkim_enabled = dns_provider != "none"
-    # The apex/wildcard A/AAAA + CAA reconciler runs whenever cert renewal is
-    # on -- per the design discussion in #115, enabling cert renewal signals
-    # "I want the domain situation handled."
-    dns_enabled = cert_renewal
-    # The MTA records reconciler runs whenever DKIM is enabled (#118). The
-    # reconciler is a pure function: a no-drift tick is a cheap no-op.
-    mta_records_enabled = dkim_enabled
-
-    if not dkim_enabled and not cert_renewal:
-        logger.info("DNS_PROVIDER=none and CERT_RENEWAL=false -- nothing to do, exiting")
+    if not (enablement.dkim_enabled or enablement.cert_enabled or enablement.edge_enabled):
+        logger.info(
+            "nothing to publish (DNS_PROVIDER=none, or CERT_RENEWAL=false and EDGE_PROFILE=none, "
+            "or the built-in MTA is not deployed) -- exiting"
+        )
         sys.exit(0)
 
-    run_combined_loop(
-        domain,
-        selector_prefix,
-        dkim_enabled=dkim_enabled,
-        cert_enabled=cert_renewal,
-        dns_enabled=dns_enabled,
-        mta_records_enabled=mta_records_enabled,
-    )
+    run_combined_loop(domain, selector_prefix, enablement)
 
 
 if __name__ == "__main__":

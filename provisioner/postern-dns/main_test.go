@@ -990,6 +990,68 @@ func TestRunCmd_ADelete_MatchFound(t *testing.T) {
 	}
 }
 
+func TestExtractProxied(t *testing.T) {
+	// absent -> nil, positionals untouched.
+	rest, p, err := extractProxied([]string{"203.0.113.1"})
+	if err != nil || p != nil || len(rest) != 1 || rest[0] != "203.0.113.1" {
+		t.Fatalf("absent: rest=%v p=%v err=%v", rest, p, err)
+	}
+	// true, stripped from positionals (flag may trail).
+	rest, p, err = extractProxied([]string{"203.0.113.1", "--proxied=true"})
+	if err != nil || p == nil || !*p || len(rest) != 1 || rest[0] != "203.0.113.1" {
+		t.Fatalf("true: rest=%v p=%v err=%v", rest, p, err)
+	}
+	// false, flag may lead.
+	rest, p, err = extractProxied([]string{"--proxied=false", "203.0.113.1"})
+	if err != nil || p == nil || *p || len(rest) != 1 || rest[0] != "203.0.113.1" {
+		t.Fatalf("false: rest=%v p=%v err=%v", rest, p, err)
+	}
+	// fail-loud on malformed / duplicate.
+	if _, _, err := extractProxied([]string{"--proxied"}); err == nil {
+		t.Error("--proxied without value should error")
+	}
+	if _, _, err := extractProxied([]string{"--proxied=maybe"}); err == nil {
+		t.Error("--proxied=maybe should error")
+	}
+	if _, _, err := extractProxied([]string{"--proxied=true", "--proxied=false"}); err == nil {
+		t.Error("duplicate --proxied should error")
+	}
+}
+
+func TestRunCmd_AddrSet_Proxied_NonCloudflare_TrueRejected(t *testing.T) {
+	fp := &fakeProvider{}
+	err := runCmd(context.Background(), "gandi", fp, "a-set", "example.com", []string{"203.0.113.1", "--proxied=true"})
+	if err == nil {
+		t.Fatalf("want error for --proxied=true on non-cloudflare, got nil")
+	}
+	if !strings.Contains(err.Error(), "cloudflare") {
+		t.Errorf("error %q should name cloudflare", err.Error())
+	}
+	if len(fp.appended) != 0 {
+		t.Errorf("provider must not be called on reject; appended=%d", len(fp.appended))
+	}
+}
+
+func TestRunCmd_AddrSet_Proxied_NonCloudflare_FalseNoOp(t *testing.T) {
+	for _, tc := range []struct{ cmd, ip string }{
+		{"a-set", "203.0.113.1"},
+		{"aaaa-set", "2001:db8::1"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			fp := &fakeProvider{}
+			if err := runCmd(context.Background(), "route53", fp, tc.cmd, "example.com", []string{tc.ip, "--proxied=false"}); err != nil {
+				t.Fatalf("--proxied=false must be a benign no-op on non-cloudflare, got: %v", err)
+			}
+			if len(fp.appended) != 1 {
+				t.Fatalf("expected normal publish (1 append), got %d", len(fp.appended))
+			}
+			if rr := fp.appended[0].RR(); rr.Data != tc.ip {
+				t.Errorf("published Data=%q, want %q", rr.Data, tc.ip)
+			}
+		})
+	}
+}
+
 func TestRunCmd_RejectsInvalidArgs(t *testing.T) {
 	fp := &fakeProvider{}
 	cases := []struct {

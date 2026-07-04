@@ -23,7 +23,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_CERTDIR = Path("/etc/letsencrypt")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 @dataclass
@@ -46,6 +46,16 @@ class DnsRecordsState:
     # form ("0 issue \"letsencrypt.org\"") so a CERT_ACME_DIRECTORY flip from
     # staging to prod is a no-op (both use letsencrypt.org for CAA purposes).
     last_published_caa: str = ""
+
+    # Whether the apex A/AAAA (and the mta-sts host, which shares the edge
+    # dimension) were last published orange-clouded. Drift here (edge toggled)
+    # forces a re-publish so the CF-direct PATCH flips the proxied bit.
+    last_published_apex_proxied: bool = False
+
+    # Whether the explicit mta-sts.<domain> A/AAAA record was last published.
+    # Only true under an edge profile *and* the MTA; used to retract the record
+    # when either is turned off (a gray wildcard covers the non-edge case).
+    last_published_mta_sts_present: bool = False
 
     # ISO timestamp of the last successful reconcile. Surfaces via
     # `postern dns show`; used by the healthcheck to gate first-issuance

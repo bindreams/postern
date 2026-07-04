@@ -10,9 +10,9 @@
 //
 //	postern-dns txt-set     <fqdn> <value>
 //	postern-dns txt-delete  <fqdn> <value>
-//	postern-dns a-set       <fqdn> <ipv4>
+//	postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
 //	postern-dns a-delete    <fqdn> <ipv4>
-//	postern-dns aaaa-set    <fqdn> <ipv6>
+//	postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
 //	postern-dns aaaa-delete <fqdn> <ipv6>
 //	postern-dns mx-set      <fqdn> <preference> <target>
 //	postern-dns mx-delete   <fqdn> <preference> <target>
@@ -136,9 +136,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   postern-dns txt-set     <fqdn> <value>
   postern-dns txt-delete  <fqdn> <value>
-  postern-dns a-set       <fqdn> <ipv4>
+  postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
   postern-dns a-delete    <fqdn> <ipv4>
-  postern-dns aaaa-set    <fqdn> <ipv6>
+  postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
   postern-dns aaaa-delete <fqdn> <ipv6>
   postern-dns mx-set      <fqdn> <preference> <target>
   postern-dns mx-delete   <fqdn> <preference> <target>
@@ -146,6 +146,8 @@ func usage() {
   postern-dns caa-delete  <fqdn> <flags> <tag> <value>
   postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
   postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
+
+  --proxied is Cloudflare-only (true rejected, false ignored, on other providers).
 
 env vars:
   DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
@@ -202,11 +204,18 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 		return doTxtDelete(ctx, providerName, provider, zone, name, args[0])
 
 	case "a-set", "aaaa-set":
-		rec, err := parseAddressArgs(cmd, name, args)
+		rest, proxied, perr := extractProxied(args)
+		if perr != nil {
+			return perr
+		}
+		rec, err := parseAddressArgs(cmd, name, rest)
 		if err != nil {
 			return err
 		}
-		return doRecordSet(ctx, provider, zone, rec)
+		if proxied == nil {
+			return doRecordSet(ctx, provider, zone, rec)
+		}
+		return doAddrSetProxied(ctx, providerName, provider, zone, rec, *proxied)
 	case "a-delete", "aaaa-delete":
 		rec, err := parseAddressArgs(strings.TrimSuffix(cmd, "-delete")+"-set", name, args)
 		if err != nil {
@@ -265,6 +274,55 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+// extractProxied pulls an optional `--proxied=true|false` flag out of the
+// positional args for a-set / aaaa-set, returning the remaining positionals and
+// a tri-state (nil = flag absent). The provisioner appends this flag ONLY under
+// DNS_PROVIDER=cloudflare (postern_provisioner.dns_driver.set_record); postern-dns
+// still parses it for every provider and fails loud on a malformed value so a
+// stray flag can never silently change behaviour.
+func extractProxied(args []string) (rest []string, proxied *bool, err error) {
+	for _, a := range args {
+		val, isFlag := strings.CutPrefix(a, "--proxied")
+		if !isFlag {
+			rest = append(rest, a)
+			continue
+		}
+		v, ok := strings.CutPrefix(val, "=")
+		if !ok {
+			return nil, nil, fmt.Errorf("--proxied requires =true or =false (got %q)", a)
+		}
+		var b bool
+		switch v {
+		case "true":
+			b = true
+		case "false":
+			b = false
+		default:
+			return nil, nil, fmt.Errorf("--proxied must be true or false (got %q)", v)
+		}
+		if proxied != nil {
+			return nil, nil, fmt.Errorf("--proxied given more than once")
+		}
+		proxied = &b
+	}
+	return rest, proxied, nil
+}
+
+// doAddrSetProxied handles `a-set`/`aaaa-set --proxied=...`. Proxying is a
+// Cloudflare-only concept: for every other provider --proxied=true is a hard
+// error, while --proxied=false is a benign no-op that falls through to the
+// normal libdns publish -- so a caller that uniformly passes --proxied under a
+// non-cloudflare provider (e.g. cert-renewal apex records) still works.
+func doAddrSetProxied(ctx context.Context, providerName string, provider providerOps, zone string, rec libdns.Address, proxied bool) error {
+	if strings.ToLower(providerName) != "cloudflare" {
+		if proxied {
+			return fmt.Errorf("a-set/aaaa-set --proxied=true is only supported for DNS_PROVIDER=cloudflare (got %q): orange-cloud proxying is a Cloudflare feature", providerName)
+		}
+		return doRecordSet(ctx, provider, zone, rec)
+	}
+	return cloudflareAddrSetProxied(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, rec, proxied)
 }
 
 // Per-type arg parsing ==================================================================================================

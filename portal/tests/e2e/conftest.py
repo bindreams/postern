@@ -33,7 +33,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ._certs import generate_test_pki
+from ._certs import generate_edge_client_pki, generate_test_pki
+from ._edge_helpers import COMPOSE_FILES_EDGE, PROJECT_EDGE, compose_edge, seed_edge_ranges, remove_edge_ranges
 from ._helpers import (
     CONNECTION_ID_RE,
     MAILPIT_BASE_URL,
@@ -56,6 +57,7 @@ _MARKER_BY_FILENAME: dict[str, str] = {
     "test_mta_disruptive.py": "e2e_mta",
     "test_mta_real.py": "e2e_mta_real",
     "test_mta_outbound.py": "e2e_mta_outbound",
+    "test_edge.py": "e2e_edge",
 }
 
 
@@ -159,6 +161,73 @@ def mta_e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
         if os.environ.get("CI") == "true":
             return
         subprocess.run(compose_mta("down", "-v", "--timeout", "30"), check=False)
+
+
+# Edge stack fixtures ==================================================================================================
+@pytest.fixture(scope="session")
+def e2e_edge_client_ca(tmp_path_factory) -> Iterator[Path]:
+    """Generate the mTLS test CA (for nginx ssl_client_certificate) + client cert.
+
+    Sets POSTERN_E2E_EDGE_CLIENT_CA_DIR so the edge compose file can bind-mount
+    ``ca.pem`` into nginx at ``/etc/nginx/cloudflare-origin-pull-ca.pem``,
+    overriding the shipped Cloudflare origin-pull CA with a locally-controlled one.
+    The fixture must remain active through ``edge_stack`` teardown (``compose down
+    -v`` re-resolves bind-mount sources), so ``finally`` runs after
+    ``edge_stack``'s.
+    """
+    ca_dir = tmp_path_factory.mktemp("e2e-edge-client-ca")
+    generate_edge_client_pki(ca_dir)
+    prior = os.environ.get("POSTERN_E2E_EDGE_CLIENT_CA_DIR")
+    os.environ["POSTERN_E2E_EDGE_CLIENT_CA_DIR"] = ca_dir.as_posix()
+    try:
+        yield ca_dir
+    finally:
+        if prior is None:
+            os.environ.pop("POSTERN_E2E_EDGE_CLIENT_CA_DIR", None)
+        else:
+            os.environ["POSTERN_E2E_EDGE_CLIENT_CA_DIR"] = prior
+
+
+@pytest.fixture(scope="session")
+def edge_stack(_patch_dns_for_postern_test, e2e_certs, e2e_edge_client_ca) -> Iterator[None]:
+    """Boot the postern-e2e-edge project (e2e-edge.compose.yaml).
+
+    Sibling of ``e2e_stack`` for the edge fronting tests; uses host port 8453
+    to avoid colliding with the base postern-e2e project on 8443.  Depends on
+    both ``e2e_certs`` (server cert, sets POSTERN_E2E_TLS_DIR) and
+    ``e2e_edge_client_ca`` (mTLS client CA, sets POSTERN_E2E_EDGE_CLIENT_CA_DIR).
+    """
+    if shutil.which("docker") is None:
+        pytest.fail(
+            "docker not on PATH. E2e edge tests require Linux + docker; see CONTRIBUTING.md. "
+            "To opt out, run `pytest -m 'not e2e_edge'`.",
+            pytrace=False,
+        )
+    run(compose_edge("up", "-d", "--wait"))
+    try:
+        yield
+    finally:
+        subprocess.run(compose_edge("down", "-v", "--timeout", "30"), check=False)
+
+
+@pytest.fixture
+def edge_client_certs(e2e_edge_client_ca: Path) -> tuple[Path, Path]:
+    """Paths to (client cert, client key) generated for the mTLS enforcement test."""
+    return (e2e_edge_client_ca / "client.pem", e2e_edge_client_ca / "client-key.pem")
+
+
+@pytest.fixture
+def seeded_edge_ranges(edge_stack) -> Iterator[None]:
+    """Seed the postern-edge volume with ``set_real_ip_from 0.0.0.0/0`` and reload nginx.
+
+    Teardown removes the ranges file and reloads nginx again so subsequent tests
+    start with an empty volume (fail-closed state).
+    """
+    seed_edge_ranges()
+    try:
+        yield
+    finally:
+        remove_edge_ranges()
 
 
 # HTTP clients =========================================================================================================

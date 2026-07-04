@@ -135,6 +135,91 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
         (out_dir / name).chmod(0o644)
 
 
+_CLIENT_KEY_USAGE = x509.KeyUsage(
+    digital_signature=True,
+    content_commitment=False,
+    key_encipherment=False,
+    data_encipherment=False,
+    key_agreement=False,
+    key_cert_sign=False,
+    crl_sign=False,
+    encipher_only=False,
+    decipher_only=False,
+)
+
+
+def generate_edge_client_pki(out_dir: Path) -> None:
+    """Generate a CA + client cert for nginx mTLS (Authenticated Origin Pull) e2e tests.
+
+    The CA is mounted into nginx as ``ssl_client_certificate``; the client cert
+    is presented by the test process to nginx during the TLS handshake.
+
+    Output (all PEM):
+        ca.pem          - root CA cert (bind-mounted into nginx)
+        client.pem      - client cert (presented by the test's ssl.SSLContext)
+        client-key.pem  - client private key
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    not_before = datetime.now(tz=timezone.utc) - CLOCK_SKEW_MARGIN
+    ca_not_after = not_before + CLOCK_SKEW_MARGIN + CA_VALIDITY
+    client_not_after = not_before + CLOCK_SKEW_MARGIN + LEAF_VALIDITY
+
+    # Client CA ========================================================================================================
+    ca_key = Ed25519PrivateKey.generate()
+    ca_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Postern Edge Test Client CA")])
+    ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
+
+    ca_cert = (
+        x509.CertificateBuilder().subject_name(ca_subject).issuer_name(ca_subject).public_key(
+            ca_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(not_before).not_valid_after(ca_not_after).add_extension(
+            x509.BasicConstraints(ca=True, path_length=None), critical=True
+        ).add_extension(CA_KEY_USAGE,
+                        critical=True).add_extension(ca_ski, critical=False).sign(private_key=ca_key, algorithm=None)
+    )
+
+    # Client cert ======================================================================================================
+    client_key = Ed25519PrivateKey.generate()
+    client_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "postern-e2e-edge-client")])
+    client_aki = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski)
+
+    client_cert = (
+        x509.CertificateBuilder().subject_name(client_subject).issuer_name(ca_subject).public_key(
+            client_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(not_before).not_valid_after(client_not_after).add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=True
+        ).add_extension(_CLIENT_KEY_USAGE, critical=True).add_extension(
+            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.CLIENT_AUTH]), critical=False
+        ).add_extension(x509.SubjectKeyIdentifier.from_public_key(client_key.public_key()),
+                        critical=False).add_extension(client_aki,
+                                                      critical=False).sign(private_key=ca_key, algorithm=None)
+    )
+
+    # Serialize ========================================================================================================
+    (out_dir / "ca.pem").write_bytes(ca_cert.public_bytes(serialization.Encoding.PEM))
+    (out_dir / "client.pem").write_bytes(client_cert.public_bytes(serialization.Encoding.PEM))
+    (out_dir / "client-key.pem").write_bytes(
+        client_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+    # World-readable: the nginx container (nonroot UID 65532) needs to read
+    # ca.pem; the test process (running as the host user) needs to read client.pem
+    # and client-key.pem.  Throwaway test keys; no security value.
+    out_dir.chmod(0o755)
+    for name in ("ca.pem", "client.pem", "client-key.pem"):
+        (out_dir / name).chmod(0o644)
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print(f"usage: python {sys.argv[0]} <out_dir>", file=sys.stderr)

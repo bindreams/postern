@@ -10,9 +10,12 @@ Three halves, all green required:
   apex/wildcard A/AAAA + CAA records have been reconciled at least once
   (dns_records_state.json's last_reconciled_iso is non-null).
 
-- MTA records (only when DKIM is enabled, i.e. DNS_PROVIDER != none):
-  mta_records_state.json's last_reconciled_iso is non-null. The MX/SPF/
-  DMARC/MTA-STS/TLS-RPT/TLSA chain is in DNS before mta startup.
+- MTA records (only when the built-in MTA is deployed -- the with-mta compose
+  profile -- AND DNS_PROVIDER != none): mta_records_state.json's
+  last_reconciled_iso is non-null. The MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA chain is
+  in DNS before mta startup. Gating on DNS_PROVIDER alone would deadlock a
+  cert-only or edge-only deployment (both set DNS_PROVIDER but never run the
+  mta_records tick, so last_reconciled_iso would stay null forever).
 
 Used by docker-compose's `depends_on: condition: service_healthy` so nginx
 and mta block startup until the provisioner has done its first-issuance work.
@@ -28,6 +31,7 @@ from postern.cert import dns_records as dns_records_state
 from postern.cert import state as cert_state
 from postern.mta import rotation
 from postern_provisioner import mta_records as mta_records_state
+from postern_provisioner.enablement import compute_enablement, mta_deployed_from_profiles
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -40,6 +44,14 @@ def _bool_env(name: str, default: bool) -> bool:
 def main() -> int:
     cert_renewal = _bool_env("CERT_RENEWAL", False)
     dns_provider = os.environ.get("DNS_PROVIDER", "none").strip().lower()
+    # Single source of truth, identical to the entrypoint's derivation, so the
+    # health gate can never drift from which ticks the loop actually runs.
+    enablement = compute_enablement(
+        dns_provider=dns_provider,
+        cert_renewal=cert_renewal,
+        edge_profile=os.environ.get("EDGE_PROFILE", "none"),
+        mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
+    )
 
     # DKIM half --------------------------------------------------------------------------------------------------------
     # Read via DEFAULT_KEYDIR so tests can monkeypatch the path; production
@@ -75,9 +87,11 @@ def main() -> int:
             return 1
 
     # MTA records half (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA, #118) -------------------------------------------------------
-    # Gate mta startup on the records being in place. Same first-tick-only
-    # gating as the cert/DNS halves above.
-    if dns_provider != "none":
+    # Gate mta startup on the records being in place. Same first-tick-only gating
+    # as the cert/DNS halves above. Only when the built-in MTA is actually
+    # deployed (with-mta) -- a cert-only / edge-only deployment never runs the
+    # mta_records tick, so waiting on it would deadlock service_healthy.
+    if enablement.mta_enabled:
         mta = mta_records_state.read_state()
         if mta.last_reconciled_iso is None:
             print("mta-dns: MX/SPF/DMARC/MTA-STS/TLS-RPT records not yet reconciled", file=sys.stderr)

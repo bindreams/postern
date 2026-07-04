@@ -144,6 +144,14 @@ services:
     profiles: [with-mta, with-cert-renewal, with-edge]
     user: "110:110"
     env_file: .env
+    environment:
+      # "MTA deployed" signal for the enable-gate (entrypoint + healthcheck):
+      # the built-in MTA runs under the with-mta profile, but a Cloudflare edge
+      # deployment also sets DNS_PROVIDER=cloudflare without deploying the MTA.
+      # Inject the RESOLVED profile set (compose reads shell OR .env) so the
+      # provisioner can tell "with-mta" apart from "DNS provider configured" and
+      # never publishes mail/mta-sts records for an edge-only deployment.
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

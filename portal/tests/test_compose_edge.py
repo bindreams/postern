@@ -83,6 +83,20 @@ def test_provisioner_has_with_edge_profile():
     assert "with-edge" in profiles, f"provisioner must join the with-edge profile; got {profiles!r}"
 
 
+def test_provisioner_receives_compose_profiles_signal():
+    """The enable-gate (entrypoint + healthcheck, both in-container) derives
+    "MTA deployed" from the with-mta profile. Compose must inject the RESOLVED
+    COMPOSE_PROFILES so that signal reaches the provisioner regardless of whether
+    the operator set it in .env or the shell -- otherwise an edge-only deployment
+    (DNS_PROVIDER=cloudflare, no with-mta) couldn't tell itself apart from a
+    with-mta one and would publish mail/mta-sts records for a domain with no MTA."""
+    env = _load_compose("compose.yaml")["services"]["provisioner"].get("environment", {})
+    assert env.get("COMPOSE_PROFILES") == "${COMPOSE_PROFILES:-}", (
+        "provisioner must inject COMPOSE_PROFILES: ${COMPOSE_PROFILES:-} so the "
+        f"with-mta signal reaches the container; got {env!r}"
+    )
+
+
 # compose.edge.yaml overlay ============================================================================================
 def test_edge_overlay_flips_provisioner_restart():
     prov = _load_compose("compose.edge.yaml")["services"]["provisioner"]

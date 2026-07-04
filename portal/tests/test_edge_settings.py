@@ -29,7 +29,7 @@ def test_edge_profile_none_ignores_edge_fields():
     assert s.edge_profile == "none"
 
 
-# cloudflare profile ==================================================================================================
+# cloudflare profile ===================================================================================================
 def test_cloudflare_requires_dns_provider_cloudflare():
     with pytest.raises(ValidationError, match="DNS_PROVIDER=cloudflare"):
         _settings(edge_profile="cloudflare", dns_provider="none", public_ipv4="1.2.3.4")
@@ -65,7 +65,7 @@ def test_cloudflare_accepts_aop_disabled():
     assert s.edge_cf_authenticated_origin_pull is False
 
 
-# generic profile =====================================================================================================
+# generic profile ======================================================================================================
 def test_generic_requires_trusted_cidrs():
     with pytest.raises(ValidationError, match="EDGE_TRUSTED_CIDRS"):
         _settings(edge_profile="generic", edge_trusted_cidrs="", edge_realip_header="X-Real-IP")
@@ -98,7 +98,7 @@ def test_generic_full_config_valid():
     assert s.edge_realip_header == "X-Real-IP"
 
 
-# edge_cf_authenticated_origin_pull is cloudflare-only ================================================================
+# edge_cf_authenticated_origin_pull is cloudflare-only =================================================================
 def test_aop_explicit_under_none_rejected():
     with pytest.raises(ValidationError, match="only meaningful under EDGE_PROFILE=cloudflare"):
         _settings(edge_profile="none", edge_cf_authenticated_origin_pull=False)
@@ -114,7 +114,7 @@ def test_aop_explicit_under_generic_rejected():
         )
 
 
-# Environment-variable parsing ========================================================================================
+# Environment-variable parsing =========================================================================================
 class TestEdgeFromEnv:
 
     def test_whitespace_trusted_cidrs_from_env_rejected(self, monkeypatch: pytest.MonkeyPatch):

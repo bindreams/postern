@@ -22,12 +22,8 @@ NEW_NAME = "example.env"
 
 
 def test_example_env_exists_and_old_name_does_not():
-    assert (REPO_ROOT / NEW_NAME).is_file(), (
-        f"{NEW_NAME} not found at repo root; rename has not been applied."
-    )
-    assert not (REPO_ROOT / OLD_NAME).exists(), (
-        f"{OLD_NAME} still exists at repo root; rename is incomplete."
-    )
+    assert (REPO_ROOT / NEW_NAME).is_file(), (f"{NEW_NAME} not found at repo root; rename has not been applied.")
+    assert not (REPO_ROOT / OLD_NAME).exists(), (f"{OLD_NAME} still exists at repo root; rename is incomplete.")
 
 
 def test_gitignore_contains_tmp():
@@ -51,6 +47,5 @@ def test_no_tracked_file_references_old_name():
         raise RuntimeError(f"git grep failed: {result.stderr.strip()}")
     hits = [line for line in result.stdout.splitlines() if line]
     assert not hits, (
-        f"The following tracked files still reference {OLD_NAME!r}; update them:\n"
-        + "\n".join(f"  {h}" for h in hits)
+        f"The following tracked files still reference {OLD_NAME!r}; update them:\n" + "\n".join(f"  {h}" for h in hits)
     )

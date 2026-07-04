@@ -130,7 +130,8 @@ def test_render_tolerates_trailing_separator(tmp_path):
     assert "set_real_ip_from 172.20.0.0/16;" in real_ip
 
 
-# Edge profiles (Cloudflare / generic reverse proxy) =====
+# Edge profiles (Cloudflare / generic reverse proxy) ===================================================================
+
 
 def test_render_edge_none_generates_empty_edge_conf(tmp_path):
     """No EDGE_PROFILE -> edge.conf exists but is empty (the include always resolves)."""

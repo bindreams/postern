@@ -258,8 +258,7 @@ def reconcile_apex_dns(
                 continue
             runner.set_record(rec)
             logger.info(
-                "dns: published %s %s %s%s", rec.type, rec.name, " ".join(rec.args),
-                " (proxied)" if rec.proxied else ""
+                "dns: published %s %s %s%s", rec.type, rec.name, " ".join(rec.args), " (proxied)" if rec.proxied else ""
             )
 
         # 6. Flush state from settings now that all the publishes succeeded --------------------------------------------

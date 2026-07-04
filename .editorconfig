@@ -29,3 +29,7 @@ indent_size = 2
 
 [*Dockerfile]
 indent_style = tab
+
+[nginx/etc/cloudflare-origin-pull-ca.pem]
+insert_final_newline = false
+trim_trailing_whitespace = false

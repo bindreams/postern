@@ -72,34 +72,38 @@ The portal is served from `https://<your-domain>/`. First login requires that yo
 
 Environment variables are loaded from `.env` (copied from `example.env`) into the `portal` container only. All settings are read by [portal/src/postern/settings.py](portal/src/postern/settings.py) via pydantic-settings (env vars are case-insensitive: `SECRET_KEY` in `.env` ↔ `settings.secret_key` in code).
 
-| Variable                      | Default                    | Purpose                                                                                                                                                                   |
-| ----------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SECRET_KEY`                  | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`.                                                |
-| `DATABASE_PATH`               | `/data/postern.db`         | SQLite path inside the portal container. Lives on the `postern-data` named volume, not `./data/`.                                                                         |
-| `SMTP_HOST`                   | `localhost`                | Outbound SMTP server.                                                                                                                                                     |
-| `SMTP_PORT`                   | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                                                                        |
-| `SMTP_USER`                   | _(empty)_                  | SMTP auth username.                                                                                                                                                       |
-| `SMTP_PASSWORD`               | _(empty)_                  | SMTP auth password.                                                                                                                                                       |
-| `SMTP_FROM`                   | `noreply@example.com`      | `From:` header for OTP emails.                                                                                                                                            |
-| `OTP_EXPIRY_SECONDS`          | `600`                      | OTP lifetime (10 min).                                                                                                                                                    |
-| `OTP_MAX_ATTEMPTS`            | `5`                        | Wrong-code attempts before the OTP is invalidated.                                                                                                                        |
-| `OTP_MAX_REQUESTS_PER_WINDOW` | `3`                        | Max active OTPs per email in the rate window.                                                                                                                             |
-| `OTP_RATE_WINDOW_SECONDS`     | `900`                      | OTP rate-limit window (15 min).                                                                                                                                           |
-| `SESSION_EXPIRY_DAYS`         | `7`                        | Browser session lifetime.                                                                                                                                                 |
-| `RECONCILE_INTERVAL_SECONDS`  | `60`                       | How often the reconciler syncs DB → containers.                                                                                                                           |
-| `SHADOWSOCKS_IMAGE`           | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                                                               |
-| `SHADOWSOCKS_NETWORK`         | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                                                                             |
-| `DOMAIN`                      | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                                                                           |
-| `PRODUCT_NAME`                | `Postern`                  | Cosmetic display name shown in UI page titles, OTP email subject, and config-download filename prefix. Decoupled from `DOMAIN`.                                           |
-| `PRODUCT_ICON_PATH`           | _(empty)_                  | Absolute path to a custom SVG (preferred) or PNG brand icon, served via the `/brand-icon` route. See [docs/frontend.md](docs/frontend.md).                                |
-| `GEOIP_DB_DIR`                | _(empty)_                  | Directory holding `GeoLite2-City.mmdb` + `GeoLite2-ASN.mmdb`. Enables the login-page identity card's flag/city/ISP/ASN columns. See [docs/frontend.md](docs/frontend.md). |
-| `COMPOSE_PROFILES`            | `with-mta`                 | Compose profiles to activate. Built-in MTA default-on; comment to opt out and set `SMTP_HOST` to a third-party relay.                                                     |
-| `MTA_VERIFY_DNS`              | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                                                                |
-| `MTA_REQUIRE_DNSSEC`          | `auto`                     | Tri-state. `auto` (default) probes DNSSEC at startup and enforces if signed. `true` always enforces (fail-closed). `false` skips.                                         |
-| `MTA_ADMIN_EMAIL`             | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.                                                           |
-| `MTA_DKIM_SELECTOR_PREFIX`    | `s`                        | Base of the DKIM selector; selectors toggle `<base>1`/`<base>2` across rotations (default `s` -> `s1`/`s2`).                                                              |
-| `MTA_DKIM_ROTATION_DAYS`      | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                                                                              |
-| `DNS_PROVIDER`                | `none`                     | libdns provider name for DKIM auto-rotation and (optional) TLS cert renewal (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).                   |
+| Variable                            | Default                    | Purpose                                                                                                                                                                   |
+| ----------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SECRET_KEY`                        | _(required)_               | Server secret. Portal fails to start without it. Generate with `python -c "import secrets; print(secrets.token_hex(32))"`.                                                |
+| `DATABASE_PATH`                     | `/data/postern.db`         | SQLite path inside the portal container. Lives on the `postern-data` named volume, not `./data/`.                                                                         |
+| `SMTP_HOST`                         | `localhost`                | Outbound SMTP server.                                                                                                                                                     |
+| `SMTP_PORT`                         | `465`                      | `465` → implicit TLS; `587` → STARTTLS; anything else → plaintext.                                                                                                        |
+| `SMTP_USER`                         | _(empty)_                  | SMTP auth username.                                                                                                                                                       |
+| `SMTP_PASSWORD`                     | _(empty)_                  | SMTP auth password.                                                                                                                                                       |
+| `SMTP_FROM`                         | `noreply@example.com`      | `From:` header for OTP emails.                                                                                                                                            |
+| `OTP_EXPIRY_SECONDS`                | `600`                      | OTP lifetime (10 min).                                                                                                                                                    |
+| `OTP_MAX_ATTEMPTS`                  | `5`                        | Wrong-code attempts before the OTP is invalidated.                                                                                                                        |
+| `OTP_MAX_REQUESTS_PER_WINDOW`       | `3`                        | Max active OTPs per email in the rate window.                                                                                                                             |
+| `OTP_RATE_WINDOW_SECONDS`           | `900`                      | OTP rate-limit window (15 min).                                                                                                                                           |
+| `SESSION_EXPIRY_DAYS`               | `7`                        | Browser session lifetime.                                                                                                                                                 |
+| `RECONCILE_INTERVAL_SECONDS`        | `60`                       | How often the reconciler syncs DB → containers.                                                                                                                           |
+| `SHADOWSOCKS_IMAGE`                 | `local/shadowsocks-server` | Image the reconciler spawns per connection.                                                                                                                               |
+| `SHADOWSOCKS_NETWORK`               | `shadowsocks`              | Docker bridge network `ss-*` containers join; Nginx attaches to the same one.                                                                                             |
+| `DOMAIN`                            | `postern.example.com`      | Public domain. Used in client configs and server `plugin_opts`.                                                                                                           |
+| `PRODUCT_NAME`                      | `Postern`                  | Cosmetic display name shown in UI page titles, OTP email subject, and config-download filename prefix. Decoupled from `DOMAIN`.                                           |
+| `PRODUCT_ICON_PATH`                 | _(empty)_                  | Absolute path to a custom SVG (preferred) or PNG brand icon, served via the `/brand-icon` route. See [docs/frontend.md](docs/frontend.md).                                |
+| `GEOIP_DB_DIR`                      | _(empty)_                  | Directory holding `GeoLite2-City.mmdb` + `GeoLite2-ASN.mmdb`. Enables the login-page identity card's flag/city/ISP/ASN columns. See [docs/frontend.md](docs/frontend.md). |
+| `COMPOSE_PROFILES`                  | `with-mta`                 | Compose profiles to activate. Built-in MTA default-on; comment to opt out and set `SMTP_HOST` to a third-party relay.                                                     |
+| `MTA_VERIFY_DNS`                    | `true`                     | Built-in MTA refuses to start if any required DNS record is missing or wrong. Set `false` for dev/CI only.                                                                |
+| `MTA_REQUIRE_DNSSEC`                | `auto`                     | Tri-state. `auto` (default) probes DNSSEC at startup and enforces if signed. `true` always enforces (fail-closed). `false` skips.                                         |
+| `MTA_ADMIN_EMAIL`                   | _(empty)_                  | **Required when `MTA_VERIFY_DNS=true`.** External mailbox where postmaster/abuse/tls-rpt/bounces are forwarded.                                                           |
+| `MTA_DKIM_SELECTOR_PREFIX`          | `s`                        | Base of the DKIM selector; selectors toggle `<base>1`/`<base>2` across rotations (default `s` -> `s1`/`s2`).                                                              |
+| `MTA_DKIM_ROTATION_DAYS`            | `180`                      | How often the provisioner rotates DKIM keys (when auto-rotation is enabled).                                                                                              |
+| `DNS_PROVIDER`                      | `none`                     | libdns provider name for DKIM auto-rotation and (optional) TLS cert renewal (`cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, etc.).                   |
+| `EDGE_PROFILE`                      | `none`                     | Front postern with a CDN/proxy. `cloudflare` (turnkey; requires `DNS_PROVIDER=cloudflare` + `PUBLIC_IPV4`) or `generic`. See [docs/edge.md](docs/edge.md).                |
+| `EDGE_TRUSTED_CIDRS`                | _(empty)_                  | **`generic` only, required.** Space/comma-separated CIDRs of the front's egress; nginx trusts these for real-IP recovery.                                                 |
+| `EDGE_REALIP_HEADER`                | _(empty)_                  | **`generic` only, required.** Header the front sets with the real client IP (e.g. `X-Forwarded-For`).                                                                     |
+| `EDGE_CF_AUTHENTICATED_ORIGIN_PULL` | `true`                     | `cloudflare` only. Enforce Cloudflare Authenticated Origin Pull mTLS at the origin. Blocks naive direct-to-origin; see the AOP caveats in [docs/edge.md](docs/edge.md).   |
 
 ## Re-hosting to a different domain
 
@@ -128,6 +132,8 @@ docker compose up -d --build nginx
 ```
 
 For deployments that put postern behind an external reverse proxy doing TCP+SNI passthrough (Traefik, HAProxy, etc.) — see [docs/gateway.md](docs/gateway.md).
+
+To front postern with Cloudflare (or another CDN) to hide the SNI/origin and recover the real client IP — see [docs/edge.md](docs/edge.md).
 
 ## Admin workflow
 

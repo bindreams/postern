@@ -27,6 +27,7 @@ MUST_KEEP = {
     "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA"],
     "operations/rename.md": ["_domainkey", "docker compose down"],
     "operations/index.md": ["postern reconcile"],
+    "development/architecture.md": ["`CONTAINERS`, `NETWORKS`, `IMAGES`"],
 }
 
 # Tripwires that mirror a machine value: the phrase must appear on the page
@@ -41,6 +42,8 @@ MUST_KEEP_CODE = [
     ("development/testing.md", "e2e_mta_outbound", "portal/pyproject.toml"),
     ("development/architecture.md", "default-src", "nginx/etc/nginx.conf.tmpl"),
     ("operations/index.md", ".reconcile-now", "portal/src/postern/reconciler.py"),
+    ("development/architecture.md", "token_hex(12)", "portal/src/postern/cli.py"),
+    ("development/architecture.md", "postern.managed", "portal/src/postern/reconciler.py"),
 ]
 
 # Escape hatch for vars legitimately documented in configuration.md that are

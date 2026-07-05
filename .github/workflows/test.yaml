@@ -17,7 +17,7 @@ jobs:
           enable-cache: true
       - run: uv sync --all-extras
         working-directory: portal
-      - run: uv run pytest -m "not e2e and not e2e_mta and not e2e_mta_real and not e2e_mta_outbound" --timeout=30
+      - run: uv run pytest -m "not e2e and not e2e_mta and not e2e_mta_real and not e2e_mta_outbound and not e2e_edge" --timeout=30
         working-directory: portal
 
   go-unit:
@@ -101,6 +101,62 @@ jobs:
         if: failure()
         run: |
           docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml logs --no-color
+          docker ps -a --filter label=postern.managed=true
+
+  e2e-edge:
+    name: End-to-end edge-fronting tests
+    runs-on: ubuntu-latest
+    env:
+      # Placeholders so `docker buildx bake` (and the failure `compose logs`
+      # step) can interpolate the e2e-edge compose file's `:?`-required volume
+      # sources. The edge fixtures (e2e_certs -> POSTERN_E2E_TLS_DIR,
+      # e2e_edge_client_ca -> POSTERN_E2E_EDGE_CLIENT_CA_DIR) override both for
+      # the subprocesses that actually `compose up`, so these values are never
+      # bind-mounted for real.
+      POSTERN_E2E_TLS_DIR: /tmp/postern-e2e-edge-tls-placeholder
+      POSTERN_E2E_EDGE_CLIENT_CA_DIR: /tmp/postern-e2e-edge-ca-placeholder
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Add postern.test to /etc/hosts (for the host-side pytest client)
+        run: echo "127.0.0.1 postern.test" | sudo tee -a /etc/hosts
+
+      - name: Log in to Docker Hardened Images registry
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v4
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      # The edge overlay only needs the portal + nginx images. It never creates a
+      # connection, so the reconciler spawns no ss-* container and the
+      # shadowsocks image is not required. Shared cache scope `e2e` so the
+      # identical portal/nginx layers reuse artifacts from the parallel e2e job.
+      - name: Build e2e-edge compose images (kept out of the pytest fixture so the build is not subject to the per-test timeout)
+        uses: docker/bake-action@v5
+        with:
+          workdir: portal/tests/e2e
+          files: e2e-edge.compose.yaml
+          load: true
+          set: |
+            *.cache-from=type=gha,scope=e2e
+            *.cache-to=type=gha,mode=max,scope=e2e
+
+      - run: uv sync --group e2e
+        working-directory: portal
+
+      - run: uv run pytest -m e2e_edge -v --timeout=180
+        working-directory: portal
+
+      - name: Dump compose logs on failure
+        if: failure()
+        run: |
+          docker compose -p postern-e2e-edge -f portal/tests/e2e/e2e-edge.compose.yaml logs --no-color
           docker ps -a --filter label=postern.managed=true
 
   e2e-mta:

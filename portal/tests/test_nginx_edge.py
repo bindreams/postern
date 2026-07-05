@@ -8,6 +8,8 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import pytest
+import sys
 from pathlib import Path
 
 from cryptography import x509
@@ -109,7 +111,13 @@ def test_edge_real_event_triggers_reload(tmp_path):
     bindir.mkdir()
     nginx_log = tmp_path / "nginx.log"
     fifo = tmp_path / "inotify.fifo"
-    os.mkfifo(fifo)
+    try:
+        os.mkfifo(fifo)
+    except OSError:
+        # Named pipes not supported on Windows — skip this Linux/named-pipe test
+        if sys.platform == 'win32':
+            pytest.skip("named pipes not supported on this platform")
+        raise
     staged = tmp_path / "staged.conf"
     staged.write_text("set_real_ip_from 173.245.48.0/20;\n")
     conf = edge_dir / "cf-ranges.conf"

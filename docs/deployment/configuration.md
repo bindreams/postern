@@ -111,6 +111,10 @@ Profiles must be set in `.env` — a CLI-only `docker compose --profile` flag is
 
 ## Changing the domain
 
+```{seealso}
+For a live deployment with published DNS records and issued certificates, follow the [rename runbook](../operations/rename.md) — provisioner state and old DNS records do not migrate by themselves.
+```
+
 Set in `.env`:
 
 ```ini

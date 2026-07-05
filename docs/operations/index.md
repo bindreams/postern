@@ -1,0 +1,122 @@
+# Operations
+
+Day-2 guide for a running deployment: managing users, watching the stack, and routine upkeep.
+
+## Managing users and connections
+
+Postern has no self-serve signup. The operator creates users and their connections with the `postern` CLI, which ships inside the portal image:
+
+```bash
+# Add a user
+docker compose exec portal postern user add "Alice" alice@example.com
+
+# Give them a connection (creates a 24-hex-char path token + random password)
+docker compose exec portal postern connection add alice@example.com "laptop"
+
+# Inspect
+docker compose exec portal postern user list
+docker compose exec portal postern connection list --user-email alice@example.com
+
+# Disable / enable / delete
+docker compose exec portal postern connection disable <connection_id>
+docker compose exec portal postern connection enable  <connection_id>
+docker compose exec portal postern user disable alice@example.com
+docker compose exec portal postern user delete  alice@example.com
+```
+
+Disabling is reversible: the database row (path token, password, label) stays, only the tunnel container is torn down, and `enable` brings the same tunnel back — the user's downloaded config keeps working. Deleting (`user delete`) removes the user and every connection they own; their tokens and configs stop working permanently.
+
+Commands that change connection state (`connection add`/`enable`/`disable`, `user disable`/`delete`) trigger an immediate reconcile, so the corresponding container appears or disappears within a few seconds. Pure reads (`list`) and `user add` do not — a user with no connections needs no container.
+
+Full command reference: [CLI](cli.md).
+
+## The reconciler
+
+The portal runs a background loop ([reconciler.py](https://github.com/bindreams/postern/blob/main/portal/src/postern/reconciler.py)) every `RECONCILE_INTERVAL_SECONDS` (default 60 s; see [configuration](../deployment/configuration.md)) that makes Docker match the database. Each pass it:
+
+- creates a container for every enabled connection that lacks one, and removes orphans;
+- restarts `ss-*` containers that have exited;
+- recreates containers whose `local/shadowsocks-server` image ID differs from the current image (see [Updates](#updates));
+- cleans up expired sessions and OTP codes from the database.
+
+To trigger a pass immediately instead of waiting for the next poll:
+
+```bash
+docker compose exec portal postern reconcile
+```
+
+Under the hood, `postern reconcile` and every state-mutating CLI command create a `.reconcile-now` trigger file next to the database (`/data/.reconcile-now` in the default deployment); the loop notices it within a second, deletes it, and runs a pass. This is why CLI changes take effect in seconds rather than a minute.
+
+## Logs
+
+- **nginx** writes `access.log` and `error.log` to the host at `nginx/log/` in your checkout (bind mount).
+- **portal**: `docker compose logs -f portal`.
+- **`ss-*` tunnel containers** are deliberately logless — the reconciler creates them with Docker's `none` log driver, so no traffic metadata accumulates on disk. `docker logs` on them returns nothing by design.
+
+## Restarts
+
+```{warning}
+Restarting the portal stops **all** tunnels. On shutdown the portal removes every `ss-*` container; the reconciler recreates them a few seconds after startup, but every user's connection is interrupted. Plan portal restarts (including `docker compose up -d --build`) accordingly.
+```
+
+Shutdown cleanup is best-effort: if the docker-proxy is unavailable while the portal is stopping, the `ss-*` containers survive into the next portal start. This is harmless — the reconciler adopts them on its next pass by their `postern.managed=true` label.
+
+## Updates
+
+```bash
+git pull
+
+# Rebuild the per-connection tunnel image. Compose does NOT build this one --
+# the reconciler spawns it at runtime.
+docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+
+# Rebuild and restart the rest of the stack
+docker compose up -d --build
+```
+
+The [shadowsocks image](https://github.com/bindreams/postern/blob/main/shadowsocks/Dockerfile) must be built from the repo root (it copies from `external/`); `docker build ./shadowsocks/` fails. After a rebuild, the reconciler detects the changed image ID and recreates each tunnel container — path tokens are unchanged, so client configs stay valid; each tunnel just drops briefly.
+
+## Backup
+
+State lives in named Docker volumes, declared in [compose.yaml](https://github.com/bindreams/postern/blob/main/compose.yaml):
+
+```{list-table}
+---
+header-rows: 1
+---
+- - Volume
+  - Contents
+- - `postern-data`
+  - The portal's SQLite database — users, connections (path tokens and passwords), sessions.
+- - `postern-mta-data`
+  - DKIM signing keys and rotation state (built-in MTA).
+- - `postern-mta-queue`
+  - The Postfix queue — in-flight mail, including deferred OTP emails awaiting retry.
+```
+
+The remaining volumes (`postern-letsencrypt`, `postern-edge`) are regenerated by the provisioner and need no backup.
+
+```{note}
+`./data/` in the checkout is **not** used — it is gitignored and nothing writes to it. The database exists only inside the `postern-data` volume.
+```
+
+To back up a volume to the current directory:
+
+```bash
+docker run --rm --network none -v postern-data:/data -v "$PWD:/backup" alpine:3 \
+  tar czf /backup/postern-data.tgz -C /data .
+```
+
+Repeat with the other volume names. For a consistent snapshot of the SQLite database, stop the stack first with `docker compose down` (without `-v` — that flag deletes the volumes) and back up cold.
+
+```{seealso}
+[Renaming the deployment hostname](rename.md) — the domain-change runbook, which preserves all three volumes.
+```
+
+```{toctree}
+---
+maxdepth: 1
+---
+cli.md
+rename.md
+```

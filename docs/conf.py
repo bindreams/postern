@@ -22,11 +22,6 @@ extensions = [
 # mangles.
 myst_heading_anchors = 3
 
-# Legacy pre-refactor pages: excluded (they are not in any toctree) until the
-# content tasks migrate and delete them.
-exclude_patterns = [
-    "_build",
-    "rename.md",
-]
+exclude_patterns = ["_build"]
 
 html_theme = "furo"

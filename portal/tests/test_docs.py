@@ -25,6 +25,8 @@ MUST_KEEP = {
     "deployment/configuration.md": ["cookie `max_age`"],
     "deployment/gateway.md": ["forge a PROXY header", "broken header"],
     "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA"],
+    "operations/rename.md": ["_domainkey", "docker compose down"],
+    "operations/index.md": ["postern reconcile"],
 }
 
 # Tripwires that mirror a machine value: the phrase must appear on the page
@@ -38,6 +40,7 @@ MUST_KEEP_CODE = [
     ("development/testing.md", "e2e_mta_real", "portal/pyproject.toml"),
     ("development/testing.md", "e2e_mta_outbound", "portal/pyproject.toml"),
     ("development/architecture.md", "default-src", "nginx/etc/nginx.conf.tmpl"),
+    ("operations/index.md", ".reconcile-now", "portal/src/postern/reconciler.py"),
 ]
 
 # Escape hatch for vars legitimately documented in configuration.md that are
@@ -227,3 +230,46 @@ def test_compose_topology_references():
                 problems.append(f"{rel}: unknown compose profile {profile}")
     assert checked > 0, "no compose references found -- extraction regex or docs are broken"
     assert not problems, "stale compose topology references:\n" + "\n".join(problems)
+
+
+def _typer_command_paths() -> set[str]:
+    """All full command paths of the postern CLI, e.g. {'user add', 'reconcile', ...}."""
+    import click
+    from typer.main import get_command
+
+    import postern.cli
+
+    root = get_command(postern.cli.app)
+    paths: set[str] = set()
+
+    def walk(cmd, prefix: str) -> None:
+        if isinstance(cmd, click.Group):
+            for name, sub in cmd.commands.items():
+                walk(sub, f"{prefix}{name} ")
+        else:
+            paths.add(prefix.strip())
+
+    walk(root, "")
+    return paths
+
+
+def test_cli_reference_complete():
+    """cli.md documents every CLI command as a `### postern <path>` heading -- exactly once each."""
+    text = (DOCS_DIR / "operations" / "cli.md").read_text(encoding="utf-8")
+    headings = re.findall(r"^### postern (.+?)\s*$", text, flags=re.M)
+    dupes = {h for h in headings if headings.count(h) > 1}
+    assert not dupes, f"commands documented more than once: {sorted(dupes)}"
+    documented = set(headings)
+    actual = _typer_command_paths()
+    assert documented == actual, (f"undocumented: {sorted(actual - documented)}; stale: {sorted(documented - actual)}")
+
+
+REAL_DOMAIN = re.compile(r"binarydreams\.me")
+
+
+def test_no_real_domains():
+    """docs/ never mentions the maintainer's real deployment domains."""
+    # Sentinel self-check: a broken pattern must fail here, not pass vacuously.
+    assert REAL_DOMAIN.search("hole." + "binarydreams" + ".me")
+    hits = [f"{md.relative_to(REPO_ROOT)}" for md in _docs_md() if REAL_DOMAIN.search(md.read_text(encoding="utf-8"))]
+    assert not hits, f"real domains leaked into docs: {hits}"

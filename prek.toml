@@ -55,7 +55,12 @@ repo = "https://github.com/google/yapf"
 rev = "v0.43.0"
 hooks = [{ id = "yapf" }]
 
+# Two mdformat entries with separate plugin envs: mdformat-gfm escapes MyST
+# syntax (toctree titles, colon fences), so docs/ gets the myst plugin instead.
 [[repos]]
 repo = "https://github.com/hukkin/mdformat"
 rev = "1.0.0"
-hooks = [{ id = "mdformat", additional_dependencies = ["mdformat-gfm==1.0.0"] }]
+hooks = [
+  { id = "mdformat", additional_dependencies = ["mdformat-gfm==1.0.0"], exclude = "^docs/" },
+  { id = "mdformat", name = "mdformat (myst)", additional_dependencies = ["mdformat-myst==0.3.0"], files = "^docs/" },
+]

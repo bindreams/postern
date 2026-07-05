@@ -2,13 +2,13 @@
 
 Use this runbook when you need to change `DOMAIN` (e.g. moving from a production hostname to a staging one, or vice versa). The procedure preserves `postern-data` (portal DB), `postern-mta-data` (DKIM keys and rotation state), and `postern-mta-queue` (in-flight mail).
 
-`DOMAIN` flows into nginx templates (rendered at container start), `mail.${DOMAIN}` MTA hostname, the wildcard TLS cert SAN set `{<domain>, *.<domain>}`, Traefik's `HostSNI(...)` label, and every DNS record the provisioner publishes (apex/wildcard A/AAAA/CAA, MX, SPF, DMARC, MTA-STS, TLS-RPT, TLSA, DKIM). Most of this is automatic on restart, but three things are not:
+`DOMAIN` flows into nginx templates (rendered at container start), `mail.${DOMAIN}` MTA hostname, the wildcard TLS cert SAN set `{<domain>, *.<domain>}` (see [Certificates](../deployment/certificates.md)), Traefik's `HostSNI(...)` label (see [Gateway](../deployment/gateway.md)), and every DNS record the provisioner publishes (apex/wildcard A/AAAA/CAA, MX, SPF, DMARC, MTA-STS, TLS-RPT, TLSA, DKIM). Most of this is automatic on restart, but three things are not:
 
 1. **Provisioner state files** keep `last_published_*` markers tied to the OLD FQDN. On domain change the reconcilers compute new FQDNs but their drift logic compares against stale `last_published_*` values, so they would not republish for the new domain. Reset:
    - `/etc/letsencrypt/state.json` (cert state)
    - `/etc/letsencrypt/dns_records_state.json` (apex/wildcard A/AAAA/CAA reconciler)
    - `/var/lib/opendkim/mta_records_state.json` (MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA reconciler)
-1. **DKIM TXT for the new FQDN must be published by hand.** The rotation state machine in `provisioner/entrypoint.py` only publishes during `STABLE -> PROPAGATING` (i.e. on rotation). The MTA-records reconciler explicitly excludes DKIM. Mirror the first-deploy bootstrap and publish via `postern-dns txt-set`.
+1. **DKIM TXT for the new FQDN must be published by hand.** The rotation state machine in [provisioner/entrypoint.py](https://github.com/bindreams/postern/blob/main/provisioner/entrypoint.py) only publishes during `STABLE -> PROPAGATING` (i.e. on rotation). The MTA-records reconciler explicitly excludes DKIM. Mirror the first-deploy bootstrap and publish via `postern-dns txt-set`.
 1. **OLD records at `*.<old-domain>`** are not auto-retired — the deletion logic compares record values, not FQDNs. Delete them via your DNS provider's API.
 
 Reverse DNS (PTR) is set at the VPS provider control panel and has no API from inside Postern.
@@ -17,11 +17,18 @@ Reverse DNS (PTR) is set at the VPS provider control panel and has no API from i
 
 - DNS provider API token with zone DNS edit (publish + delete).
 - VPS provider panel access for PTR.
-- Acknowledged downtime window — there is no zero-downtime path for this.
+
+```{warning}
+Acknowledged downtime window required — there is no zero-downtime path for this.
+```
 
 ## 0. Pre-flight (read-only)
 
-Verify the token, resolve the zone id, and inventory every record at or below the OLD domain. These commands assume Cloudflare; substitute your provider's API.
+Verify the token, resolve the zone id, and inventory every record at or below the OLD domain.
+
+```{note}
+These commands assume Cloudflare; substitute your provider's API.
+```
 
 ```bash
 cd <postern-checkout>
@@ -32,9 +39,9 @@ curl -sS -X GET \
   "https://api.cloudflare.com/client/v4/user/tokens/verify" \
   | jq -e '.success == true and (.result.status == "active")'
 
-OLD_DOMAIN=hole.binarydreams.me
-NEW_DOMAIN=hole-stgn.binarydreams.me
-ZONE=binarydreams.me
+OLD_DOMAIN=postern.example.com
+NEW_DOMAIN=postern-staging.example.com
+ZONE=example.com
 
 ZONE_ID=$(curl -sS -X GET \
   -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
@@ -68,7 +75,11 @@ docker compose exec provisioner \
 ## 1. Stop the stack
 
 ```bash
-docker compose down   # no -v / --volumes; named volumes must survive
+docker compose down
+```
+
+```{warning}
+Run with no -v / --volumes; named volumes must survive.
 ```
 
 ## 2. Reset provisioner state files
@@ -81,7 +92,9 @@ docker run --rm --network none -v postern-mta-data:/data alpine:3 sh -c \
   'rm -f /data/mta_records_state.json'
 ```
 
+```{note}
 DKIM `state.json` and the `<selector>.private` / `<selector>.txt` files in `postern-mta-data` are intentionally not touched.
+```
 
 ## 3. Delete OLD records
 
@@ -102,7 +115,11 @@ v4: <PUBLIC_IPV4> -> mail.<NEW_DOMAIN>.
 v6: <PUBLIC_IPV6> -> mail.<NEW_DOMAIN>.
 ```
 
-Wait for the change to land. The MTA's startup `MTA_VERIFY_DNS=true` check will fail if PTR still resolves to the old name.
+Wait for the change to land.
+
+```{note}
+The MTA's startup `MTA_VERIFY_DNS=true` check will fail if PTR still resolves to the old name.
+```
 
 ## 5. Edit `.env` and bring the stack up
 

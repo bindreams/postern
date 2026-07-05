@@ -14,7 +14,7 @@
 # must be restarted; this override switches the policy to unless-stopped, the
 # same way compose.cert.yaml does for the cert tick loop.
 #
-# See docs/edge.md for the operator runbook.
+# See docs/deployment/edge.md for the operator runbook.
 
 services:
   provisioner:

@@ -5,7 +5,7 @@ with optional MaxMind GeoLite2 City + ASN MMDB lookups, plus a parsed User-Agent
 summary, into a single :class:`IdentityInfo` dataclass.
 
 GeoIP databases are owned by the operator and bind-mounted read-only into the
-portal container; see ``docs/frontend.md``. If no DBs are configured, lookup
+portal container; see ``docs/deployment/customization.md``. If no DBs are configured, lookup
 still returns a populated IP + UA summary and leaves the geo/asn fields ``None``.
 """
 

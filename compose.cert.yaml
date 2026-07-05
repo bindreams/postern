@@ -13,7 +13,7 @@
 # first issuance succeeds. Switches the provisioner restart policy from "no" to
 # unless-stopped so transient outages self-heal.
 #
-# See docs/certs.md for the operator runbook.
+# See docs/deployment/certificates.md for the operator runbook.
 
 services:
   nginx:

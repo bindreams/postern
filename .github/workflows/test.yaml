@@ -222,6 +222,35 @@ jobs:
             -f portal/tests/e2e/e2e-mta.compose.yaml \
             ps -a
 
+  docs:
+    name: Docs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+      # The -W reference gate is load-bearing: prove it still fails on a broken
+      # link + orphan page (fixture) FOR THOSE REASONS before trusting it on
+      # the real tree. Nonzero exit alone is not enough -- an unrelated crash
+      # would mask a dead gate.
+      - name: Reference-gate self-test (fixture must FAIL on link+orphan warnings)
+        run: |
+          set +e
+          uv run --no-project --python 3.13 \
+            --with-requirements docs/requirements.txt -- \
+            sphinx-build -W --keep-going -b html \
+            scripts/docs-gate-fixture scripts/docs-gate-fixture/_build > fixture.log 2>&1
+          status=$?
+          cat fixture.log
+          test "$status" -ne 0 || { echo "fixture built clean -- reference gate is dead"; exit 1; }
+          grep -q "does-not-exist" fixture.log || { echo "no broken-link warning -- gate dead"; exit 1; }
+          grep -q "isn't included in any toctree" fixture.log || { echo "no orphan warning -- gate dead"; exit 1; }
+      - run: >
+          uv run --no-project --python 3.13
+          --with-requirements docs/requirements.txt --
+          sphinx-build -W --keep-going -b html docs docs/_build/html
+
   e2e-mta-real:
     name: End-to-end MTA tests (real DNS provider + libdns)
     runs-on: ubuntu-latest

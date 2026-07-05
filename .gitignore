@@ -23,3 +23,7 @@ CLAUDE.local.md
 
 # Per-worktree Claude Code scratch directory (CLAUDE.md)
 .tmp/
+
+# Sphinx build output
+docs/_build/
+scripts/docs-gate-fixture/_build/

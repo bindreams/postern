@@ -17,9 +17,9 @@ extensions = [
     "sphinx_design",
     "sphinx_copybutton",
 ]
-# Directives use backtick fences only: the mdformat-myst prek hook escapes
-# colon fences, so enabling colon_fence would invite syntax the formatter
-# mangles.
+# No colon_fence: the mdformat-myst prek hook escapes colon fences, so the
+# docs use backtick-fenced directives exclusively.
+myst_enable_extensions = []
 myst_heading_anchors = 3
 
 exclude_patterns = ["_build"]

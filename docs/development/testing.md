@@ -201,8 +201,6 @@ export POSTERN_E2E_TLS_DIR=/etc/letsencrypt/live/${MTA_TEST_DOMAIN}
 uv run pytest -m e2e_mta_outbound -v --timeout=600
 ```
 
-A follow-up issue tracks adding a self-hosted runner labeled `port25-ok` so this suite can run in CI.
-
 ## Cloudflare contract test (`cfcontract`)
 
 The edge profile's `--proxied` support ([provisioner/postern-dns/cloudflare_proxied.go](https://github.com/bindreams/postern/blob/main/provisioner/postern-dns/cloudflare_proxied.go)) rests on one Cloudflare-API assumption: error 81058 ("identical record already exists") keys on `(zone, type, name, content)` and **excludes** `proxied`. The hermetic `go-unit` job only checks this against a self-authored fake coded to the same assumption; [provisioner/postern-dns/cloudflare_contract_test.go](https://github.com/bindreams/postern/blob/main/provisioner/postern-dns/cloudflare_contract_test.go) verifies it against a live Cloudflare zone.

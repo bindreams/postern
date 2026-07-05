@@ -107,7 +107,7 @@ Under `cloudflare`, AOP mTLS is **on by default** and does raise the bar: a naiv
 - The certificate nginx trusts is Cloudflare's **global** origin-pull CA, shared across **all** Cloudflare tenants. AOP authenticates *"this connection came through Cloudflare"*, **not** *"this connection came through your zone."*
 - So an attacker who discovers your origin IP can point **their own** Cloudflare zone at it and present the very same, valid origin-pull certificate. AOP alone does not stop them.
 
-**The host firewall (`:443` restricted to Cloudflare ranges) is the real lockdown.** AOP is defence-in-depth on top of it, not a substitute. Per-hostname (zone-scoped) Authenticated Origin Pull — which *would* bind to your zone specifically — is a documented follow-up.
+**The host firewall (`:443` restricted to Cloudflare ranges) is the real lockdown.** AOP is defence-in-depth on top of it, not a substitute. Per-hostname zone-scoped AOP would bind to your zone specifically.
 
 ## Threat model: what Cloudflare sees
 

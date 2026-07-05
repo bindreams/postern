@@ -1,6 +1,6 @@
 # Development
 
-Postern is a small codebase and is easy to develop on locally. This page covers the contributor workflow: environment setup, running the stack, code style, and opening a PR. For how the pieces fit together, read [Architecture](architecture.md); for the unit and end-to-end suites, read [Testing](testing.md).
+This page covers the contributor workflow: environment setup, running the stack, code style, and opening a PR. For how the pieces fit together, read [Architecture](architecture.md); for the unit and end-to-end suites, read [Testing](testing.md).
 
 ## Prerequisites
 

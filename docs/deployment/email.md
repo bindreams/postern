@@ -138,8 +138,6 @@ The provisioner generates the initial key on first start, then exits. To rotate:
 1. The mta auto-picks up the new key on its next reload trigger.
 1. After ~7 days of overlap, retire the old TXT record manually.
 
-This is a once-per-six-months chore.
-
 ### Auto rotation (when `DNS_PROVIDER=<provider>`)
 
 Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`:

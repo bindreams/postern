@@ -403,7 +403,7 @@ def _require_env(*names: str) -> dict[str, str]:
         pytest.fail(
             "Missing env for real-infra MTA tests: " + ", ".join(missing) +
             ".\nThese tests require a maintainer-owned test domain and DNS provider creds.\n"
-            "See docs/deployment/email.md > 'Real-infra test-domain setup' for the full checklist.\n"
+            "See docs/development/testing.md > 'Real-infrastructure MTA suite' for the full checklist.\n"
             "Opt out instead: `pytest -m 'not e2e_mta_real'`.",
             pytrace=False,
         )

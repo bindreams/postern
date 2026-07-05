@@ -81,18 +81,20 @@ func deleteAddrByID(ctx context.Context, c *cfClient, zoneID, id string) error {
 // registerCleanup schedules deletion of every record of recType at fqdn when the
 // test finishes -- listing at teardown (rather than tracking IDs) also sweeps up
 // records that a production helper created internally and never handed us an ID
-// for. Runs even on t.Fatalf/panic via t.Cleanup.
+// for. Runs even on t.Fatalf/panic via t.Cleanup. Cleanup failures are reported
+// via t.Errorf (a leaked record on the live zone must fail the run, not hide in
+// a PASS log); the delete loop continues past errors to remove what it still can.
 func registerCleanup(t *testing.T, ctx context.Context, c *cfClient, zoneID, recType, fqdn string) {
 	t.Helper()
 	t.Cleanup(func() {
 		recs, err := c.listAddr(ctx, zoneID, recType, fqdn)
 		if err != nil {
-			t.Logf("cfcontract cleanup: list %s %s: %v (leaked records may remain)", recType, fqdn, err)
+			t.Errorf("cfcontract cleanup: list %s %s: %v (leaked records may remain)", recType, fqdn, err)
 			return
 		}
 		for _, r := range recs {
 			if err := deleteAddrByID(ctx, c, zoneID, r.ID); err != nil {
-				t.Logf("cfcontract cleanup: delete %s (%s %s): %v (leaked)", r.ID, recType, fqdn, err)
+				t.Errorf("cfcontract cleanup: delete %s (%s %s): %v (leaked)", r.ID, recType, fqdn, err)
 			}
 		}
 	})

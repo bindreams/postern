@@ -157,10 +157,11 @@ def mta_e2e_stack(_patch_dns_for_postern_test, e2e_certs) -> Iterator[None]:
         # In CI, leave the project running so the workflow's "Dump compose logs
         # on failure" step can grab postfix / opendkim / provisioner logs --
         # without this, `compose down -v` wipes the project before the dump
-        # step runs and operators see an empty container list.
-        if os.environ.get("CI") == "true":
-            return
-        subprocess.run(compose_mta("down", "-v", "--timeout", "30"), check=False)
+        # step runs and operators see an empty container list. (Guarded with
+        # `if` rather than an early `return`: Python 3.14 warns on `return`
+        # inside `finally`, PEP 765.)
+        if os.environ.get("CI") != "true":
+            subprocess.run(compose_mta("down", "-v", "--timeout", "30"), check=False)
 
 
 # Edge stack fixtures ==================================================================================================
@@ -207,7 +208,14 @@ def edge_stack(_patch_dns_for_postern_test, e2e_certs, e2e_edge_client_ca) -> It
     try:
         yield
     finally:
-        subprocess.run(compose_edge("down", "-v", "--timeout", "30"), check=False)
+        # In CI, leave the project running so the workflow's "Dump compose logs
+        # on failure" step can grab nginx / portal logs -- without this,
+        # `compose down -v` wipes the project before the dump step runs and
+        # operators see an empty container list. (Guarded with `if` rather than
+        # an early `return`: Python 3.14 warns on `return` inside `finally`,
+        # PEP 765.)
+        if os.environ.get("CI") != "true":
+            subprocess.run(compose_edge("down", "-v", "--timeout", "30"), check=False)
 
 
 @pytest.fixture

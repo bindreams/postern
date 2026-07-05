@@ -37,6 +37,11 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
       - run: go vet ./...
+      # Compile-check the maintainer-only Cloudflare contract test. It is
+      # behind `//go:build cfcontract`, so untagged vet/test never compile it
+      # and it would bit-rot silently on refactors of the production symbols
+      # it uses. Vet compiles without executing -- no token or live zone needed.
+      - run: go vet -tags cfcontract ./...
       - run: go test ./... -count=1
 
   e2e:

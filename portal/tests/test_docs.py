@@ -280,3 +280,35 @@ def test_no_real_domains():
     assert REAL_DOMAIN.search("hole." + "binarydreams" + ".me")
     hits = [f"{md.relative_to(REPO_ROOT)}" for md in _docs_md() if REAL_DOMAIN.search(md.read_text(encoding="utf-8"))]
     assert not hits, f"real domains leaked into docs: {hits}"
+
+
+STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.md|CONTRIBUTING\.md#")
+
+
+def test_no_stale_doc_references():
+    """No tracked first-party file references the pre-refactor doc paths."""
+    import subprocess
+
+    # Sentinel self-check: a broken pattern must fail here, not pass
+    # vacuously. Built from fragments -- this file is itself scanned below,
+    # and a verbatim literal would make the gate permanently red.
+    assert STALE_DOC_REFS.search("docs/" + "mta.md")
+    assert STALE_DOC_REFS.search("CONTRIBUTING" + ".md#setup")
+    files = subprocess.run(
+        ["git", "ls-files", "--", ".", ":!external"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert files, "git ls-files returned nothing -- not a checkout?"
+    hits = []
+    for name in files:
+        path = REPO_ROOT / name
+        if not path.is_file():
+            continue
+        # errors="replace" keeps ASCII intact, so the pattern is still
+        # findable in binary blobs.
+        text = path.read_text(encoding="utf-8", errors="replace")
+        hits += [f"{name}: {m.group(0)}" for m in STALE_DOC_REFS.finditer(text)]
+    assert not hits, "stale references to pre-refactor doc paths:\n" + "\n".join(hits)

@@ -66,14 +66,14 @@ services:
       - postern-mta-data:/var/lib/opendkim
       # Optional: custom brand icon for the portal header (SVG preferred, PNG accepted;
       # <= 256 KB). Uncomment AND set PRODUCT_ICON_PATH=/brand/icon.svg in .env.
-      # See docs/frontend.md.
+      # See docs/deployment/customization.md.
       # - type: bind
       #   source: /var/lib/postern/brand.svg
       #   target: /brand/icon.svg
       #   read_only: true
       # Optional: GeoLite2 MMDB directory for the login-page identity card enrichment.
       # Uncomment AND set GEOIP_DB_DIR=/geoip in .env. The portal hot-reloads on mtime
-      # change so monthly DB rotations need no portal restart. See docs/frontend.md.
+      # change so monthly DB rotations need no portal restart. See docs/deployment/customization.md.
       # - type: bind
       #   source: /var/lib/postern/geoip
       #   target: /geoip
@@ -201,7 +201,7 @@ volumes:
   postern-data:
     name: postern-data
   # CF edge IP-range allowlists: provisioner writes (rw sole-writer), nginx
-  # reads (ro). Empty in non-edge deployments. See compose.edge.yaml + docs/edge.md.
+  # reads (ro). Empty in non-edge deployments. See compose.edge.yaml + docs/deployment/edge.md.
   postern-edge:
     name: postern-edge
   postern-mta-data:

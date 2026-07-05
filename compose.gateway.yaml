@@ -17,7 +17,7 @@
 #   - A Traefik service watching that network for `traefik.expose=true` labels,
 #     with a `websecure` entrypoint on :443.
 #   - Some catchall TCP router lower-priority than 100 (or none).
-# See docs/gateway.md for the full reference setup.
+# See docs/deployment/gateway.md for the full reference setup.
 
 services:
   nginx:

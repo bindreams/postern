@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Directory containing GeoLite2-City.mmdb + GeoLite2-ASN.mmdb. When set, the
     # login page renders an "appear-as" identity card with country/city/ISP/ASN.
     # When empty, the card still renders with the IP address only. See
-    # docs/frontend.md for the operator workflow.
+    # docs/deployment/customization.md for the operator workflow.
     geoip_db_dir: str = ""
 
     # MTA ==============================================================================================================
@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # "none" (default) is direct-to-origin. "cloudflare" orange-clouds the apex
     # through Cloudflare (real client IP recovered from CF's published ranges,
     # optional Authenticated Origin Pull mTLS). "generic" is any other trusted
-    # reverse proxy that sets a real-IP header. See docs/edge.md.
+    # reverse proxy that sets a real-IP header. See docs/deployment/edge.md.
     edge_profile: Literal["none", "cloudflare", "generic"] = "none"
     # generic profile only: the CIDR(s) allowed to set EDGE_REALIP_HEADER, and the
     # header name to trust. The CIDR list is comma/space/tab/newline-separated.

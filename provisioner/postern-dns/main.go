@@ -24,7 +24,7 @@
 // Provider selection: env var DNS_PROVIDER (matches a known provider name).
 // Provider config: each provider's native env vars (e.g. CLOUDFLARE_API_TOKEN,
 // AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY, GANDI_API_TOKEN, DO_AUTH_TOKEN).
-// Postern documents the env-var contract per provider in docs/mta.md.
+// Postern documents the env-var contract per provider in docs/deployment/email.md.
 package main
 
 import (
@@ -152,7 +152,7 @@ func usage() {
 env vars:
   DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
                   ovh, hetzner, linode, namecheap)
-  Plus the provider's native credential env vars; see docs/mta.md.`)
+  Plus the provider's native credential env vars; see docs/deployment/email.md.`)
 	os.Exit(2)
 }
 

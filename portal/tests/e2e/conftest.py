@@ -34,7 +34,7 @@ import httpx
 import pytest
 
 from ._certs import generate_edge_client_pki, generate_test_pki
-from ._edge_helpers import COMPOSE_FILES_EDGE, PROJECT_EDGE, compose_edge, seed_edge_ranges, remove_edge_ranges
+from ._edge_helpers import compose_edge, seed_edge_ranges, remove_edge_ranges
 from ._helpers import (
     CONNECTION_ID_RE,
     MAILPIT_BASE_URL,

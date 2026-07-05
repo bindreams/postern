@@ -63,8 +63,13 @@ def seed_edge_ranges(*, ranges_conf: str = "set_real_ip_from 0.0.0.0/0;\n") -> N
     Uses an ephemeral one-off container (local/nginx, UID 0 so it can write to
     the root-owned volume) with an atomic rename (mv) so the inotifyd watcher
     inside nginx also sees IN_MOVED_TO.  After writing, RESTART the nginx
-    container -- not just ``nginx -s reload`` -- so render.sh re-runs and the
-    new config is guaranteed loaded once the container reports healthy.
+    container -- not just ``nginx -s reload`` -- so the old worker (old
+    config) is gone for good and render.sh re-runs against the on-disk ranges.
+    Docker resets health to ``starting`` on restart; the healthcheck probes
+    the portal (a certless self-probe is blocked by ``ssl_verify_client on``),
+    so "healthy" proves the container is up, not that :443 is bound.  If nginx
+    is not serving yet, the test fails loudly with a connection error -- it
+    can never silently read the stale config.
 
     ``ranges_conf`` defaults to ``set_real_ip_from 0.0.0.0/0;`` (trust all
     sources) so CF-Connecting-IP is recovered from any test client IP.  Pass a
@@ -92,8 +97,8 @@ def seed_edge_ranges(*, ranges_conf: str = "set_real_ip_from 0.0.0.0/0;\n") -> N
         ],
         input=ranges_conf,
     )
-    # Restart (not just reload) so render.sh re-runs; new config guaranteed
-    # loaded once Docker's healthcheck reports healthy.
+    # Restart (not just reload): the old worker dies with the container, so a
+    # stale-config read is impossible; worst case is a loud connection error.
     run(["docker", "restart", EDGE_NGINX_CONTAINER])
     _wait_nginx_healthy()
 

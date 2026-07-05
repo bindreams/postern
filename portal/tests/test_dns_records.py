@@ -15,18 +15,32 @@ from postern_provisioner import dns_records as dns_driver
 # Fakes ================================================================================================================
 @dataclass
 class FakeRunner:
-    """Records each set/delete invocation for assertion. Raises on demand."""
-    set_calls: list[tuple] = field(default_factory=list)
-    delete_calls: list[tuple] = field(default_factory=list)
-    raise_on_set: str | None = None  # if set, raises CalledProcessError when this record name appears
+    """Records set/delete invocations in one ordered list (so cross-kind ordering
+    -- deletes before sets -- is assertable), with per-kind views. Raises on
+    demand; stderr is str, matching the real runner's text=True."""
+    calls: list[tuple] = field(
+        default_factory=list
+    )  # ("set", type, name, args, proxied) | ("delete", type, name, args)
+    raise_on_set: str | None = None  # raise CalledProcessError when set_record sees this name
+    raise_on_delete: str | None = None  # same, for delete_record
 
     def set_record(self, rec: dns_driver.DesiredRecord) -> None:
         if self.raise_on_set is not None and rec.name == self.raise_on_set:
-            raise subprocess.CalledProcessError(1, ["postern-dns", "set"], stderr=b"forced")
-        self.set_calls.append((rec.type, rec.name, rec.args, rec.proxied))
+            raise subprocess.CalledProcessError(1, ["postern-dns", "set"], stderr="forced")
+        self.calls.append(("set", rec.type, rec.name, rec.args, rec.proxied))
 
     def delete_record(self, rec: dns_driver.DesiredRecord) -> None:
-        self.delete_calls.append((rec.type, rec.name, rec.args))
+        if self.raise_on_delete is not None and rec.name == self.raise_on_delete:
+            raise subprocess.CalledProcessError(1, ["postern-dns", "delete"], stderr="forced")
+        self.calls.append(("delete", rec.type, rec.name, rec.args))
+
+    @property
+    def set_calls(self) -> list[tuple]:
+        return [c[1:] for c in self.calls if c[0] == "set"]
+
+    @property
+    def delete_calls(self) -> list[tuple]:
+        return [c[1:] for c in self.calls if c[0] == "delete"]
 
 
 def _settings(
@@ -210,6 +224,8 @@ def test_reconcile_ipv4_drift_deletes_old_then_publishes_new():
     # Three old A deletes (apex, wildcard, mail).
     assert len(runner.delete_calls) == 3
     assert all(call[0] == "A" and call[2] == ("1.2.3.4", ) for call in runner.delete_calls)
+    # The provider APPENDS on set, so every delete must precede every set.
+    assert [c[0] for c in runner.calls] == ["delete"] * 3 + ["set"] * 3
     # Three new A publishes (CAA was already published so it's skipped).
     sets_by_type = {}
     for typ, _, args, *_ in runner.set_calls:
@@ -226,6 +242,18 @@ def test_reconcile_failure_increments_counter():
     assert new.consecutive_failures == 3
     # last_reconciled_iso unchanged (no successful tick).
     assert new.last_reconciled_iso == state.last_reconciled_iso
+
+
+def test_reconcile_delete_failure_increments_counter():
+    """A delete-side provider failure takes the same graceful path as a set-side
+    one: counter bumped, timestamp unchanged, snapshot kept for the retry."""
+    runner = FakeRunner(raise_on_delete="mta-sts.example.com")
+    state = _state(_snapshot(edge_enabled=True), last_reconciled_iso="2026-07-01T00:00:00+00:00")
+    new = dns_driver.reconcile_apex_dns(state, settings=_settings(edge_enabled=False), runner=runner)
+    assert new.consecutive_failures == 1
+    assert new.last_reconciled_iso == state.last_reconciled_iso
+    # Snapshot kept -> the mta-sts prune is retried next tick.
+    assert _rec(new.last_published, "mta-sts.example.com", "A") is not None
 
 
 def test_reconcile_publishes_proxied_apex_under_edge():

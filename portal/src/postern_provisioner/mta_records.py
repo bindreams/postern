@@ -125,18 +125,24 @@ def read_state(keydir: Path | None = None) -> MtaRecordsState:
     path = state_path(keydir)
     if not path.exists():
         return MtaRecordsState()
+
+    # Total over arbitrary file content: besides unreadable/invalid JSON, a
+    # JSON-valid but malformed shape (non-object top level, uncomparable
+    # schema_version) raises KeyError/TypeError/AttributeError from the field
+    # accesses below. The provisioner healthcheck calls this uncaught, so any
+    # raise would wedge first-boot gating; degrade to empty instead.
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+        if raw.get("schema_version", 0) > SCHEMA_VERSION:
+            logger.warning(
+                "mta_records: state.json schema_version=%d is newer than supported %d; "
+                "fields we don't recognise will be ignored", raw.get("schema_version"), SCHEMA_VERSION
+            )
+        fields_known = set(MtaRecordsState.__dataclass_fields__)
+        return MtaRecordsState(**{k: v for k, v in raw.items() if k in fields_known})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("mta_records: state.json unreadable (%s); treating as empty", e)
         return MtaRecordsState()
-    if raw.get("schema_version", 0) > SCHEMA_VERSION:
-        logger.warning(
-            "mta_records: state.json schema_version=%d is newer than supported %d; "
-            "fields we don't recognise will be ignored", raw.get("schema_version"), SCHEMA_VERSION
-        )
-    fields_known = set(MtaRecordsState.__dataclass_fields__)
-    return MtaRecordsState(**{k: v for k, v in raw.items() if k in fields_known})
 
 
 def write_state(state: MtaRecordsState, *, keydir: Path | None = None) -> None:

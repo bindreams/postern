@@ -67,6 +67,28 @@ def test_read_state_handles_corrupt_file(tmp_path: Path, caplog):
     assert loaded.state == "NO_KEYS"
 
 
+def test_read_state_non_object_top_level_degrades_to_default(tmp_path: Path, caplog):
+    """JSON-valid but non-object content must degrade to the default-state
+    warning path, not raise -- the provisioner healthcheck calls read_state
+    uncaught, and an AttributeError would wedge first-boot gating."""
+    rotation.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    rotation.state_path(tmp_path).write_text(json.dumps(["not", "an", "object"]))
+    with caplog.at_level("WARNING"):
+        loaded = rotation.read_state(keydir=tmp_path)
+    assert loaded == rotation.RotationState()
+    assert any("treating as NO_KEYS" in rec.getMessage() for rec in caplog.records)
+
+
+def test_read_state_malformed_field_shape_degrades_to_default(tmp_path: Path, caplog):
+    """schema_version not comparable to an int must degrade, not raise TypeError."""
+    rotation.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    rotation.state_path(tmp_path).write_text(json.dumps({"schema_version": "two", "state": "STABLE"}))
+    with caplog.at_level("WARNING"):
+        loaded = rotation.read_state(keydir=tmp_path)
+    assert loaded == rotation.RotationState()
+    assert any("treating as NO_KEYS" in rec.getMessage() for rec in caplog.records)
+
+
 # Trigger files ========================================================================================================
 def test_trigger_rotation_creates_file(tmp_path: Path):
     path = rotation.trigger_rotation(keydir=tmp_path)

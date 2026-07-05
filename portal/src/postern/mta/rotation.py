@@ -71,23 +71,26 @@ def read_state(keydir: Path | None = None) -> RotationState:
     if not path.exists():
         return RotationState()
 
+    # Total over arbitrary file content: besides unreadable/invalid JSON, a
+    # JSON-valid but malformed shape (non-object top level, uncomparable
+    # schema_version) raises KeyError/TypeError/AttributeError from the field
+    # accesses below. The provisioner healthcheck calls this uncaught, so any
+    # raise would wedge first-boot gating; degrade to NO_KEYS instead.
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+        schema_version = raw.get("schema_version", 0)
+        if schema_version > SCHEMA_VERSION:
+            logger.warning(
+                "rotation: state.json schema_version=%d is newer than supported %d; "
+                "fields we don't recognise will be ignored",
+                schema_version,
+                SCHEMA_VERSION,
+            )
+        fields_known = {f for f in RotationState.__dataclass_fields__}
+        return RotationState(**{k: v for k, v in raw.items() if k in fields_known})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("rotation: state.json unreadable (%s); treating as NO_KEYS", e)
         return RotationState()
-
-    schema_version = raw.get("schema_version", 0)
-    if schema_version > SCHEMA_VERSION:
-        logger.warning(
-            "rotation: state.json schema_version=%d is newer than supported %d; "
-            "fields we don't recognise will be ignored",
-            schema_version,
-            SCHEMA_VERSION,
-        )
-
-    fields_known = {f for f in RotationState.__dataclass_fields__}
-    return RotationState(**{k: v for k, v in raw.items() if k in fields_known})
 
 
 def write_state(state: RotationState, *, keydir: Path | None = None) -> None:

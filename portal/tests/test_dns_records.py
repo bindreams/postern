@@ -538,6 +538,32 @@ def test_reconcile_legacy_no_warning_when_nothing_was_published(tmp_path, caplog
     assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
+def test_reconcile_legacy_cert_mta_no_edge_warns_mta_sts_despite_flag_false(tmp_path, caplog):
+    """The common cert+mta (no-edge) v2 upgrade warns about mta-sts.<domain> even
+    though last_published_mta_sts_present is False. Deliberate: False is not
+    affirmative proof of non-publication -- the v2 tick flushed the flag only
+    after EVERY publish succeeded, so a partially-failed edge tick (mta-sts A
+    set, a later set raised) persisted False with the record live. Suppressing
+    on the flag would hide exactly that leaked record; fail-noisy wins. See
+    `_warn_unattributable_legacy`."""
+    runner = FakeRunner()
+    state = _write_v2_state(
+        tmp_path,
+        last_published_ipv4="1.2.3.4",
+        last_published_caa='0 issue "letsencrypt.org"',
+        last_published_mta_sts_present=False,
+    )
+    settings = _settings(v4="1.2.3.4", cert_enabled=True, mta_enabled=True, edge_enabled=False)
+    with caplog.at_level(logging.WARNING, logger="postern_provisioner.dns_records"):
+        dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "mta-sts.example.com" in warnings[0]
+    # apex/wildcard are CAA-evidenced and mail is desired -- only mta-sts is suspect.
+    assert "mail.example.com" not in warnings[0]
+    assert not any(c[1] == "mta-sts.example.com" for c in runner.delete_calls)
+
+
 def test_reconcile_legacy_failed_first_tick_has_no_empty_ip(tmp_path):
     """A pre-v3 file from a FAILED first tick (empty IP) must not reconstruct an
     empty-content record (which would be an invalid delete) -- it publishes fresh."""

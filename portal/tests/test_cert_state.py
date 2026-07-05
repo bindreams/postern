@@ -72,6 +72,29 @@ def test_read_state_handles_corrupt_file(tmp_path: Path, caplog):
     assert loaded.state == "NO_CERT"
 
 
+def test_read_state_non_object_top_level_degrades_to_default(tmp_path: Path, caplog):
+    """JSON-valid but non-object content must degrade to the default-state
+    warning path, not raise -- the provisioner healthcheck calls read_state
+    uncaught, and an AttributeError would wedge first-boot gating of nginx/mta
+    under compose.cert.yaml."""
+    cert_state.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    cert_state.state_path(tmp_path).write_text(json.dumps(["not", "an", "object"]))
+    with caplog.at_level("WARNING"):
+        loaded = cert_state.read_state(certdir=tmp_path)
+    assert loaded == cert_state.CertState()
+    assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
+
+
+def test_read_state_malformed_field_shape_degrades_to_default(tmp_path: Path, caplog):
+    """schema_version not comparable to an int must degrade, not raise TypeError."""
+    cert_state.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    cert_state.state_path(tmp_path).write_text(json.dumps({"schema_version": "two", "state": "INSTALLED"}))
+    with caplog.at_level("WARNING"):
+        loaded = cert_state.read_state(certdir=tmp_path)
+    assert loaded == cert_state.CertState()
+    assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
+
+
 def test_pending_cert_paths_round_trips(tmp_path: Path):
     original = cert_state.CertState(
         state="ISSUED_PENDING_INSTALL",

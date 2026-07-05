@@ -319,7 +319,20 @@ def _warn_unattributable_legacy(scalars: dict, settings: DnsRecordsSettings) -> 
     """One-shot, migration tick only: the pre-v3 scalars prove SOMETHING was
     published (an IP is set) but not at which names. Managed names that are
     neither currently desired nor evidence-attributed cannot be reconstructed, so
-    the migration never deletes them -- tell the operator to check the zone."""
+    the migration never deletes them -- tell the operator to check the zone.
+
+    Negative evidence is deliberately NOT used to shrink the suspect set. The
+    pre-v3 tick flushed its scalars only AFTER every publish in the tick
+    succeeded, so `mta_sts_present=False` (or the key absent) does not prove
+    mta-sts.<domain> was never published: a tick that set the mta-sts A record
+    and then failed at a later set persisted False with the record live, and
+    the state does not record whether edge was ever enabled. The same
+    end-of-tick gating applies to `last_published_caa` (an empty CAA scalar
+    cannot clear *.<domain>), and no scalar ever tracked mail.<domain>. On the
+    common cert+mta (no-edge) upgrade this warns once about mta-sts.<domain> --
+    a false positive whenever edge really never ran, accepted because
+    suppressing it would silence exactly the leaked-record case above
+    (fail-noisy beats fail-silent)."""
     if not (scalars.get("last_published_ipv4") or scalars.get("last_published_ipv6")):
         return
     domain = settings.domain

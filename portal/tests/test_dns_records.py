@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from dataclasses import dataclass, field
 
@@ -306,9 +307,11 @@ def test_reconcile_prunes_mail_when_mta_disabled():
 
 
 # Migration: pre-v3 (scalar) state file upgrade ========================================================================
-def test_reconcile_legacy_no_drift_is_a_noop(tmp_path):
-    """A pre-v3 file whose scalars match the current settings reconstructs to the
-    desired set -> the first v3 tick publishes/deletes nothing (no double-publish)."""
+def test_reconcile_legacy_no_drift_touches_only_unevidenced_records(tmp_path):
+    """A pre-v3 file whose scalars match the current settings: evidence-backed
+    records (apex/wildcard/CAA via the CAA scalar) are untouched, while mail. --
+    desired but unevidenced (the scalars can't prove it was published) -- gets one
+    idempotent re-set. Nothing is deleted."""
     runner = FakeRunner()
     state = _write_v2_state(
         tmp_path,
@@ -317,7 +320,7 @@ def test_reconcile_legacy_no_drift_is_a_noop(tmp_path):
         last_reconciled_iso="2026-06-01T00:00:00+00:00",
     )
     new = dns_driver.reconcile_apex_dns(state, settings=_settings(v4="1.2.3.4"), runner=runner)
-    assert runner.set_calls == []
+    assert runner.set_calls == [("A", "mail.example.com", ("1.2.3.4", ), False)]
     assert runner.delete_calls == []
     # The reconstructed snapshot is persisted so subsequent ticks are v3-native.
     assert {(r.name, r.type)
@@ -338,7 +341,8 @@ def test_reconcile_legacy_ipv6_unset_deletes_stale_aaaa(tmp_path):
     dns_driver.reconcile_apex_dns(state, settings=_settings(v4="1.2.3.4", v6=""), runner=runner)
     assert len(runner.delete_calls) == 3
     assert all(c[0] == "AAAA" and c[2] == ("2001:db8::1", ) for c in runner.delete_calls)
-    assert runner.set_calls == []
+    # Only the unevidenced mail A is (idempotently) re-set; no AAAA comes back.
+    assert runner.set_calls == [("A", "mail.example.com", ("1.2.3.4", ), False)]
 
 
 def test_reconcile_legacy_ipv4_change_deletes_old_then_sets_new(tmp_path):
@@ -384,9 +388,9 @@ def test_reconcile_legacy_cert_disable_with_v6_unset_prunes_apex_wildcard(tmp_pa
     assert ("A", "example.com") in deleted
     assert ("A", "*.example.com") in deleted
     assert ("CAA", "example.com") in deleted
-    # mail A stays (mta on, IP unchanged) -- neither deleted nor re-set.
+    # mail A stays (mta on, IP unchanged) -- not deleted, only idempotently re-set.
     assert ("A", "mail.example.com") not in deleted
-    assert runner.set_calls == []
+    assert runner.set_calls == [("A", "mail.example.com", ("1.2.3.4", ), False)]
 
 
 def test_reconcile_legacy_mta_sts_retract(tmp_path):
@@ -402,6 +406,108 @@ def test_reconcile_legacy_mta_sts_retract(tmp_path):
     )
     dns_driver.reconcile_apex_dns(state, settings=_settings(edge_enabled=False), runner=runner)
     assert ("A", "mta-sts.example.com") in {(c[0], c[1]) for c in runner.delete_calls}
+
+
+def test_reconcile_legacy_apex_proxied_evidence_prunes_apex(tmp_path):
+    """apex_proxied alone (no CAA) proves edge+CF owned the apex; with every
+    apex-desiring subsystem now off, the stale apex A must be pruned."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="1.2.3.4", last_published_apex_proxied=True)
+    settings = _settings(v4="1.2.3.4", cert_enabled=False, edge_enabled=False, mta_enabled=True)
+    dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    assert ("A", "example.com") in {(c[0], c[1]) for c in runner.delete_calls}
+
+
+def test_reconcile_legacy_mta_sts_evidence_prunes_apex_and_mta_sts(tmp_path):
+    """mta_sts_present alone (apex_proxied absent) proves edge+MTA owned the apex
+    AND mta-sts; with edge/cert now off, both stale A records must be pruned."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="1.2.3.4", last_published_mta_sts_present=True)
+    settings = _settings(v4="1.2.3.4", cert_enabled=False, edge_enabled=False, mta_enabled=True)
+    dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    deleted = {(c[0], c[1]) for c in runner.delete_calls}
+    assert ("A", "example.com") in deleted
+    assert ("A", "mta-sts.example.com") in deleted
+
+
+def test_reconcile_legacy_mta_enabled_at_upgrade_sets_mail(tmp_path):
+    """Subsystem ENABLED coincident with the upgrade, IP unchanged: a pre-v3
+    cert-only file gives no evidence mail. was ever published, so the migration
+    tick must SET it -- a fabricated snapshot entry equal to the desired record
+    would suppress the set forever."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="1.2.3.4", last_published_caa='0 issue "letsencrypt.org"')
+    new = dns_driver.reconcile_apex_dns(state, settings=_settings(v4="1.2.3.4", mta_enabled=True), runner=runner)
+    assert ("A", "mail.example.com") in {(c[0], c[1]) for c in runner.set_calls}
+    assert _rec(new.last_published, "mail.example.com", "A").args == ("1.2.3.4", )
+
+
+def test_reconcile_legacy_mta_enabled_at_upgrade_sets_mta_sts(tmp_path):
+    """Pre-v3 cert+edge file (CF, apex proxied), MTA newly enabled at upgrade:
+    mta-sts. must be SET on the migration tick."""
+    runner = FakeRunner()
+    state = _write_v2_state(
+        tmp_path,
+        last_published_ipv4="1.2.3.4",
+        last_published_caa='0 issue "letsencrypt.org"',
+        last_published_apex_proxied=True,
+    )
+    settings = _settings(v4="1.2.3.4", edge_enabled=True, mta_enabled=True)
+    dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    assert ("A", "mta-sts.example.com") in {(c[0], c[1]) for c in runner.set_calls}
+
+
+def test_reconcile_legacy_cert_enabled_at_upgrade_sets_wildcard(tmp_path):
+    """Pre-v3 edge-only file, cert newly enabled at upgrade: the wildcard must be
+    SET on the migration tick."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="1.2.3.4", last_published_apex_proxied=True)
+    settings = _settings(v4="1.2.3.4", cert_enabled=True, mta_enabled=False, edge_enabled=True)
+    dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    assert ("A", "*.example.com") in {(c[0], c[1]) for c in runner.set_calls}
+
+
+def test_reconcile_legacy_warns_about_unattributable_names(tmp_path, caplog):
+    """Evidence-less pre-v3 file (e.g. MTA-only: bare IP scalars) + subsystem now
+    disabled: the migration can't attribute the old records, so it must NOT delete
+    them -- instead it warns once, naming the exact suspect FQDNs."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="1.2.3.4")
+    settings = _settings(v4="1.2.3.4", cert_enabled=True, mta_enabled=False, edge_enabled=False)
+    with caplog.at_level(logging.WARNING, logger="postern_provisioner.dns_records"):
+        dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "mail.example.com" in warnings[0]
+    assert "mta-sts.example.com" in warnings[0]
+    # The unattributable names are warned about, never deleted.
+    assert not any(c[1] in ("mail.example.com", "mta-sts.example.com") for c in runner.delete_calls)
+
+
+def test_reconcile_legacy_no_warning_when_all_names_accounted_for(tmp_path, caplog):
+    """No ambiguity -> no warning: every managed name is desired or evidence-attributed."""
+    runner = FakeRunner()
+    state = _write_v2_state(
+        tmp_path,
+        last_published_ipv4="1.2.3.4",
+        last_published_caa='0 issue "letsencrypt.org"',
+        last_published_apex_proxied=True,
+        last_published_mta_sts_present=True,
+    )
+    settings = _settings(v4="1.2.3.4", cert_enabled=True, mta_enabled=True, edge_enabled=True)
+    with caplog.at_level(logging.WARNING, logger="postern_provisioner.dns_records"):
+        dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_reconcile_legacy_no_warning_when_nothing_was_published(tmp_path, caplog):
+    """A pre-v3 file with empty IP scalars (failed first tick) published nothing,
+    so there can be no leftovers to warn about."""
+    runner = FakeRunner()
+    state = _write_v2_state(tmp_path, last_published_ipv4="")
+    with caplog.at_level(logging.WARNING, logger="postern_provisioner.dns_records"):
+        dns_driver.reconcile_apex_dns(state, settings=_settings(v4="1.2.3.4"), runner=runner)
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 def test_reconcile_legacy_failed_first_tick_has_no_empty_ip(tmp_path):
@@ -472,6 +578,30 @@ def test_state_unknown_fields_ignored(tmp_path):
     )
     state = dns_state.read_state(certdir=tmp_path)
     assert _rec(state.last_published, "example.com", "A").args == ("1.2.3.4", )
+
+
+def test_state_malformed_record_entry_degrades_to_empty(tmp_path, caplog):
+    """JSON-valid but schema-malformed content (snapshot entry missing "name")
+    must degrade to the empty-state warning path, not crash -- the provisioner
+    healthcheck calls read_state uncaught, and a raise would wedge first-boot
+    gating of nginx/mta under compose.cert.yaml."""
+    path = dns_state.state_path(certdir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 3, "last_published": [{"type": "A"}]}))
+    with caplog.at_level(logging.WARNING, logger="postern.cert.dns_records"):
+        state = dns_state.read_state(certdir=tmp_path)
+    assert state == dns_state.DnsRecordsState()
+    assert any("treating as empty" in r.getMessage() for r in caplog.records)
+
+
+def test_state_non_object_top_level_degrades_to_empty(tmp_path, caplog):
+    path = dns_state.state_path(certdir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(["not", "an", "object"]))
+    with caplog.at_level(logging.WARNING, logger="postern.cert.dns_records"):
+        state = dns_state.read_state(certdir=tmp_path)
+    assert state == dns_state.DnsRecordsState()
+    assert any("treating as empty" in r.getMessage() for r in caplog.records)
 
 
 def test_state_file_is_world_readable_post_write(tmp_path):

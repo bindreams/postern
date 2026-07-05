@@ -10,7 +10,8 @@ Records that dropped out are deleted; changed ones (IP/CAA/proxied) are re-set;
 unchanged ones are left alone. This gives correct delete-on-unset (PUBLIC_IPV6
 cleared -> AAAA records leave the desired set -> deleted), mta-sts retract, and
 precise pruning of wildcard/mail/CAA when cert/mta are disabled, with no
-per-scalar special cases.
+per-scalar special cases. The first tick after a pre-v3 upgrade diffs against a
+baseline reconstructed from the old scalar state (see `_reconstruct_legacy`).
 
 Records published by subsystem:
 
@@ -183,11 +184,14 @@ def reconcile_apex_dns(
     now = now or dt.datetime.now(dt.timezone.utc)
 
     # The diff baseline. On a pre-v3 upgrade the snapshot is empty but the scalar
-    # values were stashed: reconstruct the last-published set against the domain
-    # so the first v3 tick diffs against what was actually on the wire (no
-    # double-publish, no spurious delete) rather than an empty set.
+    # values were stashed: reconstruct the last-published set (evidence-attributed
+    # names at the old content -- see _reconstruct_legacy) so the first v3 tick
+    # deletes stale content, and re-sets -- idempotently -- every desired record
+    # the scalars can't prove was published. Unattributable leftovers (published
+    # by a subsystem since disabled, no evidence) are warned about, not deleted.
     if state.legacy_scalars is not None:
         last = _reconstruct_legacy(state.legacy_scalars, settings)
+        _warn_unattributable_legacy(state.legacy_scalars, settings)
     else:
         last = list(state.last_published)
 
@@ -246,40 +250,52 @@ def _apply_diff(last: list[DesiredRecord], desired: list[DesiredRecord], runner:
             )
 
 
+def _legacy_evidence_names(scalars: dict, domain: str) -> set[str]:
+    """FQDNs the pre-v3 scalars prove the reconciler managed:
+      * a non-empty CAA  <=> cert was on   -> apex + wildcard;
+      * apex_proxied     <=> edge+CF was on -> apex;
+      * mta_sts_present  <=> edge+MTA was on -> apex + mta-sts."""
+    names: set[str] = set()
+    if scalars.get("last_published_caa"):
+        names |= {domain, f"*.{domain}"}
+    if scalars.get("last_published_apex_proxied"):
+        names.add(domain)
+    if scalars.get("last_published_mta_sts_present"):
+        names |= {domain, f"mta-sts.{domain}"}
+    return names
+
+
 def _reconstruct_legacy(scalars: dict, settings: DnsRecordsSettings) -> list[DesiredRecord]:
     """Rebuild the last-published snapshot from a pre-v3 (scalar) state file, using
     the OLD content, so the first v3 diff converges DNS to the new desired set.
 
     The scalars record the live IPs/CAA/proxied/mta-sts but NOT which subsystems
-    were enabled, so we include every FQDN the scalars give *evidence* was
-    reconciler-managed -- otherwise a subsystem disabled coincident with the
-    upgrade would strand its records. Evidence, per name:
-      * still in the current desired set  -> definitely managed;
-      * a non-empty CAA  <=> cert was on  -> apex + wildcard;
-      * apex_proxied     <=> edge+CF was on -> apex;
-      * mta_sts_present  <=> edge+MTA was on -> apex + mta-sts.
-    We never add a name without evidence, so we never delete an operator-managed
-    record the reconciler didn't own. (No scalar records "MTA alone" or "edge on a
-    non-CF provider", so a mail/apex from those, disabled at the same tick as an IP
-    change, is not reconstructable -- pruning it would require guessing.) Each
-    record is gated on its backing scalar being non-empty so a failed pre-v3 first
-    tick (empty IP) never reconstructs an invalid empty-content record."""
+    were enabled, so entries are attributed per name:
+      * scalar evidence (see `_legacy_evidence_names`) -> reconstructed as
+        published, at the old content;
+      * currently-desired names -> reconstructed at the old content ONLY when that
+        differs from the desired record; the entry then encodes a pending
+        delete-old/set-new. An old-content entry EQUAL to desired is omitted so
+        the migration tick re-SETs it: idempotent if it was really published,
+        required if the subsystem was enabled coincident with the upgrade (an
+        equal snapshot entry would suppress the first set forever). This holds on
+        the failure path too -- the persisted snapshot never affirmatively claims
+        an unevidenced record, so the re-set survives to the next tick.
+    Names with neither evidence nor a desired counterpart are not reconstructed:
+    deleting them would require guessing, so the migration leaves them and
+    `reconcile_apex_dns` warns the operator instead. Each record is gated on its
+    backing scalar being non-empty so a failed pre-v3 first tick (empty IP) never
+    reconstructs an invalid empty-content record."""
     domain = settings.domain
-    wildcard = f"*.{domain}"
     mta_sts_host = f"mta-sts.{domain}"
     v4 = str(scalars.get("last_published_ipv4", "") or "")
     v6 = str(scalars.get("last_published_ipv6", "") or "")
     caa = str(scalars.get("last_published_caa", "") or "")
     apex_proxied = bool(scalars.get("last_published_apex_proxied", False))
-    mta_sts_present = bool(scalars.get("last_published_mta_sts_present", False))
 
-    addr_names = {r.name for r in desired_records(settings) if r.type == "A"}
-    if caa:
-        addr_names |= {domain, wildcard}
-    if apex_proxied:
-        addr_names.add(domain)
-    if mta_sts_present:
-        addr_names |= {domain, mta_sts_host}
+    desired_by_id = {(r.name, r.type): r for r in desired_records(settings)}
+    evidence_names = _legacy_evidence_names(scalars, domain)
+    addr_names = {r.name for r in desired_records(settings) if r.type == "A"} | evidence_names
 
     def _proxied_for(name: str) -> bool:
         # Only the apex and the mta-sts host ever carried the edge proxied bit.
@@ -287,14 +303,37 @@ def _reconstruct_legacy(scalars: dict, settings: DnsRecordsSettings) -> list[Des
 
     out: list[DesiredRecord] = []
     for name in sorted(addr_names):
-        if v4:
-            out.append(DesiredRecord(name=name, type="A", args=(v4, ), proxied=_proxied_for(name)))
-        if v6:
-            out.append(DesiredRecord(name=name, type="AAAA", args=(v6, ), proxied=_proxied_for(name)))
+        for type_, value in (("A", v4), ("AAAA", v6)):
+            if not value:
+                continue
+            rec = DesiredRecord(name=name, type=type_, args=(value, ), proxied=_proxied_for(name))
+            if name in evidence_names or rec != desired_by_id.get((name, type_)):
+                out.append(rec)
     caa_args = _parse_caa(caa)
     if caa_args is not None:
         out.append(DesiredRecord(name=domain, type="CAA", args=caa_args))
     return out
+
+
+def _warn_unattributable_legacy(scalars: dict, settings: DnsRecordsSettings) -> None:
+    """One-shot, migration tick only: the pre-v3 scalars prove SOMETHING was
+    published (an IP is set) but not at which names. Managed names that are
+    neither currently desired nor evidence-attributed cannot be reconstructed, so
+    the migration never deletes them -- tell the operator to check the zone."""
+    if not (scalars.get("last_published_ipv4") or scalars.get("last_published_ipv6")):
+        return
+    domain = settings.domain
+    universe = {domain, f"*.{domain}", f"mail.{domain}", f"mta-sts.{domain}"}
+    desired_names = {r.name for r in desired_records(settings)}
+    suspects = universe - desired_names - _legacy_evidence_names(scalars, domain)
+    if not suspects:
+        return
+    logger.warning(
+        "dns: the pre-v3 state migration cannot attribute possible leftover records at: %s. "
+        "If A/AAAA records exist at these names and you did not create them yourself, they are "
+        "Postern-published leftovers -- remove them from the DNS zone manually; the reconciler "
+        "will not touch them.", ", ".join(sorted(suspects))
+    )
 
 
 def _parse_caa(caa: str) -> tuple[str, str, str] | None:

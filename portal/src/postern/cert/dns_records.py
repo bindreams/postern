@@ -129,35 +129,41 @@ def read_state(certdir: Path | None = None) -> DnsRecordsState:
     if not path.exists():
         return DnsRecordsState()
 
+    # Total over arbitrary file content: besides unreadable/invalid JSON, a
+    # JSON-valid but malformed shape (non-object top level, non-dict snapshot
+    # entry, entry missing "name"/"type") raises KeyError/TypeError/Value-
+    # Error/AttributeError from the field accesses below. The provisioner
+    # healthcheck calls this uncaught, so any raise would wedge first-boot
+    # gating; degrade to empty instead.
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+
+        schema_version = raw.get("schema_version", 0)
+        if schema_version > SCHEMA_VERSION:
+            logger.warning(
+                "dns_records: state.json schema_version=%d is newer than supported %d; "
+                "fields we don't recognise will be ignored", schema_version, SCHEMA_VERSION
+            )
+
+        if "last_published" in raw:
+            last_published = [_record_from_dict(d) for d in raw["last_published"]]
+            legacy_scalars = None
+        else:
+            # Pre-v3 scalar file: no snapshot. Carry the present scalar values so the
+            # driver can reconstruct (and thus correctly diff) the last-published set.
+            last_published = []
+            legacy_scalars = {k: raw[k] for k in _LEGACY_SCALAR_KEYS if k in raw} or None
+
+        return DnsRecordsState(
+            schema_version=schema_version if schema_version else SCHEMA_VERSION,
+            last_published=last_published,
+            last_reconciled_iso=raw.get("last_reconciled_iso"),
+            consecutive_failures=raw.get("consecutive_failures", 0),
+            legacy_scalars=legacy_scalars,
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("dns_records: state.json unreadable (%s); treating as empty", e)
         return DnsRecordsState()
-
-    schema_version = raw.get("schema_version", 0)
-    if schema_version > SCHEMA_VERSION:
-        logger.warning(
-            "dns_records: state.json schema_version=%d is newer than supported %d; "
-            "fields we don't recognise will be ignored", schema_version, SCHEMA_VERSION
-        )
-
-    if "last_published" in raw:
-        last_published = [_record_from_dict(d) for d in raw["last_published"]]
-        legacy_scalars = None
-    else:
-        # Pre-v3 scalar file: no snapshot. Carry the present scalar values so the
-        # driver can reconstruct (and thus correctly diff) the last-published set.
-        last_published = []
-        legacy_scalars = {k: raw[k] for k in _LEGACY_SCALAR_KEYS if k in raw} or None
-
-    return DnsRecordsState(
-        schema_version=schema_version if schema_version else SCHEMA_VERSION,
-        last_published=last_published,
-        last_reconciled_iso=raw.get("last_reconciled_iso"),
-        consecutive_failures=raw.get("consecutive_failures", 0),
-        legacy_scalars=legacy_scalars,
-    )
 
 
 def published_summary(state: DnsRecordsState, domain: str) -> tuple[str, str, str]:

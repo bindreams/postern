@@ -26,11 +26,6 @@ myst_heading_anchors = 3
 # content tasks migrate and delete them.
 exclude_patterns = [
     "_build",
-    "mta.md",
-    "certs.md",
-    "edge.md",
-    "gateway.md",
-    "frontend.md",
     "rename.md",
 ]
 

@@ -425,11 +425,9 @@ def _try_advance_dns(domain: str, counters: dict[str, int], enablement: Enableme
             # Only log on meaningful transitions; consecutive_failures bumps are noisy.
             if new_state.last_reconciled_iso != state.last_reconciled_iso:
                 logger.info(
-                    "dns: reconciled A/AAAA + CAA (v4=%s v6=%s apex_proxied=%s mta_sts=%s)",
-                    new_state.last_published_ipv4 or "(unset)",
-                    new_state.last_published_ipv6 or "(unset)",
-                    new_state.last_published_apex_proxied,
-                    new_state.last_published_mta_sts_present,
+                    "dns: reconciled %d A/AAAA/CAA record(s) at %s",
+                    len(new_state.last_published),
+                    new_state.last_reconciled_iso,
                 )
         counters["dns"] = 0
     except Exception:

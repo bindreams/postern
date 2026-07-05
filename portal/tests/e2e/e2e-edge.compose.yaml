@@ -1,0 +1,158 @@
+## E2E test stack for the nginx edge fronting feature (EDGE_PROFILE=cloudflare).
+##
+## Standalone compose file -- NOT layered on e2e.compose.yaml -- so the nginx
+## service can be fully configured without fighting compose volume-list merge
+## semantics (which prevent removing a bind-mount defined in a parent file).
+## Uses project name postern-e2e-edge to isolate from postern-e2e.
+##
+## Nginx publishes on host port 8453 (not 8443) so both e2e stacks can coexist
+## on the same developer machine.  The base e2e port mapping must be stopped
+## first only if the host has a port collision on 8453.
+##
+## Manual bring-up:
+##   docker compose -p postern-e2e-edge \
+##     -f portal/tests/e2e/e2e-edge.compose.yaml build
+##   POSTERN_E2E_TLS_DIR=$(uv run python portal/tests/e2e/_certs.py /tmp/postern-e2e-tls) \
+##   POSTERN_E2E_EDGE_CLIENT_CA_DIR=$(python -c "
+##     from portal.tests.e2e._certs import generate_edge_client_pki
+##     from pathlib import Path
+##     d = Path('/tmp/postern-e2e-edge-ca'); generate_edge_client_pki(d); print(d)") \
+##     docker compose -p postern-e2e-edge \
+##       -f portal/tests/e2e/e2e-edge.compose.yaml up -d --wait
+##
+## Nginx in this stack uses the real entrypoint (render.sh generates
+## conf.d/edge.conf from EDGE_PROFILE=cloudflare).  No static nginx.conf is
+## bind-mounted, so the template render is unconditional and conf.d/edge.conf
+## includes both real_ip_header and the mTLS directives.
+##
+## The shipped Cloudflare origin-pull CA at /etc/nginx/cloudflare-origin-pull-ca.pem
+## is overridden by the locally-generated test CA (POSTERN_E2E_EDGE_CLIENT_CA_DIR/ca.pem)
+## so the mTLS enforcement test can present a client cert without Cloudflare's
+## real private key.
+##
+## The postern-edge volume starts empty.  Test fixtures seed it via a one-off
+## container and trigger nginx reload; teardown removes the file and reloads again.
+
+services:
+  portal:
+    build:
+      context: ../../..
+      dockerfile: portal/Dockerfile
+    image: local/postern-portal
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+      SECRET_KEY: test-e2e-edge-do-not-use-in-production
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ""
+      SMTP_PASSWORD: ""
+      SMTP_FROM: noreply@postern.test
+      DOMAIN: postern.test
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
+      RECONCILE_INTERVAL_SECONDS: "3600"
+    volumes:
+      - postern-e2e-edge-data:/data
+    networks: [default]
+    depends_on:
+      docker-proxy:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    init: true
+    stop_grace_period: 30s
+
+  nginx:
+    build: ../../../nginx
+    image: local/nginx
+    container_name: postern-e2e-edge-nginx
+    environment:
+      DOMAIN: postern.test
+      EDGE_PROFILE: cloudflare
+      # mTLS enforcement enabled by default; the test CA below replaces the
+      # shipped Cloudflare CA so the test client can present a valid cert.
+      EDGE_CF_AUTHENTICATED_ORIGIN_PULL: "true"
+    ports:
+      - "127.0.0.1:8453:443/tcp"
+    volumes:
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_TLS_DIR:?POSTERN_E2E_TLS_DIR must be set by the e2e_certs fixture (see conftest.py) or exported manually}
+        target: /etc/letsencrypt/live/postern.test
+      # Override the shipped Cloudflare origin-pull CA with a locally-generated
+      # test CA so the mTLS enforcement test can present a client cert without
+      # Cloudflare's real private key.  POSTERN_E2E_EDGE_CLIENT_CA_DIR is set
+      # by the e2e_edge_client_ca session fixture before the stack boots.
+      - type: bind
+        read_only: true
+        source: ${POSTERN_E2E_EDGE_CLIENT_CA_DIR:?POSTERN_E2E_EDGE_CLIENT_CA_DIR must be set by the e2e_edge_client_ca fixture (see conftest.py) or exported manually}/ca.pem
+        target: /etc/nginx/cloudflare-origin-pull-ca.pem
+      # postern-edge volume: starts empty; test fixtures seed cloudflare-ranges.conf
+      # here via a one-off container.  nginx reads RO (the provisioner is the
+      # sole writer in production; the test helper replicates that atomic-rename
+      # pattern to trigger the inotifyd watcher).
+      - postern-edge:/var/lib/postern-edge:ro
+    networks: [default]
+    depends_on:
+      portal:
+        condition: service_healthy
+    healthcheck:
+      # ssl_verify_client on blocks a self-probe via https://localhost (no client
+      # cert in the container).  Probe the portal backend directly -- nginx can
+      # reach portal:8000 over the default bridge, and the portal healthcheck
+      # has already passed before nginx starts (depends_on: service_healthy).
+      test: ["CMD", "wget", "--spider", "-q", "http://portal:8000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+    init: true
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    environment:
+      CONTAINERS: 1
+      NETWORKS: 1
+      IMAGES: 1
+      POST: 1
+    volumes:
+      - type: bind
+        read_only: true
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 6
+    init: true
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    networks: [default]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8025/readyz"]
+      interval: 3s
+      timeout: 2s
+      retries: 6
+    init: true
+
+networks:
+  default:
+    name: postern-e2e-edge-default
+  e2e-shadowsocks-edge:
+    name: e2e-shadowsocks-edge
+    driver: bridge
+
+volumes:
+  postern-e2e-edge-data:
+    name: postern-e2e-edge-portal-data
+  postern-edge:
+    name: postern-e2e-edge-edge

@@ -187,6 +187,8 @@ After a few days of running you should see DMARC aggregate reports landing in yo
 
 **`postern mta verify-dns` fails on DKIM.** The provisioner generates the key, but you must publish the TXT record. Run `postern mta show-dns` to see the line; copy it to your DNS provider.
 
+**Provisioner warns about "possible leftover records" after upgrading Postern.** The pre-upgrade DNS state did not record which of `<your-domain>` / `*.<your-domain>` / `mail.<your-domain>` / `mta-sts.<your-domain>` an earlier configuration published, so the upgrade leaves the FQDNs named in the warning untouched. Check your zone: if A/AAAA records exist there and you did not create them yourself, delete them at your DNS provider. Records for currently-enabled subsystems are unaffected.
+
 **Forwarded DMARC reports go to spam at the receiver.** SRS rewriting should handle SPF alignment for forwarded mail. If your `MTA_ADMIN_EMAIL` provider is still flagging, set up the receiver-side opt-in TXT (RFC 7489 §7.1) — see the DNS records section above.
 
 **Local development.** Set `MTA_VERIFY_DNS=false` and use `mkcert` for `mail.<dev-domain>` and `mta-sts.<dev-domain>` certs (extends the mkcert pattern in [CONTRIBUTING.md](../CONTRIBUTING.md#running-the-stack-locally)). With auto-rotation off (`DNS_PROVIDER=none`), the provisioner generates the initial key and exits cleanly.

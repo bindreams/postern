@@ -290,6 +290,31 @@ def test_state_unknown_fields_ignored(tmp_path):
     assert state.last_published_mx == "10 mail.example.com"
 
 
+def test_state_non_object_top_level_degrades_to_empty(tmp_path, caplog):
+    """JSON-valid but non-object content must degrade to the empty-state warning
+    path, not raise -- the provisioner healthcheck calls read_state uncaught, and
+    an AttributeError would wedge first-boot gating of mta under compose.cert.yaml."""
+    path = mta_driver.state_path(keydir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(["not", "an", "object"]))
+    with caplog.at_level("WARNING", logger="postern_provisioner.mta_records"):
+        state = mta_driver.read_state(keydir=tmp_path)
+    assert state == mta_driver.MtaRecordsState()
+    assert any("treating as empty" in r.getMessage() for r in caplog.records)
+
+
+def test_state_malformed_field_shape_degrades_to_empty(tmp_path, caplog):
+    """A JSON object with a malformed field shape (schema_version not comparable
+    to an int) must degrade the same way, not raise TypeError."""
+    path = mta_driver.state_path(keydir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": "two", "last_published_mx": "10 mail.example.com"}))
+    with caplog.at_level("WARNING", logger="postern_provisioner.mta_records"):
+        state = mta_driver.read_state(keydir=tmp_path)
+    assert state == mta_driver.MtaRecordsState()
+    assert any("treating as empty" in r.getMessage() for r in caplog.records)
+
+
 def test_state_file_world_readable(tmp_path):
     """Same trust-boundary precedent as dns_records / privkey.pem."""
     state = mta_driver.MtaRecordsState(last_published_mx="10 mail.example.com")

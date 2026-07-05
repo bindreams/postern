@@ -4,7 +4,16 @@ Activated when `CERT_RENEWAL=true` or `EDGE_PROFILE=cloudflare`. Sibling of
 [postern_provisioner.cert] -- both take (state, settings, runner, now) and
 return the next state via a pure function. Caller persists the result.
 
-Records published by subsystem (idempotent: only writes on drift):
+Set-diff model: each tick computes the desired record set and diffs it against
+the last-published snapshot (persisted in `DnsRecordsState.last_published`).
+Records that dropped out are deleted; changed ones (IP/CAA/proxied) are re-set;
+unchanged ones are left alone. This gives correct delete-on-unset (PUBLIC_IPV6
+cleared -> AAAA records leave the desired set -> deleted), mta-sts retract, and
+precise pruning of wildcard/mail/CAA when cert/mta are disabled, with no
+per-scalar special cases. The first tick after a pre-v3 upgrade diffs against a
+baseline reconstructed from the old scalar state (see `_reconstruct_legacy`).
+
+Records published by subsystem:
 
   cert_enabled OR edge_enabled:
     <domain>          A     <PUBLIC_IPV4>             (proxied when edge+cloudflare)
@@ -23,11 +32,6 @@ Records published by subsystem (idempotent: only writes on drift):
     mta-sts.<domain>  A     <PUBLIC_IPV4>             (proxied -- routes policy through CF)
     mta-sts.<domain>  AAAA  <PUBLIC_IPV6>             (if PUBLIC_IPV6 set; same proxied)
 
-Delete-on-unset: if state.last_published_ipv6 was non-empty and PUBLIC_IPV6 is
-now unset, the reconciler issues `aaaa-delete` for each AAAA record before
-clearing the state. Avoids the foot-gun where stale AAAA records keep pointing
-at a stale address after a v6 -> v4-only migration.
-
 Provider invocation: shells out to the existing `postern-dns` Go binary (#113
 extended it for A/AAAA/CAA). Subprocess wrapper is injectable for tests.
 """
@@ -39,8 +43,7 @@ import ipaddress
 import logging
 import os
 import subprocess
-from dataclasses import dataclass, field
-from typing import Iterable
+from dataclasses import dataclass
 
 from postern.cert import dns_records as dns_state
 
@@ -68,21 +71,9 @@ class DnsRecordsSettings:
 
 
 # Desired records ======================================================================================================
-@dataclass(frozen=True)
-class DesiredRecord:
-    """One record we expect to be in DNS. The reconciler maps these to
-    `postern-dns <type>-set` / `<type>-delete` invocations."""
-    name: str  # FQDN
-    type: str  # A | AAAA | CAA
-    # Per-type fields packed into a tuple so the dataclass stays hashable
-    # (frozen=True). Interpretation:
-    #   A    : args = (ipv4-string,)
-    #   AAAA : args = (ipv6-string,)
-    #   CAA  : args = (flags-str, tag, value)
-    args: tuple[str, ...] = field(default_factory=tuple)
-    # Cloudflare "orange cloud". Advisory: the runner only emits --proxied for
-    # A/AAAA under DNS_PROVIDER=cloudflare; otherwise it is ignored on the wire.
-    proxied: bool = False
+# Historical alias: a "desired" record and a "last-published" snapshot entry share
+# one shape (defined in the state module -- see dns_state.DnsRecord).
+DesiredRecord = dns_state.DnsRecord
 
 
 def desired_records(settings: DnsRecordsSettings) -> list[DesiredRecord]:
@@ -169,16 +160,6 @@ class PosternDnsRunner:
 
 
 # Reconciler ===========================================================================================================
-def _managed_fqdns(state: dns_state.DnsRecordsState, domain: str) -> tuple[str, ...]:
-    """FQDNs this reconciler may have published address records under, for the
-    over-broad (idempotent) delete loops. The classic three are always included
-    (matching pre-edge behaviour); mta-sts only when state says it was live."""
-    names = [domain, f"*.{domain}", f"mail.{domain}"]
-    if state.last_published_mta_sts_present:
-        names.append(f"mta-sts.{domain}")
-    return tuple(names)
-
-
 def reconcile_apex_dns(
     state: dns_state.DnsRecordsState,
     *,
@@ -189,86 +170,42 @@ def reconcile_apex_dns(
     """One reconciliation tick. Pure function over (state, settings, runner, time);
     caller persists the returned state.
 
-    Beyond the original A/AAAA drift + AAAA delete-on-unset handling this now:
-      * retracts the explicit mta-sts record when edge+mta no longer both hold,
-      * republishes the apex when its proxied bit drifts (edge toggled), relying
-        on the CF-direct PATCH inside `set_record` to flip the orange cloud.
+    Set-diff: compute the desired record set from settings and diff it against
+    the last-published snapshot. A record dropping out of desired is deleted; a
+    value (IP/CAA) change deletes the old content before appending the new (the
+    provider APPENDS, so the old must go first); a proxied-only flip re-sets in
+    place (the CF-direct PATCH flips the orange cloud). This subsumes the old
+    per-scalar AAAA-unset / A-drift / mta-sts-retract special cases AND gains
+    precise pruning of wildcard/mail/CAA when cert/mta are turned off.
 
-    Precise pruning of wildcard/mail when cert/mta are turned off remains the
-    job of the deferred set-based reconciler; scalar state can't express it
-    without a per-record store.
-
-    Errors increment consecutive_failures but don't change record state.
+    Errors increment consecutive_failures and keep the previous snapshot (the
+    diff is idempotent, so a partial tick converges on the next).
     """
     now = now or dt.datetime.now(dt.timezone.utc)
+
+    # The diff baseline. On a pre-v3 upgrade the snapshot is empty but the scalar
+    # values were stashed: reconstruct the last-published set (evidence-attributed
+    # names at the old content -- see _reconstruct_legacy) so the first v3 tick
+    # deletes stale content, and re-sets -- idempotently -- every desired record
+    # the scalars can't prove was published. Unattributable leftovers (published
+    # by a subsystem since disabled, no evidence) are warned about, not deleted.
+    if state.legacy_scalars is not None:
+        last = _reconstruct_legacy(state.legacy_scalars, settings)
+        _warn_unattributable_legacy(state.legacy_scalars, settings)
+    else:
+        last = list(state.last_published)
+
     new_state = dns_state.DnsRecordsState(
         schema_version=dns_state.SCHEMA_VERSION,
-        last_published_ipv4=state.last_published_ipv4,
-        last_published_ipv6=state.last_published_ipv6,
-        last_published_caa=state.last_published_caa,
-        last_published_apex_proxied=state.last_published_apex_proxied,
-        last_published_mta_sts_present=state.last_published_mta_sts_present,
+        last_published=last,  # seed with the current-wire view; overwritten on a clean tick
         last_reconciled_iso=state.last_reconciled_iso,
         consecutive_failures=state.consecutive_failures,
     )
-    domain = settings.domain
-    apex_managed = settings.cert_enabled or settings.edge_enabled
-    apex_proxied = settings.edge_enabled and settings.dns_provider == "cloudflare"
-    mta_sts_desired = settings.mta_enabled and settings.edge_enabled
+    desired = desired_records(settings)
 
     try:
-        # 1. AAAA delete-on-unset --------------------------------------------------------------------------------------
-        if state.last_published_ipv6 and not settings.public_ipv6:
-            for fqdn in _managed_fqdns(state, domain):
-                runner.delete_record(DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6, )))
-                logger.info("dns: deleted AAAA %s -> %s (PUBLIC_IPV6 unset)", fqdn, state.last_published_ipv6)
-            new_state.last_published_ipv6 = ""
-
-        # 2. A drift: delete old IPv4 before publishing new ------------------------------------------------------------
-        if state.last_published_ipv4 and state.last_published_ipv4 != settings.public_ipv4:
-            for fqdn in _managed_fqdns(state, domain):
-                runner.delete_record(DesiredRecord(name=fqdn, type="A", args=(state.last_published_ipv4, )))
-                logger.info("dns: deleted stale A %s -> %s (was last_published_ipv4)", fqdn, state.last_published_ipv4)
-            new_state.last_published_ipv4 = ""
-
-        # 3. AAAA drift: delete old IPv6 before publishing new ---------------------------------------------------------
-        if (state.last_published_ipv6 and settings.public_ipv6 and state.last_published_ipv6 != settings.public_ipv6):
-            for fqdn in _managed_fqdns(state, domain):
-                runner.delete_record(DesiredRecord(name=fqdn, type="AAAA", args=(state.last_published_ipv6, )))
-                logger.info(
-                    "dns: deleted stale AAAA %s -> %s (was last_published_ipv6)", fqdn, state.last_published_ipv6
-                )
-            new_state.last_published_ipv6 = ""
-
-        # 4. mta-sts retract-on-disable --------------------------------------------------------------------------------
-        # Published before but no longer both edge+mta: retract so a stale orange
-        # record doesn't keep routing the policy host through Cloudflare.
-        if state.last_published_mta_sts_present and not mta_sts_desired:
-            host = f"mta-sts.{domain}"
-            retract_v4 = state.last_published_ipv4 or settings.public_ipv4
-            runner.delete_record(DesiredRecord(name=host, type="A", args=(retract_v4, )))
-            if state.last_published_ipv6:
-                runner.delete_record(DesiredRecord(name=host, type="AAAA", args=(state.last_published_ipv6, )))
-            logger.info("dns: retracted %s (edge+mta no longer both enabled)", host)
-            new_state.last_published_mta_sts_present = False
-
-        # 5. Publish all desired records. Skip per-record when state already matches (value + proxied dimension). ------
-        for rec in desired_records(settings):
-            if _already_published(rec, new_state, domain):
-                continue
-            runner.set_record(rec)
-            logger.info(
-                "dns: published %s %s %s%s", rec.type, rec.name, " ".join(rec.args), " (proxied)" if rec.proxied else ""
-            )
-
-        # 6. Flush state from settings now that all the publishes succeeded --------------------------------------------
-        new_state.last_published_ipv4 = settings.public_ipv4
-        new_state.last_published_ipv6 = settings.public_ipv6
-        if settings.cert_enabled:
-            new_state.last_published_caa = f'0 issue "{settings.caa_issuer}"'
-        if apex_managed:
-            new_state.last_published_apex_proxied = apex_proxied
-        new_state.last_published_mta_sts_present = mta_sts_desired
+        _apply_diff(last, desired, runner)
+        new_state.last_published = desired
         new_state.last_reconciled_iso = now.isoformat()
         new_state.consecutive_failures = 0
     except subprocess.CalledProcessError as e:
@@ -282,27 +219,148 @@ def reconcile_apex_dns(
     return new_state
 
 
-def _already_published(rec: DesiredRecord, state: dns_state.DnsRecordsState, domain: str) -> bool:
-    """Return True if `state` already reflects this record being live in DNS.
+def _apply_diff(last: list[DesiredRecord], desired: list[DesiredRecord], runner: PosternDnsRunner) -> None:
+    """Drive the runner to converge DNS from `last` to `desired`.
 
-    Name-aware so the apex and the mta-sts host (which carry the edge proxied
-    dimension) are only "already published" when both the address value AND the
-    proxied bit match, while gray wildcard/mail records short-circuit on value.
-    A False return means "we can't prove we won't need to write", so we hand the
-    call to postern-dns and let its idempotency/PATCH cover the rest."""
-    if rec.type == "CAA":
-        want = f'{rec.args[0]} {rec.args[1]} "{rec.args[2]}"'
-        return state.last_published_caa == want
-    if rec.type not in ("A", "AAAA"):
-        return False
-    have = state.last_published_ipv4 if rec.type == "A" else state.last_published_ipv6
-    if have != rec.args[0]:
-        return False
-    if rec.name == f"mta-sts.{domain}":
-        return state.last_published_mta_sts_present and state.last_published_apex_proxied == rec.proxied
-    if rec.name == domain:  # apex carries the proxied dimension
-        return state.last_published_apex_proxied == rec.proxied
-    return True  # gray wildcard/mail: value match is sufficient
+    Identity is (name, type); content is (args, proxied). Deletes run before sets
+    so a value change removes the stale content before the new one is appended.
+    Repeated no-op deletes across ticks are cheap (postern-dns treats a 0-match
+    delete as success) -- that idempotency is what makes a partial-failure tick
+    safe to retry."""
+    last_by_id = {(r.name, r.type): r for r in last}
+    desired_by_id = {(r.name, r.type): r for r in desired}
+    # desired_records / the reconstruction never emit two records at one identity.
+    assert len(last_by_id) == len(last), "duplicate (name, type) in last-published snapshot"
+    assert len(desired_by_id) == len(desired), "duplicate (name, type) in desired records"
+
+    # Deletes: an identity that dropped out of desired, or whose value (args) changed.
+    for ident, old in last_by_id.items():
+        new = desired_by_id.get(ident)
+        if new is None or new.args != old.args:
+            runner.delete_record(old)
+            logger.info("dns: deleted %s %s %s", old.type, old.name, " ".join(old.args))
+
+    # Sets: a new identity, a changed value, or a proxied-only flip.
+    for new in desired:
+        old = last_by_id.get((new.name, new.type))
+        if old is None or old.args != new.args or old.proxied != new.proxied:
+            runner.set_record(new)
+            logger.info(
+                "dns: published %s %s %s%s", new.type, new.name, " ".join(new.args), " (proxied)" if new.proxied else ""
+            )
+
+
+def _legacy_evidence_names(scalars: dict, domain: str) -> set[str]:
+    """FQDNs the pre-v3 scalars prove the reconciler managed:
+      * a non-empty CAA  <=> cert was on   -> apex + wildcard;
+      * apex_proxied     <=> edge+CF was on -> apex;
+      * mta_sts_present  <=> edge+MTA was on -> apex + mta-sts."""
+    names: set[str] = set()
+    if scalars.get("last_published_caa"):
+        names |= {domain, f"*.{domain}"}
+    if scalars.get("last_published_apex_proxied"):
+        names.add(domain)
+    if scalars.get("last_published_mta_sts_present"):
+        names |= {domain, f"mta-sts.{domain}"}
+    return names
+
+
+def _reconstruct_legacy(scalars: dict, settings: DnsRecordsSettings) -> list[DesiredRecord]:
+    """Rebuild the last-published snapshot from a pre-v3 (scalar) state file, using
+    the OLD content, so the first v3 diff converges DNS to the new desired set.
+
+    The scalars record the live IPs/CAA/proxied/mta-sts but NOT which subsystems
+    were enabled, so entries are attributed per name:
+      * scalar evidence (see `_legacy_evidence_names`) -> reconstructed as
+        published, at the old content;
+      * currently-desired names -> reconstructed at the old content ONLY when that
+        differs from the desired record; the entry then encodes a pending
+        delete-old/set-new. An old-content entry EQUAL to desired is omitted so
+        the migration tick re-SETs it: idempotent if it was really published,
+        required if the subsystem was enabled coincident with the upgrade (an
+        equal snapshot entry would suppress the first set forever). This holds on
+        the failure path too -- the persisted snapshot never affirmatively claims
+        an unevidenced record, so the re-set survives to the next tick.
+    Names with neither evidence nor a desired counterpart are not reconstructed:
+    deleting them would require guessing, so the migration leaves them and
+    `reconcile_apex_dns` warns the operator instead. Each record is gated on its
+    backing scalar being non-empty so a failed pre-v3 first tick (empty IP) never
+    reconstructs an invalid empty-content record."""
+    domain = settings.domain
+    mta_sts_host = f"mta-sts.{domain}"
+    v4 = str(scalars.get("last_published_ipv4", "") or "")
+    v6 = str(scalars.get("last_published_ipv6", "") or "")
+    caa = str(scalars.get("last_published_caa", "") or "")
+    apex_proxied = bool(scalars.get("last_published_apex_proxied", False))
+
+    desired_by_id = {(r.name, r.type): r for r in desired_records(settings)}
+    evidence_names = _legacy_evidence_names(scalars, domain)
+    addr_names = {r.name for r in desired_records(settings) if r.type == "A"} | evidence_names
+
+    def _proxied_for(name: str) -> bool:
+        # Only the apex and the mta-sts host ever carried the edge proxied bit.
+        return apex_proxied if name in (domain, mta_sts_host) else False
+
+    out: list[DesiredRecord] = []
+    for name in sorted(addr_names):
+        for type_, value in (("A", v4), ("AAAA", v6)):
+            if not value:
+                continue
+            rec = DesiredRecord(name=name, type=type_, args=(value, ), proxied=_proxied_for(name))
+            if name in evidence_names or rec != desired_by_id.get((name, type_)):
+                out.append(rec)
+    caa_args = _parse_caa(caa)
+    if caa_args is not None:
+        out.append(DesiredRecord(name=domain, type="CAA", args=caa_args))
+    return out
+
+
+def _warn_unattributable_legacy(scalars: dict, settings: DnsRecordsSettings) -> None:
+    """One-shot, migration tick only: the pre-v3 scalars prove SOMETHING was
+    published (an IP is set) but not at which names. Managed names that are
+    neither currently desired nor evidence-attributed cannot be reconstructed, so
+    the migration never deletes them -- tell the operator to check the zone.
+
+    Negative evidence is deliberately NOT used to shrink the suspect set. The
+    pre-v3 tick flushed its scalars only AFTER every publish in the tick
+    succeeded, so `mta_sts_present=False` (or the key absent) does not prove
+    mta-sts.<domain> was never published: a tick that set the mta-sts A record
+    and then failed at a later set persisted False with the record live, and
+    the state does not record whether edge was ever enabled. The same
+    end-of-tick gating applies to `last_published_caa` (an empty CAA scalar
+    cannot clear *.<domain>), and no scalar ever tracked mail.<domain>. On the
+    common cert+mta (no-edge) upgrade this warns once about mta-sts.<domain> --
+    a false positive whenever edge really never ran, accepted because
+    suppressing it would silence exactly the leaked-record case above
+    (fail-noisy beats fail-silent)."""
+    if not (scalars.get("last_published_ipv4") or scalars.get("last_published_ipv6")):
+        return
+    domain = settings.domain
+    universe = {domain, f"*.{domain}", f"mail.{domain}", f"mta-sts.{domain}"}
+    desired_names = {r.name for r in desired_records(settings)}
+    suspects = universe - desired_names - _legacy_evidence_names(scalars, domain)
+    if not suspects:
+        return
+    logger.warning(
+        "dns: the pre-v3 state migration cannot attribute possible leftover records at: %s. "
+        "If A/AAAA records exist at these names and you did not create them yourself, they are "
+        "Postern-published leftovers -- remove them from the DNS zone manually; the reconciler "
+        "will not touch them.", ", ".join(sorted(suspects))
+    )
+
+
+def _parse_caa(caa: str) -> tuple[str, str, str] | None:
+    """Parse the canonical zone-file CAA string (`0 issue "letsencrypt.org"`) the
+    pre-v3 state stored back into (flags, tag, value) so the reconstructed record
+    matches `desired_records`' 3-tuple shape. Returns None if empty/malformed (the
+    diff then re-sets CAA fresh, which is idempotent)."""
+    if not caa:
+        return None
+    parts = caa.split(" ", 2)
+    if len(parts) != 3:
+        return None
+    flags, tag, value = parts
+    return (flags, tag, value.strip('"'))
 
 
 # Settings validation ==================================================================================================
@@ -324,10 +382,3 @@ def validate_ipv6(s: str) -> str:
     except ValueError as e:
         raise ValueError(f"PUBLIC_IPV6 must be a valid IPv6 address (got {s!r}): {e}") from e
     return str(addr)
-
-
-# Helpers ==============================================================================================================
-def all_desired_fqdns(domain: str) -> Iterable[str]:
-    """The set of FQDNs this reconciler manages records under. Useful for the
-    `postern dns show` CLI to list-without-publish."""
-    return (domain, f"*.{domain}", f"mail.{domain}")

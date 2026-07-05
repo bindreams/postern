@@ -143,6 +143,23 @@ uv run pytest -m e2e_mta_outbound -v --timeout=600
 
 A follow-up issue tracks adding a self-hosted GHA runner labeled `port25-ok` so this suite can run in CI.
 
+### Cloudflare proxied-flag contract test (maintainer-only)
+
+The edge profile's `--proxied` support ([provisioner/postern-dns/cloudflare_proxied.go](provisioner/postern-dns/cloudflare_proxied.go)) rests on one Cloudflare-API assumption: error 81058 ("identical record already exists") keys on `(zone, type, name, content)` and **excludes** `proxied`. The hermetic `go-unit` job only checks this against a self-authored fake coded to the same assumption. `provisioner/postern-dns/cloudflare_contract_test.go` verifies it against a **live** Cloudflare zone.
+
+It is gated behind the `cfcontract` build tag, so `go test ./...` never compiles it. It fails loudly (never skips) when its env is missing — same policy as the MTA real-infra suite. Run it manually:
+
+```bash
+cd provisioner/postern-dns
+export CLOUDFLARE_API_TOKEN=...            # token scoped to the test zone
+export CF_CONTRACT_TEST_ZONE=example.com  # a maintainer-owned test zone
+go test -tags cfcontract -run TestCloudflareProxiedContract -count=1 -v ./...
+```
+
+The test creates records at unique per-run FQDNs (TEST-NET `192.0.2.x` / `2001:db8::` content) and deletes every one via `t.Cleanup`, even on failure. It also probes an open question — whether live Cloudflare normalizes equivalent IPv6 textual forms — and logs the answer on a `CONTRACT PROBE RESULT` line rather than hard-asserting it.
+
+In CI: the manually-triggered [`.github/workflows/cf-contract.yaml`](.github/workflows/cf-contract.yaml) workflow (`workflow_dispatch`) runs it with `secrets.CLOUDFLARE_API_TOKEN` and `vars.CF_CONTRACT_TEST_ZONE`. Populate both before dispatching; fork PRs cannot trigger `workflow_dispatch`, so the token is never exposed to untrusted code.
+
 ## Running the stack locally
 
 ```bash

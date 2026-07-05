@@ -1,0 +1,41 @@
+name: Cloudflare proxied-flag contract test
+# Maintainer-only, manually triggered. Verifies against a LIVE Cloudflare zone
+# the assumption cloudflare_proxied.go rests on: error 81058 ("identical record
+# already exists") keys on (zone, type, name, content) and EXCLUDES `proxied`.
+# The hermetic go-unit job only checks this against a self-authored fake; this
+# job is the ground truth. See CONTRIBUTING.md > "Cloudflare proxied-flag
+# contract test".
+on:
+  workflow_dispatch:
+
+jobs:
+  cf-contract:
+    name: Cloudflare proxied-flag contract (real zone)
+    runs-on: ubuntu-latest
+    # Serialize: runs create and delete records on the shared maintainer test
+    # zone. Per-run FQDNs are unique (timestamp + random), so this is belt-and-
+    # braces rather than strictly required. cancel-in-progress=false lets an
+    # in-flight run finish its t.Cleanup teardown instead of being killed.
+    concurrency:
+      group: cf-contract
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: provisioner/postern-dns
+    env:
+      # Zone name is not secret (it's a maintainer-owned test zone); the API
+      # token is. The test fails loudly if either is empty -- there is no skip
+      # path (CLAUDE.md policy). Fork PRs cannot trigger workflow_dispatch, so
+      # the secret is never exposed to untrusted code.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_CONTRACT_TEST_ZONE: ${{ vars.CF_CONTRACT_TEST_ZONE }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          # Stay pinned to the toolchain the module declares. GOTOOLCHAIN=auto
+          # then fetches the exact `toolchain` at build time.
+          go-version-file: provisioner/postern-dns/go.mod
+          cache-dependency-path: provisioner/postern-dns/go.sum
+      - name: Run the live-zone contract test
+        run: go test -tags cfcontract -run TestCloudflareProxiedContract -count=1 -v ./...

@@ -28,6 +28,10 @@ MUST_KEEP = {
     "operations/rename.md": ["_domainkey", "docker compose down"],
     "operations/index.md": ["postern reconcile"],
     "development/architecture.md": ["`CONTAINERS`, `NETWORKS`, `IMAGES`"],
+    "getting-started.md": ["local/shadowsocks-server", "requires HTTPS"],
+    "connecting.md": ["galoshes", "127.0.0.1:1080"],
+    "security.md": ["on-path fingerprinting", "what Cloudflare sees"],
+    "index.md": ["hidden door"],
 }
 
 # Tripwires that mirror a machine value: the phrase must appear on the page

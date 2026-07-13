@@ -68,7 +68,12 @@ async def download_config(request: Request, connection_id: str):
         return Response(status_code=404)
 
     settings = request.app.state.settings
-    config = client_config(conn, settings.domain)
+    config = client_config(
+        conn,
+        settings.domain,
+        ech_enabled=settings.ech_enabled,
+        ech_doh_url=settings.ech_doh_url,
+    )
     config_json = json.dumps(config, indent=2)
     filename = _safe_filename(settings.product_name, conn.label)
 

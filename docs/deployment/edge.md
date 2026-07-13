@@ -100,6 +100,26 @@ DOMAIN=postern.example.com
 
 `generic` requires both `EDGE_TRUSTED_CIDRS` and `EDGE_REALIP_HEADER` non-empty (whitespace-only is rejected at start). nginx trusts the given ranges and reads the client IP from the named header. There is **no** auto-fetched range list, **no** proxied DNS management, and **no** Authenticated Origin Pull — the front and its trust boundary are yours to secure.
 
+## Enabling ECH
+
+ECH (Encrypted Client Hello) hides the SNI from the on-path network. It is a
+**client-side, front-side** feature — Postern does no ECH itself and publishes no
+ECH config; your front (Cloudflare, or any ECH-capable proxy) does. Postern's part
+is to rewrite the **downloaded** client config's `plugin_opts` to
+`…;ech=always;ech-doh=<url>` so the tunnel plugin performs ECH.
+
+Two settings, off by default and **not** coupled to `EDGE_PROFILE`:
+
+- `ECH_ENABLED=true` — append the ECH opts to downloaded client configs.
+- `ECH_DOH_URL` — the DoH resolver the client uses to fetch the ECH config
+  (default `https://cloudflare-dns.com/dns-query`; any public DoH resolver works,
+  independent of your front).
+
+`ech=always` is **fail-closed**: if the front does not actually serve an ECH config
+for your domain, downloaded clients **refuse to connect**. Enable only once the
+front is confirmed serving ECH (for Cloudflare: orange-clouded + zone ECH enabled).
+Requires plugin builds with ECH support (ex-ray ≥ v0.2.0, galoshes ≥ v0.3.0).
+
 ## Authenticated Origin Pull: what it proves (and what it doesn't)
 
 Under `cloudflare`, AOP mTLS is **on by default** and does raise the bar: a naive `curl https://<origin-ip>` is rejected because it can't present Cloudflare's client certificate. Be precise about the guarantee, though:
@@ -122,7 +142,7 @@ The `/t/{token}` identification hardening makes tunnel responses uniform against
 
 ## Caveats
 
-- **ECH is Cloudflare-only in 2026.** Encrypted Client Hello at scale is effectively a Cloudflare feature today; no `generic` front gives you SNI-hiding out of the box. `generic` buys real-IP recovery, nothing more.
+- **ECH needs an ECH-capable front.** Cloudflare is the turnkey option in 2026, but ECH is a standard: `generic` **can** do ECH if your front publishes and serves an ECH config for your domain — you own that config publication. `generic` still gives real-IP recovery regardless.
 - **The origin IP leaks via `mail.<domain>` when the built-in MTA is on.** SMTP can't be proxied, so the mail record is gray-clouded and resolves to your real address. The Cloudflare profile hides the SNI and fronts the tunnel, but does not hide the origin IP while the MTA runs; the `:443`-from-Cloudflare firewall still blocks direct tunnel access to the origin.
 - **`mta-sts.<domain>` is auto-published proxied when both MTA and edge are on.** With `with-mta` and `with-edge` (Cloudflare) both active, the provisioner automatically publishes an orange-clouded `mta-sts.<domain>` A/AAAA record so the MTA-STS policy URL (`https://mta-sts.<domain>/.well-known/mta-sts.txt`) stays reachable through Cloudflare even with the origin `:443` firewall locked to Cloudflare ranges. No manual DNS step is needed; the provisioner creates and maintains the record.
 

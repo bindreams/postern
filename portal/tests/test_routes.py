@@ -678,3 +678,48 @@ async def test_login_identity_card_ignores_x_real_ip_from_public_peer(app_settin
             assert r.status_code == 200
             assert "198.51.100.1" in r.text
             assert "203.0.113.42" not in r.text
+
+
+# ECH settings wiring ==================================================================================================
+async def test_download_config_ech_off_by_default(tmp_path):
+    settings = Settings(database_path=str(tmp_path / "t.db"), secret_key="test-secret")
+    app = PosternApp(settings)
+    async with db.get_connection(settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        user = User(name="A", email="a@example.com")
+        await db.create_user(database, user)
+        conn = Connection(user_id=user.id, path_token="abcdef123456789012345678", label="L", password="k")
+        await db.create_connection(database, conn)
+        await db.create_session(database, Session(token="tok", user_id=user.id, expires_at=_expires_str()))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            c.cookies.set("session", "tok")
+            resp = await c.get(f"/connection/{conn.id}/config")
+    assert resp.status_code == 200
+    opts = resp.json()["servers"][0]["plugin_opts"]
+    assert opts == f"tls;fast-open;path=/t/{conn.path_token};host={settings.domain}"
+
+
+async def test_download_config_ech_enabled(tmp_path):
+    settings = Settings(database_path=str(tmp_path / "t.db"), secret_key="test-secret", ech_enabled=True)
+    app = PosternApp(settings)
+    async with db.get_connection(settings.database_path) as database:
+        await db.migrate(database)
+        app.state.db = database
+        user = User(name="A", email="a@example.com")
+        await db.create_user(database, user)
+        conn = Connection(user_id=user.id, path_token="abcdef123456789012345678", label="L", password="k")
+        await db.create_connection(database, conn)
+        await db.create_session(database, Session(token="tok", user_id=user.id, expires_at=_expires_str()))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            c.cookies.set("session", "tok")
+            resp = await c.get(f"/connection/{conn.id}/config")
+    assert resp.status_code == 200
+    opts = resp.json()["servers"][0]["plugin_opts"]
+    expected = (
+        f"tls;fast-open;path=/t/{conn.path_token};host={settings.domain}"
+        f";ech=always;ech-doh={settings.ech_doh_url}"
+    )
+    assert opts == expected

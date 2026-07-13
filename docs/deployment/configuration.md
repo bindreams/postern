@@ -96,6 +96,15 @@ Fronting the public `:443` endpoint with a CDN/reverse proxy is covered in [edge
 Setting `PROXY_PROTOCOL_FROM` without a PROXY-v2-sending proxy in front makes nginx drop **all** `:443` connections — browsers cannot speak PROXY protocol. Only set it when nginx's `:443` is unreachable except through that trusted proxy (host ports stripped or firewalled); otherwise anyone who can reach `:443` can forge a PROXY header and spoof their source IP.
 ```
 
+## ECH (client SNI concealment)
+
+Encrypted Client Hello hides the hostname in the TLS handshake. When enabled, the v2ray/ex-ray plugin requests an ECH config via DoH before connecting.
+
+| Variable      | Default                                | Description                                                                                                                                                                                                 |
+| ------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ECH_ENABLED` | `false`                                | Enable ECH in generated client configs (`ech=always`). Decoupled from `EDGE_PROFILE`. Enable only once your front serves ECH, or clients refuse to connect.                                                 |
+| `ECH_DOH_URL` | `https://cloudflare-dns.com/dns-query` | DoH resolver URL used by the plugin to fetch the ECH config. Must be an `https://` URL; must not contain `;`, `\`, or whitespace (SIP003 metacharacters). Validated at startup regardless of `ECH_ENABLED`. |
+
 ## Compose
 
 These are read by docker compose during interpolation, not by the portal.

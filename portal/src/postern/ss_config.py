@@ -64,8 +64,16 @@ def client_config(conn: Connection, domain: str, *, ech_enabled: bool = False, e
         local plugin socket. SIP003 plugins are TCP-only by spec; this is the
         SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
-    if ech_enabled and not ech_doh_url:
-        raise ValueError("client_config: ech_doh_url must be non-empty when ech_enabled=True")
+    if ech_enabled:
+        # Defend the splice point: ech_doh_url is appended verbatim into the ;-separated
+        # SIP003 plugin_opts. Settings validates operator-supplied URLs, but this keeps
+        # the function self-safe for any direct caller.
+        if not ech_doh_url:
+            raise ValueError("client_config: ech_doh_url must be non-empty when ech_enabled=True")
+        if ";" in ech_doh_url or "\\" in ech_doh_url or any(c.isspace() for c in ech_doh_url):
+            raise ValueError(
+                "client_config: ech_doh_url must not contain ';', '\\', or whitespace (SIP003 metacharacters)"
+            )
     plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
     if ech_enabled:
         plugin_opts += f";ech=always;ech-doh={ech_doh_url}"

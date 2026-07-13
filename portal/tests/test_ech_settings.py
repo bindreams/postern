@@ -59,6 +59,21 @@ def test_ech_url_whitespace_rejected():
         _settings(ech_doh_url="https://ex.test/dns query")
 
 
+def test_ech_url_hostless_userinfo_rejected():
+    with pytest.raises(ValidationError, match="host"):
+        _settings(ech_doh_url="https://@/dns-query")
+
+
+def test_ech_url_hostless_port_only_rejected():
+    with pytest.raises(ValidationError, match="host"):
+        _settings(ech_doh_url="https://:443/dns-query")
+
+
+def test_ech_url_percent_encoded_semicolon_rejected():
+    with pytest.raises(ValidationError, match="SIP003"):
+        _settings(ech_doh_url="https://doh.example/dns%3Bquery")
+
+
 # Presence required only when enabled ==================================================================================
 def test_ech_enabled_with_default_doh_is_valid():
     s = _settings(ech_enabled=True)

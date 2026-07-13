@@ -129,11 +129,12 @@ def test_client_config_ech_off_by_default(plugin_name):
 
 
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
-def test_client_config_ech_enabled_appends_opts(plugin_name):
+@pytest.mark.parametrize("doh_url", ["https://cloudflare-dns.com/dns-query", "https://dns.example.net/dns-query"])
+def test_client_config_ech_enabled_appends_opts(plugin_name, doh_url):
     conn = _make_connection().model_copy(update={"plugin": plugin_name})
-    cfg = client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url="https://cloudflare-dns.com/dns-query")
+    cfg = client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url=doh_url)
     base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
-    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=always;ech-doh=https://cloudflare-dns.com/dns-query"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=always;ech-doh={doh_url}"
 
 
 def test_client_config_ech_enabled_empty_doh_raises():
@@ -142,13 +143,22 @@ def test_client_config_ech_enabled_empty_doh_raises():
         client_config(conn, DOMAIN, ech_enabled=True)
 
 
+def test_client_config_ech_enabled_rejects_metachar_doh():
+    conn = _make_connection()
+    with pytest.raises(ValueError, match="SIP003"):
+        client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url="https://ex.test/dns;inject=x")
+
+
 def test_server_config_has_no_ech_params():
-    """ECH is client-only; server_config must never grow ECH params. Guard the
-    signature, not a runtime string (server_config has no path that could emit ech)."""
+    """ECH is client-only; server_config must never grow ECH params. Assert both the
+    signature (no ech params) and the output (no ech token)."""
     import inspect
     params = inspect.signature(server_config).parameters
     assert "ech_enabled" not in params
     assert "ech_doh_url" not in params
+    conn = _make_connection()
+    opts = server_config(conn, DOMAIN)["servers"][0]["plugin_opts"]
+    assert "ech=" not in opts and "ech-doh=" not in opts
 
 
 # Serialization ========================================================================================================

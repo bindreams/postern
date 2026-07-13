@@ -3,7 +3,7 @@
 FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG EX_RAY_VERSION=v0.1.0
+ARG EX_RAY_VERSION=v0.2.0
 # ex-ray is bindreams/hole's first-party v2ray-core SIP003 shim. It is
 # wire-compatible with stock shadowsocks/v2ray-plugin, so we install it under
 # the `v2ray-plugin` name: ssserver execs `v2ray-plugin` by SIP003 name and the
@@ -26,7 +26,7 @@ RUN <<-EOF
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray-license
-ARG EX_RAY_VERSION=v0.1.0
+ARG EX_RAY_VERSION=v0.2.0
 # ex-ray is Apache-2.0; NOTICES.md carries the MIT attribution for the
 # v2ray-plugin-derived config-building (see crates/ex-ray/README.md).
 RUN <<-EOF
@@ -39,7 +39,7 @@ EOF
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.2.0
+ARG GALOSHES_VERSION=v0.3.0
 RUN <<-EOF
 	set -eu
 	# Release asset names omit the leading `v`; tags include it.
@@ -55,7 +55,7 @@ RUN <<-EOF
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes-license
-ARG GALOSHES_VERSION=v0.2.0
+ARG GALOSHES_VERSION=v0.3.0
 RUN wget -q -O /LICENSE.md \
 	"https://raw.githubusercontent.com/bindreams/hole/refs/tags/releases/galoshes/${GALOSHES_VERSION}/crates/galoshes/LICENSE.md"
 

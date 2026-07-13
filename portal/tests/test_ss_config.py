@@ -119,6 +119,38 @@ def test_model_validate_rejects_invalid_plugin():
         Connection.model_validate({**conn.model_dump(), "plugin": "bogus"})
 
 
+# Client config: ECH ==================================================================================================
+@pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
+def test_client_config_ech_off_by_default(plugin_name):
+    conn = _make_connection().model_copy(update={"plugin": plugin_name})
+    cfg = client_config(conn, DOMAIN)
+    # Byte-identical to the pre-ECH output.
+    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+
+
+@pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
+def test_client_config_ech_enabled_appends_opts(plugin_name):
+    conn = _make_connection().model_copy(update={"plugin": plugin_name})
+    cfg = client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url="https://cloudflare-dns.com/dns-query")
+    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=always;ech-doh=https://cloudflare-dns.com/dns-query"
+
+
+def test_client_config_ech_enabled_empty_doh_raises():
+    conn = _make_connection()
+    with pytest.raises(ValueError, match="ech_doh_url"):
+        client_config(conn, DOMAIN, ech_enabled=True)
+
+
+def test_server_config_has_no_ech_params():
+    """ECH is client-only; server_config must never grow ECH params. Guard the
+    signature, not a runtime string (server_config has no path that could emit ech)."""
+    import inspect
+    params = inspect.signature(server_config).parameters
+    assert "ech_enabled" not in params
+    assert "ech_doh_url" not in params
+
+
 # Serialization ========================================================================================================
 def test_server_config_json_is_valid_json():
     conn = _make_connection()

@@ -40,7 +40,7 @@ def server_config(conn: Connection, domain: str) -> dict:
     }
 
 
-def client_config(conn: Connection, domain: str) -> dict:
+def client_config(conn: Connection, domain: str, *, ech_enabled: bool = False, ech_doh_url: str = "") -> dict:
     """Generate a shadowsocks client config for download.
 
     For galoshes connections we set `mode: tcp_and_udp` so sslocal opens
@@ -64,13 +64,18 @@ def client_config(conn: Connection, domain: str) -> dict:
         local plugin socket. SIP003 plugins are TCP-only by spec; this is the
         SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
+    if ech_enabled and not ech_doh_url:
+        raise ValueError("client_config: ech_doh_url must be non-empty when ech_enabled=True")
+    plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
+    if ech_enabled:
+        plugin_opts += f";ech=always;ech-doh={ech_doh_url}"
     server: dict = {
         "address": domain,
         "port": 443,
         "password": conn.password,
         "method": CIPHER,
         "plugin": conn.plugin,
-        "plugin_opts": f"tls;fast-open;path=/t/{conn.path_token};host={domain}",
+        "plugin_opts": plugin_opts,
     }
     config: dict = {
         "servers": [server],

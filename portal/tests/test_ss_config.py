@@ -119,7 +119,7 @@ def test_model_validate_rejects_invalid_plugin():
         Connection.model_validate({**conn.model_dump(), "plugin": "bogus"})
 
 
-# Client config: ECH ==================================================================================================
+# Client config: ECH ===================================================================================================
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
 def test_client_config_ech_off_by_default(plugin_name):
     conn = _make_connection().model_copy(update={"plugin": plugin_name})

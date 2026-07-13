@@ -680,7 +680,7 @@ async def test_login_identity_card_ignores_x_real_ip_from_public_peer(app_settin
             assert "203.0.113.42" not in r.text
 
 
-# ECH settings wiring ===================================================================================================
+# ECH settings wiring ==================================================================================================
 async def test_download_config_ech_off_by_default(tmp_path):
     settings = Settings(database_path=str(tmp_path / "t.db"), secret_key="test-secret")
     app = PosternApp(settings)

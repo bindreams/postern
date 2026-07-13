@@ -202,7 +202,5 @@ class Settings(BaseSettings):
         # source is a config the plugin itself rejects). Whether the front actually serves
         # ECH is the operator's responsibility, not ours.
         if self.ech_enabled and not self.ech_doh_url:
-            raise ValueError(
-                "ECH_ENABLED=true requires ECH_DOH_URL (the DoH resolver used to fetch the ECH config)"
-            )
+            raise ValueError("ECH_ENABLED=true requires ECH_DOH_URL (the DoH resolver used to fetch the ECH config)")
         return self

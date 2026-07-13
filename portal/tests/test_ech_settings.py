@@ -59,7 +59,7 @@ def test_ech_url_whitespace_rejected():
         _settings(ech_doh_url="https://ex.test/dns query")
 
 
-# Presence required only when enabled =================================================================================
+# Presence required only when enabled ==================================================================================
 def test_ech_enabled_with_default_doh_is_valid():
     s = _settings(ech_enabled=True)
     assert s.ech_enabled is True
@@ -71,7 +71,7 @@ def test_ech_enabled_empty_doh_rejected():
         _settings(ech_enabled=True, ech_doh_url="")
 
 
-# Environment-variable parsing ========================================================================================
+# Environment-variable parsing =========================================================================================
 class TestEchFromEnv:
 
     def test_ech_from_env(self, monkeypatch: pytest.MonkeyPatch):

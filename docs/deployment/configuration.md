@@ -100,10 +100,10 @@ Setting `PROXY_PROTOCOL_FROM` without a PROXY-v2-sending proxy in front makes ng
 
 Encrypted Client Hello hides the hostname in the TLS handshake. When enabled, the v2ray/ex-ray plugin requests an ECH config via DoH before connecting.
 
-| Variable      | Default                                        | Description                                                                                                                                                                    |
-| ------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ECH_ENABLED` | `false`                                        | Enable ECH in generated client configs (`ech=always`). Deliberately decoupled from `EDGE_PROFILE`. Enable only once your front actually serves ECH, or clients will refuse to connect. |
-| `ECH_DOH_URL` | `https://cloudflare-dns.com/dns-query`         | DoH resolver URL used by the plugin to fetch the ECH config. Must be an `https://` URL; must not contain `;`, `\`, or whitespace (SIP003 metacharacters). Validated at startup regardless of `ECH_ENABLED`. |
+| Variable      | Default                                | Description                                                                                                                                                                                                 |
+| ------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ECH_ENABLED` | `false`                                | Enable ECH in generated client configs (`ech=always`). Deliberately decoupled from `EDGE_PROFILE`. Enable only once your front actually serves ECH, or clients will refuse to connect.                      |
+| `ECH_DOH_URL` | `https://cloudflare-dns.com/dns-query` | DoH resolver URL used by the plugin to fetch the ECH config. Must be an `https://` URL; must not contain `;`, `\`, or whitespace (SIP003 metacharacters). Validated at startup regardless of `ECH_ENABLED`. |
 
 ## Compose
 

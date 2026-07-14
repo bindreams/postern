@@ -2,7 +2,7 @@ module github.com/bindreams/postern/provisioner/postern-dns
 
 go 1.25
 
-toolchain go1.26.4
+toolchain go1.26.5
 
 require (
 	github.com/libdns/cloudflare v0.2.2

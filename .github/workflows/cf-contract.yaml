@@ -30,7 +30,7 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CF_CONTRACT_TEST_ZONE: ${{ vars.CF_CONTRACT_TEST_ZONE }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           # Stay pinned to the toolchain the module declares. GOTOOLCHAIN=auto

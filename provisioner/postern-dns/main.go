@@ -146,8 +146,10 @@ func usage() {
   postern-dns caa-delete  <fqdn> <flags> <tag> <value>
   postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
   postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
+  postern-dns ech-set     <domain> on|off
 
   --proxied is Cloudflare-only (true rejected, false ignored, on other providers).
+  ech-set is Cloudflare-only (rejected on other providers).
 
 env vars:
   DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
@@ -271,6 +273,20 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 		}
 		return doRecordDelete(ctx, provider, zone, rec)
 
+	case "ech-set":
+		if len(args) != 1 {
+			return fmt.Errorf("ech-set: expected <on|off>, got %d arg(s)", len(args))
+		}
+		on, perr := parseOnOff(args[0])
+		if perr != nil {
+			return perr
+		}
+		if providerName != "cloudflare" {
+			return fmt.Errorf("ech-set is only supported for DNS_PROVIDER=cloudflare (got %q): "+
+				"the zone-level ECH setting is a Cloudflare feature", providerName)
+		}
+		return cloudflareZoneEchSet(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, on)
+
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -308,6 +324,18 @@ func extractProxied(args []string) (rest []string, proxied *bool, err error) {
 		proxied = &b
 	}
 	return rest, proxied, nil
+}
+
+// parseOnOff parses the on|off argument for ech-set.
+func parseOnOff(s string) (bool, error) {
+	switch s {
+	case "on":
+		return true, nil
+	case "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("ech-set: value must be 'on' or 'off' (got %q)", s)
+	}
 }
 
 // doAddrSetProxied handles `a-set`/`aaaa-set --proxied=...`. Proxying is a

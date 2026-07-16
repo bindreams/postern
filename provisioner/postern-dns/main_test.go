@@ -1052,6 +1052,20 @@ func TestRunCmd_AddrSet_Proxied_NonCloudflare_FalseNoOp(t *testing.T) {
 	}
 }
 
+func TestEchSetNonCloudflareErrors(t *testing.T) {
+	err := runCmd(context.Background(), "route53", nil, "ech-set", "example.com", []string{"on"})
+	if err == nil || !strings.Contains(err.Error(), "only supported for DNS_PROVIDER=cloudflare") {
+		t.Fatalf("expected cloudflare-only error, got: %v", err)
+	}
+}
+
+func TestEchSetBadValueErrors(t *testing.T) {
+	err := runCmd(context.Background(), "cloudflare", nil, "ech-set", "example.com", []string{"maybe"})
+	if err == nil || !strings.Contains(err.Error(), "must be 'on' or 'off'") {
+		t.Fatalf("expected on/off validation error, got: %v", err)
+	}
+}
+
 func TestRunCmd_RejectsInvalidArgs(t *testing.T) {
 	fp := &fakeProvider{}
 	cases := []struct {

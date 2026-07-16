@@ -106,13 +106,8 @@ def main() -> int:
             return 1
 
     # ECH half (only when Postern manages the Cloudflare zone-ECH setting) ---------------------------------------------
-    # Red until the zone-ECH PATCH has succeeded at least once, AND red again if the
-    # LATEST tick is failing (consecutive_failures > 0) -- so the "unhealthy container"
-    # signal tracks current reality (e.g. a token scope revoked / plan downgraded six
-    # weeks in), not merely "ever worked once". We gate on this persisted PATCH state,
-    # NOT on live DNS propagation (which we don't control and which would deadlock
-    # startup); the DoH "is CF serving ech=" check is non-gating and lives in
-    # `postern ech verify`.
+    # Also red on consecutive_failures > 0 so the signal tracks current reality (a
+    # regression after the first success), not merely "ever worked once".
     if enablement.ech_zone_enabled:
         ech = ech_state.read_state()
         if ech.last_enabled_ok_iso is None:

@@ -185,9 +185,6 @@ def test_example_env_default_config_boots(monkeypatch: pytest.MonkeyPatch):
     # supplied, must construct a valid Settings -- the canonical "cp example.env .env"
     # bring-up. This RED-flags any active assignment of a cloudflare-only edge knob
     # under the default EDGE_PROFILE=none (issue #170).
-    #
-    # Hermetic: strip any Settings-field env vars the runner exports, so this asserts
-    # purely about example.env's shipped contents.
     for field in Settings.model_fields:
         monkeypatch.delenv(field.upper(), raising=False)
     overrides = _example_env_active_settings()

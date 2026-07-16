@@ -80,3 +80,14 @@ def test_inconclusive_when_param_parsing_raises(monkeypatch):
 
     monkeypatch.setattr(ech, "_query_https_rrs", lambda *a, **k: [Boom()])
     assert ech.check_apex_ech("postern.test", "https://doh.test/dns-query") == "inconclusive"
+
+
+def test_inconclusive_when_rdata_missing_params_attr(monkeypatch):
+    # A dnspython shape change (renamed/removed .params) must degrade to inconclusive
+    # (not a false confirmed "absent"). Direct attribute access lets the AttributeError
+    # reach check_apex_ech's outer try/except.
+    class NoParams:
+        pass  # no .params attribute
+
+    monkeypatch.setattr(ech, "_query_https_rrs", lambda *a, **k: [NoParams()])
+    assert ech.check_apex_ech("postern.test", "https://doh.test/dns-query") == "inconclusive"

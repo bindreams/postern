@@ -72,9 +72,14 @@ def _has_ech_param(rr) -> bool:
 
     dnspython keys `rr.params` by the numeric SvcParamKey (its int-enum compares
     equal to 5); the ech value object carries the wire bytes on `.ech`. An empty
-    `ech=""` param is "absent" per the spec, so an empty `.ech` is not present."""
-    params = getattr(rr, "params", {}) or {}
-    val = params.get(_ECH_PARAM_KEY)
+    `ech=""` param is "absent" per the spec, so an empty `.ech` is not present.
+
+    Direct attribute access (`.params`/`.ech`) is DELIBERATE: a dnspython shape
+    change that renamed either raises AttributeError, which check_apex_ech's outer
+    try/except maps to "inconclusive" rather than a false confirmed "absent". A
+    getattr-with-default would swallow that and mis-report absence. The
+    params-keyed-by-5 and ech-bytes assumptions are pinned by the real-rdata test."""
+    val = rr.params.get(_ECH_PARAM_KEY)
     if val is None:
         return False
-    return bool(getattr(val, "ech", None))
+    return bool(val.ech)

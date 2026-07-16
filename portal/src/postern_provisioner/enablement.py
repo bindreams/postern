@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 # Fixed dispatch order so logs across ticks stay deterministic.
-_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge")
+_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge", "ech")
 
 # COMPOSE_PROFILES is comma-separated per the compose spec; we also tolerate
 # whitespace separators so a hand-edited value still parses.
@@ -41,6 +41,7 @@ class Enablement:
     mta_enabled: bool  # MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA + mail/mta-sts A/AAAA publisher
     dns_enabled: bool  # apex/wildcard/mail/mta-sts A/AAAA + CAA publisher
     edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex/mta-sts
+    ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (ech + cloudflare edge + provider)
 
 
 def mta_deployed_from_profiles(compose_profiles: str) -> bool:
@@ -52,7 +53,15 @@ def mta_deployed_from_profiles(compose_profiles: str) -> bool:
     return "with-mta" in tokens
 
 
-def compute_enablement(*, dns_provider: str, cert_renewal: bool, edge_profile: str, mta_deployed: bool) -> Enablement:
+def compute_enablement(
+    *,
+    dns_provider: str,
+    cert_renewal: bool,
+    edge_profile: str,
+    mta_deployed: bool,
+    ech_enabled: bool = False,
+    manage_zone_ech: bool = True,
+) -> Enablement:
     """Derive the enablement matrix from raw env values (case/space-insensitive)."""
     provider = (dns_provider or "none").strip().lower()
     profile = (edge_profile or "none").strip().lower()
@@ -70,6 +79,9 @@ def compute_enablement(*, dns_provider: str, cert_renewal: bool, edge_profile: s
     # MTA's mail host (mail A). Without a provider, postern-dns fails -- so never
     # enable the publisher then.
     dns = have_provider and (cert or edge or mta)
+    # Zone-ECH is Cloudflare + orange-cloud specific and fail-closed (ech=always
+    # breaks clients without the front), so it stays off outside a managed CF edge.
+    ech_zone = ech_enabled and edge and provider == "cloudflare" and manage_zone_ech
 
     return Enablement(
         dkim_enabled=dkim,
@@ -77,6 +89,7 @@ def compute_enablement(*, dns_provider: str, cert_renewal: bool, edge_profile: s
         mta_enabled=mta,
         dns_enabled=dns,
         edge_enabled=edge,
+        ech_zone_enabled=ech_zone,
     )
 
 
@@ -89,6 +102,7 @@ def run_enabled_ticks(enablement: Enablement, ticks: Mapping[str, Callable[[], N
         "dns": enablement.dns_enabled,
         "mta_records": enablement.mta_enabled,
         "edge": enablement.edge_enabled,
+        "ech": enablement.ech_zone_enabled,
     }
     for name in _TICK_ORDER:
         if flags[name]:

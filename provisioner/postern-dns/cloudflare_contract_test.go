@@ -284,3 +284,49 @@ func TestCloudflareProxiedContract(t *testing.T) {
 			verb, compact, expanded, normalized, len(recs))
 	})
 }
+
+// TestCloudflareZoneEchContract exercises cloudflare_ech.go against a LIVE zone.
+// The ech setting is zone-WIDE: this flips it on the maintainer's contract-test
+// zone and restores the original in t.Cleanup.
+func TestCloudflareZoneEchContract(t *testing.T) {
+	token, zone := contractEnv(t)
+	ctx := context.Background()
+	client := newCFClient(token)
+
+	zoneID, err := client.zoneID(ctx, zone)
+	if err != nil {
+		t.Fatalf("cfcontract: resolve zone %q: %v", zone, err)
+	}
+
+	original, err := client.getZoneSetting(ctx, zoneID, "ech")
+	if err != nil {
+		t.Fatalf("cfcontract: read initial ech value: %v "+
+			"(token needs Zone Settings:Edit and the plan must expose the ECH setting)", err)
+	}
+	t.Logf("cfcontract: zone %q initial ech=%q", zone, original)
+	t.Cleanup(func() {
+		if err := cloudflareZoneEchSet(ctx, client, zone, original == "on"); err != nil {
+			t.Errorf("cfcontract cleanup: restore ech=%q: %v", original, err)
+		}
+	})
+
+	if err := cloudflareZoneEchSet(ctx, client, zone, true); err != nil {
+		t.Fatalf("set ech on: %v", err)
+	}
+	if v, _ := client.getZoneSetting(ctx, zoneID, "ech"); v != "on" {
+		t.Fatalf("after set-on, ech=%q want on", v)
+	}
+	if err := cloudflareZoneEchSet(ctx, client, zone, true); err != nil {
+		t.Fatalf("idempotent re-set on: %v", err)
+	}
+	if v, _ := client.getZoneSetting(ctx, zoneID, "ech"); v != "on" {
+		t.Fatalf("after idempotent re-set, ech=%q want on", v)
+	}
+	if err := cloudflareZoneEchSet(ctx, client, zone, false); err != nil {
+		t.Fatalf("set ech off: %v", err)
+	}
+	if v, _ := client.getZoneSetting(ctx, zoneID, "ech"); v != "off" {
+		t.Fatalf("after set-off, ech=%q want off", v)
+	}
+	t.Logf("cfcontract OK: zone ECH GET/PATCH round-trips on<->off, idempotent re-set stable")
+}

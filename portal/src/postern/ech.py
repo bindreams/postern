@@ -71,13 +71,10 @@ def _has_ech_param(rr) -> bool:
     """True if the HTTPS record's SvcParams include a non-empty ech (key 5).
 
     dnspython keys `rr.params` by the numeric SvcParamKey (its int-enum compares
-    equal to 5); the ech value object carries the wire bytes on `.ech`. A non-empty
-    `to_text()` is a fallback for a version that renders it differently."""
+    equal to 5); the ech value object carries the wire bytes on `.ech`. An empty
+    `ech=""` param is "absent" per the spec, so an empty `.ech` is not present."""
     params = getattr(rr, "params", {}) or {}
     val = params.get(_ECH_PARAM_KEY)
     if val is None:
         return False
-    if getattr(val, "ech", None):
-        return True
-    to_text = getattr(val, "to_text", None)
-    return bool(to_text and to_text().strip())
+    return bool(getattr(val, "ech", None))

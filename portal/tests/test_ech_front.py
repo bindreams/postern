@@ -24,8 +24,11 @@ def test_has_ech_param_against_real_dnspython_rdata():
     # rr.params key type and the ech-value attribute shape are pinned to the library.
     with_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech="AAAA"')
     without_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . alpn="h2"')
+    empty_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech=""')
     assert ech._has_ech_param(with_ech) is True
     assert ech._has_ech_param(without_ech) is False
+    # An empty ech="" param is "absent" per the spec -- pin the non-empty boundary.
+    assert ech._has_ech_param(empty_ech) is False
 
 
 def test_present_when_ech_param_has_bytes(monkeypatch):

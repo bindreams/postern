@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # defence-in-depth layer. Meaningful ONLY under edge_profile=cloudflare --
     # setting it under any other profile fails loud.
     edge_cf_authenticated_origin_pull: bool = True
+    # cloudflare profile only: auto-enable Cloudflare's zone-level ECH setting so
+    # the front actually serves ECH (publishes ech= in the apex HTTPS record) for
+    # ECH_ENABLED clients. On by default -- but the toggle is zone-WIDE, so
+    # shared-zone operators can opt out. Meaningful ONLY under edge_profile=cloudflare
+    # (+ ech_enabled); explicit-set under another profile fails loud.
+    edge_cf_manage_zone_ech: bool = True
 
     # ECH (client SNI concealment) =====================================================================================
     # ech=always is fail-closed; enable only once your front serves ECH or downloaded
@@ -197,6 +203,8 @@ class Settings(BaseSettings):
         # operator into thinking mTLS is (dis)engaged.
         if (self.edge_profile != "cloudflare" and "edge_cf_authenticated_origin_pull" in self.model_fields_set):
             raise ValueError("EDGE_CF_AUTHENTICATED_ORIGIN_PULL is only meaningful under EDGE_PROFILE=cloudflare")
+        if (self.edge_profile != "cloudflare" and "edge_cf_manage_zone_ech" in self.model_fields_set):
+            raise ValueError("EDGE_CF_MANAGE_ZONE_ECH is only meaningful under EDGE_PROFILE=cloudflare")
         return self
 
     @model_validator(mode="after")

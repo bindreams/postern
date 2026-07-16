@@ -133,3 +133,23 @@ class TestEdgeFromEnv:
         s = Settings()
         assert s.edge_profile == "cloudflare"
         assert s.edge_cf_authenticated_origin_pull is True
+
+
+# zone-ECH management flag ==============================================================================================
+def test_manage_zone_ech_defaults_true():
+    assert _settings().edge_cf_manage_zone_ech is True
+
+
+def test_manage_zone_ech_ok_under_cloudflare():
+    s = _settings(
+        edge_profile="cloudflare",
+        dns_provider="cloudflare",
+        public_ipv4="1.2.3.4",
+        edge_cf_manage_zone_ech=False,
+    )
+    assert s.edge_cf_manage_zone_ech is False
+
+
+def test_manage_zone_ech_explicit_under_non_cloudflare_rejected():
+    with pytest.raises(ValidationError, match="EDGE_CF_MANAGE_ZONE_ECH"):
+        _settings(edge_profile="none", edge_cf_manage_zone_ech=True)

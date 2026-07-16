@@ -613,6 +613,64 @@ def dns_publish() -> None:
     typer.echo(f"trigger written: {trigger}")
 
 
+# ECH commands =========================================================================================================
+ech_app = typer.Typer(name="ech", help="Verify the Cloudflare ECH front (Encrypted ClientHello)")
+app.add_typer(ech_app)
+
+
+@ech_app.command("show")
+def ech_show() -> None:
+    """Show ECH settings, the provisioner's zone-ECH state (incl. the last
+    Cloudflare error), and whether the front is serving ech= (via DoH)."""
+    from postern.ech import check_apex_ech
+    from postern_provisioner import ech as ech_state
+    settings = _settings()
+    typer.echo(f"domain:                  {settings.domain}")
+    typer.echo(f"ech_enabled:             {settings.ech_enabled}")
+    typer.echo(f"ech_doh_url:             {settings.ech_doh_url}")
+    typer.echo(f"edge_profile:            {settings.edge_profile}")
+    typer.echo(f"dns_provider:            {settings.dns_provider}")
+    typer.echo(f"edge_cf_manage_zone_ech: {settings.edge_cf_manage_zone_ech}")
+    # Provisioner-written state (shared postern-mta-data volume). Surfaces the
+    # verbatim Cloudflare error when enablement is failing (e.g. plan/token scope).
+    state = ech_state.read_state()
+    typer.echo(f"zone_ech_enabled_at:     {state.last_enabled_ok_iso or '(never)'}")
+    typer.echo(f"zone_ech_failures:       {state.consecutive_failures}")
+    typer.echo(f"zone_ech_last_error:     {state.last_error or '(none)'}")
+    status = check_apex_ech(settings.domain, settings.ech_doh_url)
+    typer.echo(f"front serving ech= :     {status}")
+
+
+@ech_app.command("verify")
+def ech_verify() -> None:
+    """Check the apex HTTPS record serves ech= over DoH. Exit codes: 0 present,
+    1 confirmed absent (front not serving ECH), 2 inconclusive (no record yet /
+    DoH unreachable)."""
+    from postern.ech import check_apex_ech
+    settings = _settings()
+    if not settings.ech_enabled:
+        typer.echo("ECH_ENABLED is not set in this deployment", err=True)
+        raise typer.Exit(1)
+    status = check_apex_ech(settings.domain, settings.ech_doh_url)
+    if status == "present":
+        typer.echo(f"ech OK: {settings.domain} HTTPS record serves ech=")
+        return
+    if status == "absent":
+        typer.echo(
+            f"FAIL: {settings.domain} HTTPS record has no ech= param -- the front is not serving "
+            "ECH. Check the Cloudflare zone ECH setting (postern manages it when "
+            "EDGE_CF_MANAGE_ZONE_ECH=true) and that the apex is orange-clouded.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"INCONCLUSIVE: no HTTPS record for {settings.domain} resolved over DoH "
+        f"({settings.ech_doh_url}). CF may still be propagating, or DoH is unreachable.",
+        err=True,
+    )
+    raise typer.Exit(2)
+
+
 # Doctor ===============================================================================================================
 def _tlsa_cert_hex(domain: str, certdir: Path = Path("/etc/letsencrypt")) -> str | None:
     """sha256(SubjectPublicKeyInfo) hex of the leaf cert for `domain`, or None

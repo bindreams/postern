@@ -73,8 +73,12 @@ class EchZoneRunner:
         """Invoke `postern-dns ech-set <domain> on`. Raises on failure: CalledProcessError
         (non-zero exit), TimeoutExpired (hung child), or OSError (binary missing/unexecutable)."""
         subprocess.run(
-            [self.bin, "ech-set", domain, "on"], env=self.env, check=True,
-            capture_output=True, text=True, timeout=SET_ON_TIMEOUT_SECONDS,
+            [self.bin, "ech-set", domain, "on"],
+            env=self.env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SET_ON_TIMEOUT_SECONDS,
         )
 
 

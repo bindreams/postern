@@ -140,7 +140,7 @@ class TestEdgeFromEnv:
         assert s.edge_cf_authenticated_origin_pull is True
 
 
-# zone-ECH management flag ==============================================================================================
+# zone-ECH management flag =============================================================================================
 def test_manage_zone_ech_defaults_true():
     assert _settings().edge_cf_manage_zone_ech is True
 

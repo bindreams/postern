@@ -120,6 +120,36 @@ for your domain, downloaded clients **refuse to connect**. Enable only once the
 front is confirmed serving ECH (for Cloudflare: orange-clouded + zone ECH enabled).
 Requires plugin builds with ECH support (ex-ray ≥ v0.2.0, galoshes ≥ v0.3.0).
 
+### Batteries-included ECH front (Cloudflare)
+
+When `ECH_ENABLED=true`, `EDGE_PROFILE=cloudflare`, and `DNS_PROVIDER=cloudflare`,
+the provisioner automatically enables Cloudflare's **zone-level ECH setting** so
+the front actually serves ECH — otherwise `ech=always` clients fail-closed and
+refuse to connect. This closes the gap between "Postern stamps ECH into configs"
+and "the front serves it."
+
+- **Opt out:** set `EDGE_CF_MANAGE_ZONE_ECH=false`. The setting is **zone-wide**
+  (it affects every proxied hostname in the Cloudflare zone), so on a shared
+  root-domain zone you may prefer to manage it yourself.
+- **Never reverted:** disabling ECH later does **not** turn the zone setting back
+  off — reverting a zone-wide toggle could break unrelated services. Turn it off
+  in the Cloudflare dashboard if you need to.
+- **If enablement fails** (wrong Cloudflare plan tier, API token missing
+  `Zone Settings:Edit`, transient CF outage), the forcing function is a
+  **signal**, in every deployment mode: the provisioner container goes
+  **unhealthy**, logs the verbatim Cloudflare error every tick, and the ECH
+  clients you handed out cannot connect — three converging cues that lead to the
+  fix. Run `postern ech verify` / `postern ech show` to see the state and the last
+  error. Under cert auto-renewal (`compose.cert.yaml`) that unhealthy provisioner
+  *additionally* blocks nginx/mta startup (they `depends_on` it); under the default
+  BYO-cert mode there is no such hard block — the signal is the mechanism.
+- **Verify:** `postern ech verify` queries the apex HTTPS record over DoH and
+  confirms an `ech=` SvcParam is present (exit 0 present, 1 absent, 2 inconclusive).
+  `postern ech show` prints the settings, the provisioner state (incl. the last
+  Cloudflare error), and the live DoH status.
+- **Plan availability:** ECH is on by default on Free zones and toggleable on
+  Pro/Business/Enterprise.
+
 ## Authenticated Origin Pull: what it proves (and what it doesn't)
 
 Under `cloudflare`, AOP mTLS is **on by default** and does raise the bar: a naive `curl https://<origin-ip>` is rejected because it can't present Cloudflare's client certificate. Be precise about the guarantee, though:

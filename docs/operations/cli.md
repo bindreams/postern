@@ -122,6 +122,18 @@ Checks live DNS against those expected records; requires `CERT_RENEWAL=true` and
 
 Triggers the MTA-records reconciler to publish on the next provisioner tick instead of waiting for its 1-hour cadence, by writing the `.publish-mta-dns` trigger file; the provisioner picks it up within `TRIGGER_POLL_SECONDS` (5 s by default).
 
+## ECH
+
+Check whether the front actually serves Encrypted Client Hello — see [Enabling ECH](../deployment/edge.md#enabling-ech). DoH-only; the portal holds no Cloudflare token.
+
+### postern ech verify
+
+Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present. Requires `ECH_ENABLED=true` (errors otherwise). Exits 0 when present, 1 when absent, 2 when inconclusive.
+
+### postern ech show
+
+Prints the ECH settings (`domain`, `ech_enabled`, `ech_doh_url`, `edge_profile`, `dns_provider`, `edge_cf_manage_zone_ech`), the provisioner-written zone-ECH state (last-enabled time, consecutive failures, and the verbatim last Cloudflare error), and the live DoH front-serving status.
+
 ## Diagnostics
 
 One command verifies the whole deployment end to end.

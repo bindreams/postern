@@ -1,9 +1,14 @@
 """Tests for the edge (CDN / reverse-proxy) settings validator."""
 
+import re
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from postern.settings import Settings
+
+REPO_ROOT = Path(__file__).parents[2]
 
 
 def _settings(**overrides) -> Settings:
@@ -133,3 +138,56 @@ class TestEdgeFromEnv:
         s = Settings()
         assert s.edge_profile == "cloudflare"
         assert s.edge_cf_authenticated_origin_pull is True
+
+
+# zone-ECH management flag =============================================================================================
+def test_manage_zone_ech_defaults_true():
+    assert _settings().edge_cf_manage_zone_ech is True
+
+
+def test_manage_zone_ech_ok_under_cloudflare():
+    s = _settings(
+        edge_profile="cloudflare",
+        dns_provider="cloudflare",
+        public_ipv4="1.2.3.4",
+        edge_cf_manage_zone_ech=False,
+    )
+    assert s.edge_cf_manage_zone_ech is False
+
+
+def test_manage_zone_ech_explicit_under_non_cloudflare_rejected():
+    with pytest.raises(ValidationError, match="EDGE_CF_MANAGE_ZONE_ECH"):
+        _settings(edge_profile="none", edge_cf_manage_zone_ech=True)
+
+
+# example.env ships a bootable default config ==========================================================================
+# Regression guard (issue #170): the cloudflare-only edge knobs that fail loud when
+# explicitly set under a non-cloudflare EDGE_PROFILE -- EDGE_CF_AUTHENTICATED_ORIGIN_PULL
+# and EDGE_CF_MANAGE_ZONE_ECH -- must be OFFERED COMMENTED-OUT in example.env, since the
+# default EDGE_PROFILE is "none". Shipping either as an active assignment makes the
+# canonical "cp example.env .env" bring-up trip _check_edge_settings and refuse to boot.
+def _example_env_active_settings() -> dict[str, str]:
+    """example.env's uncommented KEY=VALUE assignments, restricted to Settings
+    fields (compose-only vars like COMPOSE_PROFILES are dropped). Commented
+    lines start with '#' and never match the leading-uppercase key pattern."""
+    text = (REPO_ROOT / "example.env").read_text(encoding="utf-8")
+    fields = set(Settings.model_fields)
+    active = {}
+    for key, value in re.findall(r"^\s*([A-Z][A-Z0-9_]+)=(.*)$", text, flags=re.M):
+        name = key.lower()
+        if name in fields:
+            active[name] = value
+    return active
+
+
+def test_example_env_default_config_boots(monkeypatch: pytest.MonkeyPatch):
+    # The shipped example.env, with only the required SECRET_KEY / DOMAIN placeholders
+    # supplied, must construct a valid Settings -- the canonical "cp example.env .env"
+    # bring-up. This RED-flags any active assignment of a cloudflare-only edge knob
+    # under the default EDGE_PROFILE=none (issue #170).
+    for field in Settings.model_fields:
+        monkeypatch.delenv(field.upper(), raising=False)
+    overrides = _example_env_active_settings()
+    overrides["secret_key"] = "x" * 64
+    overrides["domain"] = "postern.test"
+    Settings(**overrides)  # must not raise

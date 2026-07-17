@@ -15,7 +15,7 @@ dependencies = [
     "pydantic-settings>=2.7",
     "docker>=7.1",
     "typer>=0.15",
-    "dnspython>=2.6",
+    "dnspython[doh]>=2.6",
     # cryptography is a runtime dep for postern.cert.inspect (cert SAN/expiry
     # parsing, used by `postern cert show` and the renewal state machine).
     "cryptography>=42",

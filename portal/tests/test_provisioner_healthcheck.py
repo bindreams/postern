@@ -18,6 +18,7 @@ def _patch_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(healthcheck.cert_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.dns_records_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.mta_records_state, "DEFAULT_KEYDIR", keydir)
+    monkeypatch.setattr(healthcheck.ech_state, "DEFAULT_STATE_DIR", keydir)
     # Clean baseline so a test that relies on "MTA not deployed" isn't polluted by
     # an ambient COMPOSE_PROFILES/EDGE_PROFILE. Tests opt in explicitly.
     monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
@@ -121,3 +122,52 @@ def test_unhealthy_when_cert_renewal_on_but_dns_not_reconciled(monkeypatch, _pat
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "true")
     assert healthcheck.main() == 1
+
+
+# ECH half =============================================================================================================
+def _managed_ech_env(monkeypatch):
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-edge")  # no with-mta
+    monkeypatch.setenv("ECH_ENABLED", "true")
+
+
+def test_unhealthy_when_ech_managed_but_not_enabled(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _managed_ech_env(monkeypatch)
+    # No ech_zone_state.json -> last_enabled_ok_iso is None -> red.
+    assert healthcheck.main() == 1
+
+
+def test_healthy_when_ech_enabled_ok(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    (keydir / "ech_zone_state.json").write_text(json.dumps({"last_enabled_ok_iso": "2026-07-14T00:00:00+00:00"}))
+    _managed_ech_env(monkeypatch)
+    assert healthcheck.main() == 0
+
+
+def test_unhealthy_when_ech_enablement_regresses_after_first_success(monkeypatch, _patch_paths):
+    # Enabled once, but the latest ticks are failing -> the container must go unhealthy
+    # again (the signal tracks current reality, not "ever worked once").
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    (keydir / "ech_zone_state.json").write_text(
+        json.dumps({
+            "last_enabled_ok_iso": "2026-07-14T00:00:00+00:00",
+            "consecutive_failures": 3,
+            "last_error": "ECH is not available on this plan",
+        })
+    )
+    _managed_ech_env(monkeypatch)
+    assert healthcheck.main() == 1
+
+
+def test_ech_half_absent_when_manage_flag_off(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _managed_ech_env(monkeypatch)
+    monkeypatch.setenv("EDGE_CF_MANAGE_ZONE_ECH", "false")  # ech_zone_enabled False -> half skipped
+    assert healthcheck.main() == 0

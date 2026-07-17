@@ -44,8 +44,10 @@ from postern_mta import rotation  # noqa: E402
 # Cert renewal driver -- imported via the postern.* namespace (also COPYed in by Dockerfile).
 from postern.cert import state as cert_state  # noqa: E402
 from postern.cert import dns_records as dns_records_state  # noqa: E402
+from postern.ech import check_apex_ech  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
 from postern_provisioner import dns_records as dns_driver  # noqa: E402
+from postern_provisioner import ech as ech_driver  # noqa: E402
 from postern_provisioner import edge_ranges  # noqa: E402
 from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
 from postern_provisioner.enablement import (  # noqa: E402
@@ -504,6 +506,27 @@ def _try_advance_edge(counters: dict[str, int]) -> None:
         logger.info("edge: refreshed Cloudflare ranges (%d ipv4, %d ipv6)", result.ipv4_count, result.ipv6_count)
 
 
+# Zone-ECH reconciler (Cloudflare zone-level ECH setting) ==============================================================
+def _try_advance_ech(domain: str, counters: dict[str, int]) -> None:
+    """Ensure the Cloudflare zone-ECH setting is ON so the front serves ech= for
+    ECH_ENABLED clients. Idempotent GET-then-PATCH via postern-dns; count+warn on
+    failure (like dkim/cert/dns). All read/reconcile/write-skip logic lives in the
+    tested `reconcile_and_persist`; this is only env-wiring + the counter. Caller
+    gates on enablement.ech_zone_enabled."""
+    try:
+        settings = ech_driver.EchZoneSettings(
+            domain=domain,
+            ech_doh_url=os.environ.get("ECH_DOH_URL", "https://cloudflare-dns.com/dns-query"),
+        )
+        ech_driver.reconcile_and_persist(
+            settings=settings, runner=ech_driver.EchZoneRunner(), serving_check=check_apex_ech
+        )
+        counters["ech"] = 0
+    except Exception:
+        counters["ech"] = counters.get("ech", 0) + 1
+        logger.exception("ech reconcile step failed (%d consecutive)", counters["ech"])
+
+
 def _sleep_with_triggers() -> None:
     """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
     slept = 0
@@ -515,7 +538,7 @@ def _sleep_with_triggers() -> None:
 
 
 def run_combined_loop(domain: str, selector_prefix: str, enablement: Enablement) -> NoReturn:
-    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0}
+    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0, "ech": 0}
     ticks: dict[str, Callable[[], None]] = {
         "dkim": lambda: _try_advance_dkim(domain, selector_prefix, counters),
         "cert": lambda: _try_advance_cert(domain, counters),
@@ -524,6 +547,7 @@ def run_combined_loop(domain: str, selector_prefix: str, enablement: Enablement)
         # _try_advance_edge takes only `counters` -- Cloudflare's ranges are
         # global, so there is no per-domain argument.
         "edge": lambda: _try_advance_edge(counters),
+        "ech": lambda: _try_advance_ech(domain, counters),
     }
     while True:
         run_enabled_ticks(enablement, ticks)
@@ -547,6 +571,8 @@ def main() -> NoReturn:
         # the Cloudflare edge profile also sets DNS_PROVIDER=cloudflare without
         # deploying the MTA.
         mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
+        ech_enabled=_bool_env("ECH_ENABLED", False),
+        manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", True),
     )
 
     # DKIM init is unconditional (matches the pre-cert-renewal behaviour).

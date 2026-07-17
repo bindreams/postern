@@ -146,3 +146,53 @@ def test_edge_only_desired_records_are_only_the_orange_apex():
     recs = dns_driver.desired_records(settings)
     assert {(r.name, r.type) for r in recs} == {("postern.test", "A"), ("postern.test", "AAAA")}
     assert all(r.proxied for r in recs)  # orange-clouded
+
+
+# zone-ECH enablement ==================================================================================================
+def _cf_edge(**kw):
+    base = dict(dns_provider="cloudflare", cert_renewal=False, edge_profile="cloudflare", mta_deployed=False)
+    base.update(kw)
+    return en.compute_enablement(**base)
+
+
+def test_ech_zone_enabled_requires_all_four():
+    assert _cf_edge(ech_enabled=True, manage_zone_ech=True).ech_zone_enabled
+
+
+def test_ech_zone_off_when_ech_disabled():
+    assert not _cf_edge(ech_enabled=False, manage_zone_ech=True).ech_zone_enabled
+
+
+def test_ech_zone_off_when_manage_flag_off():
+    assert not _cf_edge(ech_enabled=True, manage_zone_ech=False).ech_zone_enabled
+
+
+def test_ech_zone_off_under_generic_edge():
+    e = en.compute_enablement(
+        dns_provider="cloudflare",
+        cert_renewal=False,
+        edge_profile="generic",
+        mta_deployed=False,
+        ech_enabled=True,
+        manage_zone_ech=True,
+    )
+    assert not e.ech_zone_enabled
+
+
+def test_ech_zone_off_without_cloudflare_provider():
+    e = en.compute_enablement(
+        dns_provider="route53",
+        cert_renewal=False,
+        edge_profile="cloudflare",
+        mta_deployed=False,
+        ech_enabled=True,
+        manage_zone_ech=True,
+    )
+    assert not e.ech_zone_enabled
+
+
+def test_ech_tick_dispatched_only_when_enabled():
+    calls: list[str] = []
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ech")}
+    en.run_enabled_ticks(_cf_edge(ech_enabled=True, manage_zone_ech=True), ticks)
+    assert "ech" in calls

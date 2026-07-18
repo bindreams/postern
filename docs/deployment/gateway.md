@@ -4,7 +4,7 @@ Postern's default deployment owns host ports 80 and 443. If a shared reverse pro
 
 - Strips the `80:80` / `443:443` host bindings from Postern's nginx (the gateway owns them now).
 - Joins Postern's nginx to an external docker network named `gateway`.
-- Adds Traefik labels for a TCP router matching `` HostSNI(`${DOMAIN}`, `mta-sts.${DOMAIN}`) `` with `tls.passthrough: true`, routing to `postern-nginx:443` — it claims both the apex portal vhost and the `mta-sts.${DOMAIN}` vhost.
+- Adds Traefik labels for a TCP router matching `` HostSNI(`${DOMAIN}`) || HostSNI(`mta-sts.${DOMAIN}`) `` with `tls.passthrough: true`, routing to `postern-nginx:443` — it claims both the apex portal vhost and the `mta-sts.${DOMAIN}` vhost. (Traefik's `HostSNI` takes one value, so the two SNIs are OR-combined, not comma-separated.)
 - Renames every Postern container with a `postern-` prefix so they coexist cleanly with other services in `docker ps`.
 
 The gateway must do **TCP+SNI passthrough**, not TLS termination. Postern's nginx serves the TLS leaf cert (from the `postern-letsencrypt` named volume populated by the provisioner — see [certificates](certificates.md)); the gateway must not re-encrypt or rewrite. For a TLS-*terminating* front (a CDN such as Cloudflare, or any proxy that presents its own cert), use the edge profiles instead — see [edge](edge.md).
@@ -24,7 +24,7 @@ Then `docker compose up -d --build` as usual. Verify the Traefik label resolved 
 
 ```bash
 docker compose config | grep HostSNI
-# expected: traefik.tcp.routers.postern.rule: HostSNI(`postern.example.com`, `mta-sts.postern.example.com`)
+# expected: traefik.tcp.routers.postern.rule: HostSNI(`postern.example.com`) || HostSNI(`mta-sts.postern.example.com`)
 ```
 
 ```{important}
@@ -37,7 +37,7 @@ A separate compose stack (yours or someone else's) must provide:
 
 - A docker network named `gateway` (external to Postern's compose), reachable from the host running both stacks.
 - A Traefik service watching that network for the `traefik.expose=true` label, with a `websecure` entrypoint on TCP `:443`.
-- Either no catch-all TCP router, or a catch-all with priority below 100 — `compose.gateway.yaml` pins `priority: 100` so Postern's explicit `` HostSNI(`${DOMAIN}`, `mta-sts.${DOMAIN}`) `` deterministically wins.
+- Either no catch-all TCP router, or a catch-all with priority below 100 — `compose.gateway.yaml` pins `priority: 100` so Postern's explicit `` HostSNI(`${DOMAIN}`) || HostSNI(`mta-sts.${DOMAIN}`) `` deterministically wins.
 
 The mta keeps its host `:25` binding directly — Traefik is not an SMTP proxy, and the gateway pattern only covers HTTPS.
 

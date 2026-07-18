@@ -21,10 +21,10 @@ FROM dhi.io/alpine-base:3.23-dev AS build
 # `opendkim-genkey` writes keys with ownership the mta container (running as
 # the same UID/GID) can read. py3-cryptography is required at runtime by
 # postern.cert.inspect (used by the cert state machine).
-RUN mkdir -p /var/lib/opendkim /etc/letsencrypt \
+RUN mkdir -p /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
-	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt \
+	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& apk add --no-cache python3 py3-pip py3-dnspython py3-cryptography opendkim-utils ca-certificates tzdata
 
 FROM dhi.io/alpine-base:3.23-dev
@@ -42,6 +42,11 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 COPY --from=build /etc /etc
 COPY --from=build /usr /usr
 COPY --from=build --chown=110:110 /var/lib/opendkim /var/lib/opendkim
+# Sole writer of the CF edge IP-range allowlist is the provisioner (uid 110). A
+# fresh `postern-edge` named volume inherits this dir's ownership on first mount,
+# so it must exist 110-owned in the image -- otherwise Docker creates the volume
+# root-owned and the reconciler's atomic write fails with EACCES (issue #178).
+COPY --from=build --chown=110:110 /var/lib/postern-edge /var/lib/postern-edge
 
 COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 # postern_mta -- legacy COPY consumed by entrypoint.py (existing DKIM rotation code).

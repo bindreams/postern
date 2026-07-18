@@ -33,16 +33,21 @@ def test_provisioner_dockerfile_copies_all_go_sources():
 
 def test_provisioner_prepares_edge_volume_dir_owned_by_110():
     dockerfile = (REPO_ROOT / "provisioner" / "Dockerfile").read_text(encoding="utf-8")
-    # The runtime COPY sets the ownership a fresh postern-edge named volume inherits
-    # on first mount; without --chown=110:110 the volume is root-owned and the edge
-    # reconciler's atomic write fails with PermissionError (#178). Mirrors opendkim.
-    assert "--chown=110:110 /var/lib/postern-edge" in dockerfile, (
-        "provisioner/Dockerfile must COPY /var/lib/postern-edge with --chown=110:110 so a fresh "
-        "postern-edge volume is owned by the provisioner (uid 110); otherwise the volume is "
+    # Anchor the whole instruction incl. `--from=build`: a COPY from the wrong stage
+    # (go-build never creates the dir) or from the local context would build-fail but
+    # pass a bare substring check.
+    assert re.search(
+        r"COPY\s+--from=build\s+--chown=110:110\s+/var/lib/postern-edge\s+/var/lib/postern-edge",
+        dockerfile,
+    ), (
+        "provisioner/Dockerfile must `COPY --from=build --chown=110:110 /var/lib/postern-edge ...` so a fresh "
+        "postern-edge volume inherits uid-110 ownership (mirrors the opendkim dir); otherwise the volume is "
         "root-owned and the edge IP-range reconciler fails with PermissionError (#178)."
     )
-    # The build stage must create the dir so the --chown COPY source exists.
-    assert re.search(r"mkdir[^\n]*\s/var/lib/postern-edge(\s|$)", dockerfile), (
-        "provisioner/Dockerfile must `mkdir /var/lib/postern-edge` in the build stage "
-        "(the source of the --chown=110:110 COPY)."
+    # Scope the mkdir check to the `FROM ... AS build` stage's text (the COPY source),
+    # so a mkdir in the wrong stage doesn't satisfy it.
+    build_stage = re.search(r"^FROM\s+\S+\s+AS\s+build\b(.*?)(?=^FROM\s)", dockerfile, re.S | re.M)
+    assert build_stage and re.search(r"mkdir[^\n]*\s/var/lib/postern-edge(\s|$)", build_stage.group(1)), (
+        "provisioner/Dockerfile must `mkdir /var/lib/postern-edge` in the `FROM ... AS build` stage "
+        "(the source of the --from=build --chown=110:110 COPY)."
     )

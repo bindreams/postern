@@ -39,7 +39,11 @@ services:
       traefik.enable: "true"
       traefik.expose: "true"
       traefik.docker.network: "gateway"
-      traefik.tcp.routers.postern.rule: "HostSNI(`${DOMAIN}`)"
+      # Claim every SNI postern-nginx serves on :443 (the portal apex + the mta-sts
+      # vhost) so each arrives with PROXY-v2; an unclaimed SNI falls through to the
+      # PROXY-less catch-all and nginx drops it. Kept in lockstep with nginx's
+      # server_name set by test_compose_gateway.py.
+      traefik.tcp.routers.postern.rule: "HostSNI(`${DOMAIN}`, `mta-sts.${DOMAIN}`)"
       traefik.tcp.routers.postern.entrypoints: "websecure"
       traefik.tcp.routers.postern.tls.passthrough: "true"
       # Pin priority above any HostSNI(`*`) catchall on the gateway side

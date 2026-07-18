@@ -40,11 +40,16 @@ def _nginx_public_snis() -> set[str]:
 
 
 def _router_hostsni_set() -> set[str]:
+    """The SNIs the router claims, one per `HostSNI(`x`)` matcher. Traefik's HostSNI
+    takes a SINGLE value, so multiple SNIs must be OR-combined -- `HostSNI(`a`) ||
+    HostSNI(`b`)`, never `HostSNI(`a`, `b`)` (a Traefik parse error that silently
+    drops the whole router). Matching each matcher individually enforces that form:
+    the comma variant yields zero matches and fails the caller."""
     compose = yaml.load((REPO_ROOT / "compose.gateway.yaml").read_text(), Loader=_ComposeLoader)
     rule = compose["services"]["nginx"]["labels"]["traefik.tcp.routers.postern.rule"]
-    m = re.fullmatch(r"HostSNI\((?P<args>.+)\)", rule)
-    assert m, f"gateway router must be an exact HostSNI rule (not a regexp); got {rule!r}"
-    return {a.strip().strip("`") for a in m.group("args").split(",")}
+    snis = set(re.findall(r"HostSNI\(`([^`]+)`\)", rule))
+    assert snis, f"router must use one-value HostSNI(`x`) matchers (OR-combined with ||); got {rule!r}"
+    return snis
 
 
 def test_gateway_router_claims_exactly_the_nginx_vhosts():

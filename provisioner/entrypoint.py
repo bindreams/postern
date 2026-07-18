@@ -44,7 +44,6 @@ from postern_mta import rotation  # noqa: E402
 # Cert renewal driver -- imported via the postern.* namespace (also COPYed in by Dockerfile).
 from postern.cert import state as cert_state  # noqa: E402
 from postern.cert import dns_records as dns_records_state  # noqa: E402
-from postern.ech import check_apex_ech  # noqa: E402
 from postern_provisioner import cert as cert_driver  # noqa: E402
 from postern_provisioner import dns_records as dns_driver  # noqa: E402
 from postern_provisioner import ech as ech_driver  # noqa: E402
@@ -514,13 +513,8 @@ def _try_advance_ech(domain: str, counters: dict[str, int]) -> None:
     tested `reconcile_and_persist`; this is only env-wiring + the counter. Caller
     gates on enablement.ech_zone_enabled."""
     try:
-        settings = ech_driver.EchZoneSettings(
-            domain=domain,
-            ech_doh_url=os.environ.get("ECH_DOH_URL", "https://cloudflare-dns.com/dns-query"),
-        )
-        ech_driver.reconcile_and_persist(
-            settings=settings, runner=ech_driver.EchZoneRunner(), serving_check=check_apex_ech
-        )
+        settings = ech_driver.EchZoneSettings(domain=domain)
+        ech_driver.reconcile_and_persist(settings=settings, runner=ech_driver.EchZoneRunner())
         counters["ech"] = 0
     except Exception:
         counters["ech"] = counters.get("ech", 0) + 1

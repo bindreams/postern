@@ -5,11 +5,15 @@ ECH_ENABLED + EDGE_PROFILE=cloudflare + DNS_PROVIDER=cloudflare + EDGE_CF_MANAGE
 Sibling of [postern_provisioner.dns_records]: each tick shells `postern-dns ech-set
 <domain> on` (idempotent GET-then-PATCH inside the Go binary) and persists a small
 state file so the provisioner healthcheck can gate startup on "the PATCH succeeded
-at least once". A non-gating DoH serving-check (via postern.ech.check_apex_ech)
-warns when CF is not yet publishing ech= -- it never flips the health fact.
+at least once".
 
 The reconciler only ever sets ON (converge-to-ON, never auto-OFF): the toggle is
 zone-WIDE and auto-reverting could break unrelated services in the zone.
+
+Verifying that CF is actually serving `ech=` is NOT done here: it needs a DoH
+backend the provisioner image doesn't ship, and it is fully covered by the portal
+CLI (`postern ech verify` / `doctor`, via postern.ech.check_apex_ech). The
+provisioner's job is to enable ECH and report PATCH success.
 
 State lives on /var/lib/opendkim (postern-mta-data), NOT the edge volume: the edge
 volume is inotify-watched by nginx, and it is the only volume mounted by both the
@@ -23,7 +27,6 @@ import logging
 import os
 import subprocess
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,7 +42,6 @@ STATE_FILENAME = "ech_zone_state.json"
 class EchZoneSettings:
     """Subset of settings the zone-ECH tick needs. Injected from the entrypoint."""
     domain: str
-    ech_doh_url: str
 
 
 @dataclass
@@ -47,12 +49,11 @@ class EchZoneState:
     """Persisted zone-ECH reconcile state.
 
     `last_enabled_ok_iso` is the health fact: non-null iff the `ech-set on` PATCH
-    has succeeded at least once. `last_serving` records the last non-gating DoH
-    serving result for observability (`postern ech show`)."""
+    has succeeded at least once. `consecutive_failures`/`last_error` track the
+    current failure streak (read by the healthcheck and `postern ech show`)."""
     last_enabled_ok_iso: str | None = None
     consecutive_failures: int = 0
     last_error: str = ""
-    last_serving: bool | None = None
 
 
 # postern-dns runner ===================================================================================================
@@ -88,19 +89,15 @@ def reconcile_zone_ech(
     *,
     settings: EchZoneSettings,
     runner: EchZoneRunner,
-    serving_check: Callable[[str, str], str],
     now: dt.datetime | None = None,
 ) -> EchZoneState:
-    """One reconcile tick. Pure over (state, settings, runner, serving_check, time);
-    caller persists the result ONLY when it differs from the input.
+    """One reconcile tick. Pure over (state, settings, runner, time); caller persists
+    the result ONLY when it differs from the input.
 
     Sets zone ECH on (idempotent inside postern-dns). To avoid churning the state
-    file (and any watcher of its directory), `last_enabled_ok_iso` is stamped only
-    on the FIRST success or a recovery-after-failure -- a steady-state success with
-    an unchanged serving result returns a state EQUAL to the input, so the caller
-    writes nothing. On success it also runs a NON-gating DoH serving-check (wrapped:
-    a checker exception or an `inconclusive` result leaves last_serving unchanged,
-    never discarding the enablement fact or propagating).
+    file, `last_enabled_ok_iso` is stamped only on the FIRST success or a
+    recovery-after-failure -- a steady-state success returns a state EQUAL to the
+    input, so the caller writes nothing.
 
     ANY set_on failure -- non-zero exit (CalledProcessError), timeout, or a launch
     error (OSError: binary missing/unexecutable) -- is caught here and recorded into
@@ -112,7 +109,6 @@ def reconcile_zone_ech(
         last_enabled_ok_iso=state.last_enabled_ok_iso,
         consecutive_failures=state.consecutive_failures,
         last_error=state.last_error,
-        last_serving=state.last_serving,
     )
     try:
         runner.set_on(settings.domain)
@@ -131,27 +127,6 @@ def reconcile_zone_ech(
         logger.info("ech: zone ECH enabled for %s", settings.domain)
     new.consecutive_failures = 0
     new.last_error = ""
-
-    try:
-        status = serving_check(settings.domain, settings.ech_doh_url)
-    except Exception as e:
-        logger.debug("ech: serving check raised (%s); leaving last_serving unchanged", e)
-        return new
-    # Only a CONFIRMED "absent" flips last_serving and warns. An "inconclusive" result
-    # (transient DoH blip) leaves last_serving untouched -- coercing it to False would
-    # churn the state file and emit a misleading publish-side warning for a query-side
-    # failure, and is inconsistent with `ech verify`'s distinct inconclusive exit.
-    if status == "present":
-        new.last_serving = True
-    elif status == "absent":
-        new.last_serving = False
-        logger.warning(
-            "ech: zone ECH is enabled but the apex HTTPS record is not serving ech= yet "
-            "(for %s). Clients with ech=always fail-closed until CF publishes the record; "
-            "run `postern ech verify` to recheck.", settings.domain
-        )
-    else:  # inconclusive
-        logger.debug("ech: serving check inconclusive for %s; leaving last_serving unchanged", settings.domain)
     return new
 
 
@@ -159,7 +134,6 @@ def reconcile_and_persist(
     *,
     settings: EchZoneSettings,
     runner: EchZoneRunner,
-    serving_check: Callable[[str, str], str],
     state_dir: Path | None = None,
     now: dt.datetime | None = None,
 ) -> EchZoneState:
@@ -167,7 +141,7 @@ def reconcile_and_persist(
     no-op = no write). The one importable place the read/reconcile/write-skip glue
     is exercised, so the entrypoint's `_try_advance_ech` stays trivial."""
     state = read_state(state_dir)
-    new_state = reconcile_zone_ech(state, settings=settings, runner=runner, serving_check=serving_check, now=now)
+    new_state = reconcile_zone_ech(state, settings=settings, runner=runner, now=now)
     if new_state != state:
         write_state(new_state, state_dir=state_dir)
     return new_state
@@ -190,7 +164,6 @@ def read_state(state_dir: Path | None = None) -> EchZoneState:
             last_enabled_ok_iso=raw.get("last_enabled_ok_iso"),
             consecutive_failures=raw.get("consecutive_failures", 0),
             last_error=raw.get("last_error", ""),
-            last_serving=raw.get("last_serving"),
         )
     except (OSError, ValueError, TypeError, AttributeError) as e:
         logger.warning("ech: state.json unreadable (%s); treating as empty", e)
@@ -206,7 +179,6 @@ def write_state(state: EchZoneState, *, state_dir: Path | None = None) -> None:
         "last_enabled_ok_iso": state.last_enabled_ok_iso,
         "consecutive_failures": state.consecutive_failures,
         "last_error": state.last_error,
-        "last_serving": state.last_serving,
     }
     serialised = json.dumps(payload, indent=2, sort_keys=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".ech_zone_state.", suffix=".json.tmp")

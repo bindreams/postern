@@ -40,7 +40,7 @@ class Enablement:
     cert_enabled: bool  # ACME cert renewal state machine (CERT_RENEWAL=true)
     mta_enabled: bool  # MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA + mail/mta-sts A/AAAA publisher
     dns_enabled: bool  # apex/wildcard/mail/mta-sts A/AAAA + CAA publisher
-    edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex/mta-sts
+    edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex (mta-sts gray)
     ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (ech + cloudflare edge + provider)
 
 

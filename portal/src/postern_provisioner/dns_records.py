@@ -29,8 +29,8 @@ Records published by subsystem:
     mail.<domain>     AAAA  <PUBLIC_IPV6>             (if PUBLIC_IPV6 set)
 
   mta_enabled AND edge_enabled:
-    mta-sts.<domain>  A     <PUBLIC_IPV4>             (proxied -- routes policy through CF)
-    mta-sts.<domain>  AAAA  <PUBLIC_IPV6>             (if PUBLIC_IPV6 set; same proxied)
+    mta-sts.<domain>  A     <PUBLIC_IPV4>             (gray -- origin's wildcard cert serves it)
+    mta-sts.<domain>  AAAA  <PUBLIC_IPV6>             (if PUBLIC_IPV6 set; also gray)
 
 Provider invocation: shells out to the existing `postern-dns` Go binary (#113
 extended it for A/AAAA/CAA). Subprocess wrapper is injectable for tests.
@@ -67,7 +67,7 @@ class DnsRecordsSettings:
     # reconciler publishes each record group only for the subsystems that need it.
     cert_enabled: bool = False  # wildcard A/AAAA + apex CAA
     mta_enabled: bool = False  # mail.<domain> A/AAAA (MX target host)
-    edge_enabled: bool = False  # Cloudflare edge profile: apex/mta-sts orange-clouded
+    edge_enabled: bool = False  # Cloudflare edge profile: apex orange-clouded (mta-sts stays gray)
 
 
 # Desired records ======================================================================================================
@@ -86,9 +86,13 @@ def desired_records(settings: DnsRecordsSettings) -> list[DesiredRecord]:
                       shared cert; CAA locks issuance to LE)
       mail A/AAAA   : the MTA's MX-target host, only when the MTA runs (gray:
                       Cloudflare's proxy carries no SMTP and DANE pins the origin)
-      mta-sts A/AAAA: only under an edge profile *and* the MTA -- publishes an
-                      explicit orange record so the policy fetch routes through
-                      Cloudflare (the gray wildcard already covers it otherwise)
+      mta-sts A/AAAA: only under an edge profile *and* the MTA -- an explicit GRAY
+                      record. Never orange: CF's edge cert can't authenticate a
+                      multi-level subdomain (cert wildcards are single-label), and
+                      MTA-STS needs a valid public cert, not proxying;
+                      the origin's *.<domain> LE cert serves it. Explicit (not left
+                      to the gray *.<domain> wildcard) so it exists even in BYO-cert
+                      edge deployments that publish no wildcard.
     """
     out: list[DesiredRecord] = []
     domain = settings.domain
@@ -115,9 +119,10 @@ def desired_records(settings: DnsRecordsSettings) -> list[DesiredRecord]:
             out.append(DesiredRecord(name=f"mail.{domain}", type="AAAA", args=(v6, )))
 
     if settings.mta_enabled and settings.edge_enabled:
-        out.append(DesiredRecord(name=f"mta-sts.{domain}", type="A", args=(v4, ), proxied=apex_proxied))
+        # Gray, never orange -- see the mta-sts note in this function's docstring.
+        out.append(DesiredRecord(name=f"mta-sts.{domain}", type="A", args=(v4, )))
         if v6:
-            out.append(DesiredRecord(name=f"mta-sts.{domain}", type="AAAA", args=(v6, ), proxied=apex_proxied))
+            out.append(DesiredRecord(name=f"mta-sts.{domain}", type="AAAA", args=(v6, )))
 
     return out
 

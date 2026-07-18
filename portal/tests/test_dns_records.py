@@ -154,7 +154,7 @@ def test_desired_records_mail_only_under_mta():
 def test_desired_records_mta_sts_only_when_edge_and_mta():
     both = dns_driver.desired_records(_settings(edge_enabled=True, mta_enabled=True))
     sts = next(r for r in both if r.name == "mta-sts.example.com")
-    assert sts.type == "A" and sts.proxied is True
+    assert sts.type == "A" and sts.proxied is False
     # Not published when either is off (gray wildcard covers it without edge).
     assert not any(r.name == "mta-sts.example.com" for r in dns_driver.desired_records(_settings(edge_enabled=False)))
     assert not any(
@@ -306,8 +306,46 @@ def test_reconcile_publishes_mta_sts_when_edge_enabled():
     state = _state(_snapshot(edge_enabled=False), last_reconciled_iso="2026-07-01T00:00:00+00:00")
     new = dns_driver.reconcile_apex_dns(state, settings=_settings(edge_enabled=True), runner=runner)
     sts = next(c for c in runner.set_calls if c[1] == "mta-sts.example.com")
-    assert sts[3] is True
-    assert _rec(new.last_published, "mta-sts.example.com", "A").proxied is True
+    assert sts[3] is False  # published gray
+    assert _rec(new.last_published, "mta-sts.example.com", "A").proxied is False
+
+
+def test_reconcile_mta_sts_proxied_flip_off_republishes_gray():
+    # A stale orange mta-sts record (e.g. left over from a prior published state) must
+    # self-heal to gray on the next reconcile (proxied-only flip, in place -- never delete+set).
+    runner = FakeRunner()
+    stale = dns_state.DnsRecord(name="mta-sts.example.com", type="A", args=("1.2.3.4", ), proxied=True)
+    snapshot = [r for r in _snapshot(edge_enabled=True, mta_enabled=True) if r.name != "mta-sts.example.com"] + [stale]
+    state = _state(snapshot, last_reconciled_iso="2026-07-01T00:00:00+00:00")
+    new = dns_driver.reconcile_apex_dns(state, settings=_settings(edge_enabled=True, mta_enabled=True), runner=runner)
+    sts_sets = [c for c in runner.set_calls if c[1] == "mta-sts.example.com" and c[0] == "A"]
+    assert sts_sets and sts_sets[0][3] is False  # re-set gray
+    assert not any(c[1] == "mta-sts.example.com" and c[0] == "A" for c in runner.delete_calls)  # in place
+    assert _rec(new.last_published, "mta-sts.example.com", "A").proxied is False
+
+
+def test_reconcile_mta_sts_aaaa_proxied_flip_off_republishes_gray():
+    # Dual-stack: a stale orange mta-sts AAAA (PUBLIC_IPV6 set) must self-heal to gray
+    # too -- AAAA is a separate (name,type) identity on its own `if v6:` code path.
+    runner = FakeRunner()
+    kw = dict(edge_enabled=True, mta_enabled=True, v6="2001:db8::1")
+    stale = dns_state.DnsRecord(name="mta-sts.example.com", type="AAAA", args=("2001:db8::1", ), proxied=True)
+    snapshot = [r for r in _snapshot(**kw) if not (r.name == "mta-sts.example.com" and r.type == "AAAA")] + [stale]
+    state = _state(snapshot, last_reconciled_iso="2026-07-01T00:00:00+00:00")
+    new = dns_driver.reconcile_apex_dns(state, settings=_settings(**kw), runner=runner)
+    sts_sets = [c for c in runner.set_calls if c[1] == "mta-sts.example.com" and c[0] == "AAAA"]
+    assert sts_sets and sts_sets[0][3] is False
+    assert not any(c[1] == "mta-sts.example.com" and c[0] == "AAAA" for c in runner.delete_calls)
+    assert _rec(new.last_published, "mta-sts.example.com", "AAAA").proxied is False
+
+
+def test_desired_records_mta_sts_present_gray_in_byo_cert_edge():
+    # BYO-cert edge (no cert -> no Postern wildcard): the explicit gray mta-sts record
+    # must still be published, else the host has no A/AAAA at all.
+    recs = dns_driver.desired_records(_settings(cert_enabled=False, mta_enabled=True, edge_enabled=True))
+    sts = next(r for r in recs if r.name == "mta-sts.example.com" and r.type == "A")
+    assert sts.proxied is False
+    assert not any(r.name == "*.example.com" for r in recs)  # no wildcard in BYO-cert mode
 
 
 # Set-diff: precise pruning (new in the set-based model) ===============================================================
@@ -483,6 +521,7 @@ def test_reconcile_legacy_mta_enabled_at_upgrade_sets_mta_sts(tmp_path):
     settings = _settings(v4="1.2.3.4", edge_enabled=True, mta_enabled=True)
     dns_driver.reconcile_apex_dns(state, settings=settings, runner=runner)
     assert ("A", "mta-sts.example.com") in {(c[0], c[1]) for c in runner.set_calls}
+    assert next(c for c in runner.set_calls if c[1] == "mta-sts.example.com")[3] is False  # gray, not orange
 
 
 def test_reconcile_legacy_cert_enabled_at_upgrade_sets_wildcard(tmp_path):
@@ -604,7 +643,7 @@ def test_state_missing_file_returns_default(tmp_path):
 
 
 def test_state_roundtrip_preserves_proxied_dimension(tmp_path):
-    """A proxied apex + orange mta-sts survive the snapshot round-trip (JSON has no
+    """A proxied apex + a GRAY mta-sts survive the snapshot round-trip (JSON has no
     tuples/bools footgun): args coerce back to tuples so the diff still matches."""
     state = _state(_snapshot(edge_enabled=True))
     dns_state.write_state(state, certdir=tmp_path)
@@ -612,7 +651,7 @@ def test_state_roundtrip_preserves_proxied_dimension(tmp_path):
     assert got == state
     apex = _rec(got.last_published, "example.com", "A")
     assert apex.proxied is True and apex.args == ("1.2.3.4", )
-    assert _rec(got.last_published, "mta-sts.example.com", "A").proxied is True
+    assert _rec(got.last_published, "mta-sts.example.com", "A").proxied is False
 
 
 def test_state_unknown_fields_ignored(tmp_path):

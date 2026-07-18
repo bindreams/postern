@@ -71,10 +71,12 @@ for cidr in $(curl -fsS https://www.cloudflare.com/ips-v4) \
   ufw allow from "$cidr" to any port 80,443 proto tcp
 done
 ufw deny 80/tcp
-ufw deny 443/tcp
+ufw deny 443/tcp   # built-in MTA? replace with `ufw allow 443/tcp` -- MTA-STS needs :443 (see below)
 ```
 
 Leave `:25` open to the world if you run the [built-in MTA](email.md): SMTP cannot be proxied by Cloudflare, so `mail.<domain>` is published gray-clouded and its `A` record points straight at the origin (see the caveats).
+
+The same applies to `:443` when the MTA is on: the MTA-STS policy at `https://mta-sts.<domain>/.well-known/mta-sts.txt` is served **gray** (Cloudflare's Universal SSL can't authenticate the two-label `mta-sts.<domain>` — see the caveats), so external sending MTAs fetch it straight from the origin. They connect from arbitrary IPs, not Cloudflare's, so under ufw's default-deny-incoming policy the Cloudflare-only `allow` rules above still block them — **add an explicit `ufw allow 443/tcp`** (dropping the `ufw deny 443/tcp` line is not enough; the default policy denies anyway). This opens `:443` to the internet but leaks no new address (the origin IP is already public via `mail.<domain>`), and the tunnel vhost still refuses non-Cloudflare handshakes via AOP (below) — only the AOP-exempt `mta-sts` vhost answers.
 
 Validate:
 
@@ -157,7 +159,7 @@ Under `cloudflare`, AOP mTLS is **on by default** and does raise the bar: a naiv
 - The certificate nginx trusts is Cloudflare's **global** origin-pull CA, shared across **all** Cloudflare tenants. AOP authenticates *"this connection came through Cloudflare"*, **not** *"this connection came through your zone."*
 - So an attacker who discovers your origin IP can point **their own** Cloudflare zone at it and present the very same, valid origin-pull certificate. AOP alone does not stop them.
 
-**The host firewall (`:443` restricted to Cloudflare ranges) is the real lockdown.** AOP is defence-in-depth on top of it, not a substitute. Per-hostname zone-scoped AOP would bind to your zone specifically.
+**The host firewall (`:443` restricted to Cloudflare ranges) is the real lockdown.** AOP is defence-in-depth on top of it, not a substitute. Per-hostname zone-scoped AOP would bind to your zone specifically. (Exception: running the built-in MTA requires `:443` open to the internet for MTA-STS — see the "Lock down the origin" section — so on those deployments AOP is the sole gate on the tunnel vhost.)
 
 ## Threat model: what Cloudflare sees
 
@@ -173,8 +175,8 @@ The `/t/{token}` identification hardening makes tunnel responses uniform against
 ## Caveats
 
 - **ECH needs an ECH-capable front.** Cloudflare is the turnkey option in 2026, but ECH is a standard: `generic` **can** do ECH if your front publishes and serves an ECH config for your domain — you own that config publication. `generic` still gives real-IP recovery regardless.
-- **The origin IP leaks via `mail.<domain>` when the built-in MTA is on.** SMTP can't be proxied, so the mail record is gray-clouded and resolves to your real address. The Cloudflare profile hides the SNI and fronts the tunnel, but does not hide the origin IP while the MTA runs; the `:443`-from-Cloudflare firewall still blocks direct tunnel access to the origin.
-- **`mta-sts.<domain>` is auto-published proxied when both MTA and edge are on.** With `with-mta` and `with-edge` (Cloudflare) both active, the provisioner automatically publishes an orange-clouded `mta-sts.<domain>` A/AAAA record so the MTA-STS policy URL (`https://mta-sts.<domain>/.well-known/mta-sts.txt`) stays reachable through Cloudflare even with the origin `:443` firewall locked to Cloudflare ranges. No manual DNS step is needed; the provisioner creates and maintains the record.
+- **The origin IP leaks via `mail.<domain>` when the built-in MTA is on.** SMTP can't be proxied, so the mail record is gray-clouded and resolves to your real address. The Cloudflare profile hides the SNI and fronts the tunnel, but does not hide the origin IP while the MTA runs. And because MTA-STS then needs `:443` open to the internet (see the "Lock down the origin" section), direct tunnel access to the origin is refused by AOP alone on those deployments, not the firewall.
+- **`mta-sts.<domain>` is published gray, not proxied, under the edge.** Cloudflare's Universal SSL cannot authenticate a multi-level subdomain like `mta-sts.<domain>` (X.509 wildcards match a single left-most label), and MTA-STS mandates a valid publicly-trusted certificate for `https://mta-sts.<domain>/.well-known/mta-sts.txt`, not proxying — so the record stays **gray**, served directly by the origin's `*.<domain>` wildcard cert (the apex stays orange so Cloudflare can front it for ECH). The provisioner publishes and maintains it automatically; because senders reach it directly, `:443` must stay open to the internet when the MTA runs (see the "Lock down the origin" section).
 
 ```{warning}
 Cloudflare's self-serve (free/pro) plans are scoped to serving websites; proxying general, non-HTML tunnel traffic can run afoul of §2.8 of the Self-Serve Subscription Agreement. On abuse reports, Cloudflare can reactively suspend the zone or terminate the account. Review the current ToS for your plan before relying on this in production.

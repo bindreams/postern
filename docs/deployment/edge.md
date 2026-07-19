@@ -64,10 +64,10 @@ Authenticated Origin Pull mTLS is on by default (`EDGE_CF_AUTHENTICATED_ORIGIN_P
 Under `EDGE_PROFILE=cloudflare` + `DNS_PROVIDER=cloudflare`, Postern converges two
 **zone-wide** Cloudflare settings (both converge-only — raised/enabled, never reverted):
 
-| Setting | Postern sets | Opt out | Notes |
-| --- | --- | --- | --- |
+| Setting                     | Postern sets                                                                                 | Opt out                         | Notes                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
 | **SSL/TLS encryption mode** | `Full (strict)` (raise-only from `off`/`flexible`; `EDGE_CF_SSL_MODE=full` to target `full`) | `EDGE_CF_MANAGE_SSL_MODE=false` | Without this, a `Flexible`/`Off` zone makes Cloudflare fetch the origin over HTTP, which nginx 308-redirects → `ERR_TOO_MANY_REDIRECTS`. |
-| **ECH** | `on` | `EDGE_CF_MANAGE_ZONE_ECH=false` | So the front actually serves `ech=` for `ECH_ENABLED` clients. |
+| **ECH**                     | `on`                                                                                         | `EDGE_CF_MANAGE_ZONE_ECH=false` | So the front actually serves `ech=` for `ECH_ENABLED` clients.                                                                           |
 
 Both are **zone-wide** — they affect every proxied hostname in the Cloudflare zone.
 On a shared root-domain zone, opt out (or, for SSL, target `full`) as needed.
@@ -80,11 +80,11 @@ until the next reconcile tick (~1 h). Under the default BYO-cert mode this is si
 
 **Cloudflare API-token permissions** the provisioner token needs:
 
-| Permission | Why |
-| --- | --- |
-| `Zone : DNS : Edit` | Publish/proxy the apex/mail/mta-sts A/AAAA/CAA/TLSA records. |
-| `Zone : Zone : Read` | Resolve the zone ID. |
-| `Zone : Zone Settings : Edit` | Flip the zone **ECH** setting **and** the **SSL/TLS mode**. |
+| Permission                    | Why                                                          |
+| ----------------------------- | ------------------------------------------------------------ |
+| `Zone : DNS : Edit`           | Publish/proxy the apex/mail/mta-sts A/AAAA/CAA/TLSA records. |
+| `Zone : Zone : Read`          | Resolve the zone ID.                                         |
+| `Zone : Zone Settings : Edit` | Flip the zone **ECH** setting **and** the **SSL/TLS mode**.  |
 
 An automation/CI token that only publishes DNS should stay narrower —
 `DNS : Edit` + `Zone : Read`, **without** `Zone Settings : Edit` — so it can never

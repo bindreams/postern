@@ -208,7 +208,7 @@ def test_ssl_mode_explicit_under_generic_rejected():
         )
 
 
-# Cross-container agreement: the portal Literal and the provisioner's parse_ssl_target
+# Cross-container agreement: the portal's edge_cf_ssl_mode value-check and the provisioner's parse_ssl_target
 # both read the same EDGE_CF_SSL_MODE env var (separate containers, no shared validator),
 # so they MUST accept/reject the identical set -- else a stray value splits the stack
 # (one boots, one dies). Pinned here so a future normalization change to either side

@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 # Fixed dispatch order so logs across ticks stay deterministic.
-_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge", "ech")
+_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge", "ssl", "ech")
 
 # COMPOSE_PROFILES is comma-separated per the compose spec; we also tolerate
 # whitespace separators so a hand-edited value still parses.
@@ -42,6 +42,7 @@ class Enablement:
     dns_enabled: bool  # apex/wildcard/mail/mta-sts A/AAAA + CAA publisher
     edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex (mta-sts gray)
     ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (ech + cloudflare edge + provider)
+    ssl_mode_enabled: bool = False  # CF zone SSL/TLS-mode auto-manage (cloudflare edge + provider); NOT gated on ECH
 
 
 def mta_deployed_from_profiles(compose_profiles: str) -> bool:
@@ -61,6 +62,7 @@ def compute_enablement(
     mta_deployed: bool,
     ech_enabled: bool = False,
     manage_zone_ech: bool = True,
+    manage_ssl_mode: bool = True,
 ) -> Enablement:
     """Derive the enablement matrix from raw env values (case/space-insensitive)."""
     provider = (dns_provider or "none").strip().lower()
@@ -82,6 +84,8 @@ def compute_enablement(
     # Zone-ECH is Cloudflare + orange-cloud specific and fail-closed (ech=always
     # breaks clients without the front), so it stays off outside a managed CF edge.
     ech_zone = ech_enabled and edge and provider == "cloudflare" and manage_zone_ech
+    # NOT gated on ech_enabled (unlike ech_zone): the redirect loop is ECH-independent.
+    ssl_mode = edge and provider == "cloudflare" and manage_ssl_mode
 
     return Enablement(
         dkim_enabled=dkim,
@@ -90,6 +94,7 @@ def compute_enablement(
         dns_enabled=dns,
         edge_enabled=edge,
         ech_zone_enabled=ech_zone,
+        ssl_mode_enabled=ssl_mode,
     )
 
 
@@ -102,6 +107,7 @@ def run_enabled_ticks(enablement: Enablement, ticks: Mapping[str, Callable[[], N
         "dns": enablement.dns_enabled,
         "mta_records": enablement.mta_enabled,
         "edge": enablement.edge_enabled,
+        "ssl": enablement.ssl_mode_enabled,
         "ech": enablement.ech_zone_enabled,
     }
     for name in _TICK_ORDER:

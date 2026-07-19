@@ -110,6 +110,8 @@ Encrypted Client Hello hides the hostname in the TLS handshake. ECH mode is **pe
 - Deployments that ran `ECH_ENABLED=true` (fail-closed) have those connections become **fail-open** `auto` — ECH is still used when available, but no longer *required*. To keep fail-closed, recreate affected connections with `postern connection add --ech always`.
 - The server-wide toggle is gone. `ECH_DOH_URL` (default Cloudflare) is now the only client-side ECH knob; `auto` connections opportunistically attempt ECH whenever it is set. `EDGE_CF_MANAGE_ZONE_ECH` (now default `false`) is the separate, opt-in switch for postern to enable ECH at a Cloudflare front.
 
+To disable ECH entirely, set `ECH_DOH_URL=` (empty) or create connections with `postern connection add --ech never`.
+
 You can remove any leftover `ECH_ENABLED` line from your `.env` — it is now ignored.
 ```
 

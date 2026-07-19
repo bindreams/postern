@@ -49,7 +49,9 @@ from postern_provisioner import dns_records as dns_driver  # noqa: E402
 from postern_provisioner import ech as ech_driver  # noqa: E402
 from postern_provisioner import edge_ranges  # noqa: E402
 from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
+from postern_provisioner import ssl_mode as ssl_driver  # noqa: E402
 from postern_provisioner.enablement import (  # noqa: E402
+    MANAGE_SSL_MODE_DEFAULT,
     MANAGE_ZONE_ECH_DEFAULT,
     Enablement,
     compute_enablement,
@@ -522,6 +524,44 @@ def _try_advance_ech(domain: str, counters: dict[str, int]) -> None:
         logger.exception("ech reconcile step failed (%d consecutive)", counters["ech"])
 
 
+# Zone SSL/TLS-mode reconciler (Cloudflare zone-level SSL setting) =====================================================
+def _ssl_target_from_env() -> str:
+    """Resolve + validate the SSL/TLS target from EDGE_CF_SSL_MODE (default strict).
+    Raises ValueError on any non-full/strict value; main() turns that into a die()."""
+    return ssl_driver.parse_ssl_target(os.environ.get("EDGE_CF_SSL_MODE", "strict"))
+
+
+def _resolve_ssl_target(enablement: Enablement) -> str:
+    """Return the validated EDGE_CF_SSL_MODE target when SSL-mode management is enabled;
+    otherwise an unused placeholder, so a stray/typo'd value can't crash a non-managing
+    deployment. Raises ValueError (management on, bad value) for the caller to die() on."""
+    if not enablement.ssl_mode_enabled:
+        return "strict"
+    return _ssl_target_from_env()
+
+
+def _resolve_ssl_target_or_die(enablement: Enablement) -> str:
+    """main()'s glue: resolve the target, turning a bad value into a clean die() rather than
+    an unhandled ValueError traceback. Extracted so the fail-loud path is unit-testable."""
+    try:
+        return _resolve_ssl_target(enablement)
+    except ValueError as e:
+        die(str(e))
+
+
+def _try_advance_ssl(domain: str, target: str, counters: dict[str, int]) -> None:
+    """Raise the Cloudflare zone SSL/TLS mode toward `target` (raise/gate logic lives in
+    ssl_mode.py). Thin wrapper: env-wiring + the failure counter, like _try_advance_ech.
+    Caller gates on enablement.ssl_mode_enabled."""
+    try:
+        settings = ssl_driver.SslModeSettings(domain=domain, target=target)
+        ssl_driver.reconcile_and_persist(settings=settings, runner=ssl_driver.SslModeRunner())
+        counters["ssl"] = 0
+    except Exception:
+        counters["ssl"] = counters.get("ssl", 0) + 1
+        logger.exception("ssl reconcile step failed (%d consecutive)", counters["ssl"])
+
+
 def _sleep_with_triggers() -> None:
     """Sleep up to TICK_SECONDS, returning early if any trigger file appears."""
     slept = 0
@@ -532,18 +572,24 @@ def _sleep_with_triggers() -> None:
         slept += TRIGGER_POLL_SECONDS
 
 
-def run_combined_loop(domain: str, selector_prefix: str, enablement: Enablement) -> NoReturn:
-    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0, "ech": 0}
-    ticks: dict[str, Callable[[], None]] = {
+def _build_ticks(domain: str, selector_prefix: str, ssl_target: str, counters: dict[str, int],
+                 enablement: Enablement) -> dict[str, Callable[[], None]]:
+    """Assemble the per-subsystem tick callables. Kept separate from run_combined_loop so
+    the wiring (esp. the ssl tick + its target) is unit-testable without the infinite loop."""
+    return {
         "dkim": lambda: _try_advance_dkim(domain, selector_prefix, counters),
         "cert": lambda: _try_advance_cert(domain, counters),
         "dns": lambda: _try_advance_dns(domain, counters, enablement),
         "mta_records": lambda: _try_advance_mta_records(domain, counters),
-        # _try_advance_edge takes only `counters` -- Cloudflare's ranges are
-        # global, so there is no per-domain argument.
         "edge": lambda: _try_advance_edge(counters),
+        "ssl": lambda: _try_advance_ssl(domain, ssl_target, counters),
         "ech": lambda: _try_advance_ech(domain, counters),
     }
+
+
+def run_combined_loop(domain: str, selector_prefix: str, ssl_target: str, enablement: Enablement) -> NoReturn:
+    counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0, "ssl": 0, "ech": 0}
+    ticks = _build_ticks(domain, selector_prefix, ssl_target, counters, enablement)
     while True:
         run_enabled_ticks(enablement, ticks)
         _sleep_with_triggers()
@@ -567,6 +613,7 @@ def main() -> NoReturn:
         # deploying the MTA.
         mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
         manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", MANAGE_ZONE_ECH_DEFAULT),
+        manage_ssl_mode=_bool_env("EDGE_CF_MANAGE_SSL_MODE", MANAGE_SSL_MODE_DEFAULT),
     )
 
     # DKIM init is unconditional (matches the pre-cert-renewal behaviour).
@@ -575,6 +622,16 @@ def main() -> NoReturn:
     # postern-mta-data volume even in cert-only / edge-only deployments.
     state = ensure_initial_key(domain, selector_prefix)
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
+    logger.info(
+        "enablement: dkim=%s cert=%s dns=%s mta_records=%s edge=%s ssl_mode=%s zone_ech=%s",
+        enablement.dkim_enabled,
+        enablement.cert_enabled,
+        enablement.dns_enabled,
+        enablement.mta_enabled,
+        enablement.edge_enabled,
+        enablement.ssl_mode_enabled,
+        enablement.ech_zone_enabled,
+    )
     logger.info(
         "zone-ECH management: %s",
         "enabled" if enablement.ech_zone_enabled else
@@ -588,7 +645,8 @@ def main() -> NoReturn:
         )
         sys.exit(0)
 
-    run_combined_loop(domain, selector_prefix, enablement)
+    ssl_target = _resolve_ssl_target_or_die(enablement)
+    run_combined_loop(domain, selector_prefix, ssl_target, enablement)
 
 
 if __name__ == "__main__":

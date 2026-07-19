@@ -191,7 +191,9 @@ def test_ech_zone_off_without_cloudflare_provider():
 
 def test_ech_tick_dispatched_only_when_enabled():
     calls: list[str] = []
-    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ech")}
+    # ticks dict includes "ssl" too: _cf_edge defaults manage_ssl_mode=True, so
+    # run_enabled_ticks fires the ssl tick and would KeyError without it.
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ssl", "ech")}
     en.run_enabled_ticks(_cf_edge(manage_zone_ech=True), ticks)
     assert "ech" in calls
 
@@ -199,6 +201,46 @@ def test_ech_tick_dispatched_only_when_enabled():
 def test_ech_tick_not_dispatched_when_disabled():
     """The opt-in gate must actually prevent the zone-wide CF Settings:Edit call."""
     calls: list[str] = []
-    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ech")}
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ssl", "ech")}
     en.run_enabled_ticks(_cf_edge(manage_zone_ech=False), ticks)
     assert "ech" not in calls
+
+
+# SSL/TLS-mode enablement ==============================================================================================
+def test_ssl_mode_enabled_requires_cloudflare_edge_and_provider():
+    assert _cf_edge(manage_ssl_mode=True).ssl_mode_enabled
+
+
+def test_ssl_mode_off_when_manage_flag_off():
+    assert not _cf_edge(manage_ssl_mode=False).ssl_mode_enabled
+
+
+def test_ssl_mode_off_under_generic_edge():
+    e = en.compute_enablement(
+        dns_provider="cloudflare", cert_renewal=False, edge_profile="generic", mta_deployed=False, manage_ssl_mode=True
+    )
+    assert not e.ssl_mode_enabled
+
+
+def test_ssl_mode_off_without_cloudflare_provider():
+    e = en.compute_enablement(
+        dns_provider="route53", cert_renewal=False, edge_profile="cloudflare", mta_deployed=False, manage_ssl_mode=True
+    )
+    assert not e.ssl_mode_enabled
+
+
+def test_ssl_tick_dispatched_only_when_enabled():
+    calls: list[str] = []
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ssl", "ech")}
+    en.run_enabled_ticks(_cf_edge(manage_ssl_mode=True), ticks)
+    assert "ssl" in calls
+
+
+def test_ssl_tick_not_dispatched_when_disabled():
+    # The opt-out's whole point: the ssl tick must NOT fire when disabled. Exercised
+    # through run_enabled_ticks (not just the boolean) so a flags-dict/_TICK_ORDER typo
+    # that fired an off tick would be caught.
+    calls: list[str] = []
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ssl", "ech")}
+    en.run_enabled_ticks(_cf_edge(manage_ssl_mode=False), ticks)
+    assert "ssl" not in calls

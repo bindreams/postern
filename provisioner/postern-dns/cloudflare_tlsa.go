@@ -28,7 +28,9 @@ import (
 	"github.com/libdns/libdns"
 )
 
-const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
+// cloudflareAPIBase is a var (not const) solely so same-package tests can point
+// newCFClient at an httptest server; production never reassigns it.
+var cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
 
 // cloudflareDuplicateCode is what the Cloudflare API returns when AppendRecords
 // tries to create an exact-match record that already exists (RFC: 81058).

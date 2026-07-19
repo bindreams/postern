@@ -26,7 +26,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 # Fixed dispatch order so logs across ticks stay deterministic.
-_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge", "ech")
+_TICK_ORDER = ("dkim", "cert", "dns", "mta_records", "edge", "ssl", "ech")
 
 # COMPOSE_PROFILES is comma-separated per the compose spec; we also tolerate
 # whitespace separators so a hand-edited value still parses.
@@ -42,6 +42,7 @@ class Enablement:
     dns_enabled: bool  # apex/wildcard/mail/mta-sts A/AAAA + CAA publisher
     edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex (mta-sts gray)
     ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (cloudflare edge + provider + manage_zone_ech)
+    ssl_mode_enabled: bool = False  # CF zone SSL/TLS-mode auto-manage (cloudflare edge + provider + manage_ssl_mode)
 
 
 def mta_deployed_from_profiles(compose_profiles: str) -> bool:
@@ -57,6 +58,10 @@ def mta_deployed_from_profiles(compose_profiles: str) -> bool:
 # independent env reads can't diverge -- a mismatch would deadlock service_healthy
 # (health gate computes it enabled while the loop never runs the ech tick).
 MANAGE_ZONE_ECH_DEFAULT = False
+# SSL/TLS-mode management is default-ON (opt-out): a Flexible/Off zone is a hard
+# ERR_TOO_MANY_REDIRECTS breakage, so batteries-included matters more than for ECH.
+# Shared for the same anti-divergence reason as MANAGE_ZONE_ECH_DEFAULT.
+MANAGE_SSL_MODE_DEFAULT = True
 
 
 def compute_enablement(
@@ -66,6 +71,7 @@ def compute_enablement(
     edge_profile: str,
     mta_deployed: bool,
     manage_zone_ech: bool = MANAGE_ZONE_ECH_DEFAULT,
+    manage_ssl_mode: bool = MANAGE_SSL_MODE_DEFAULT,
 ) -> Enablement:
     """Derive the enablement matrix from raw env values (case/space-insensitive)."""
     provider = (dns_provider or "none").strip().lower()
@@ -88,6 +94,10 @@ def compute_enablement(
     # Zone Settings:Edit CF token, and ECH can break clients on hostile networks.
     # Per-connection ECH is independent of this.
     ech_zone = edge and provider == "cloudflare" and manage_zone_ech
+    # SSL/TLS-mode management is structurally identical to zone-ECH but default-ON
+    # (opt-out via EDGE_CF_MANAGE_SSL_MODE=false); see MANAGE_SSL_MODE_DEFAULT. Also
+    # zone-wide + needs a Zone Settings:Edit token.
+    ssl_mode = edge and provider == "cloudflare" and manage_ssl_mode
 
     return Enablement(
         dkim_enabled=dkim,
@@ -96,6 +106,7 @@ def compute_enablement(
         dns_enabled=dns,
         edge_enabled=edge,
         ech_zone_enabled=ech_zone,
+        ssl_mode_enabled=ssl_mode,
     )
 
 
@@ -108,6 +119,7 @@ def run_enabled_ticks(enablement: Enablement, ticks: Mapping[str, Callable[[], N
         "dns": enablement.dns_enabled,
         "mta_records": enablement.mta_enabled,
         "edge": enablement.edge_enabled,
+        "ssl": enablement.ssl_mode_enabled,
         "ech": enablement.ech_zone_enabled,
     }
     for name in _TICK_ORDER:

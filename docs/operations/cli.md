@@ -145,6 +145,14 @@ Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is presen
 
 Prints the ECH settings (`domain`, `ech_doh_url`, `edge_profile`, `dns_provider`, `edge_cf_manage_zone_ech`), the provisioner-written zone-ECH state (last-enabled time, consecutive failures, and the verbatim last Cloudflare error), and the live DoH front-serving status.
 
+## Edge
+
+Inspect the Cloudflare edge's zone-wide settings that Postern manages — see [Zone-wide settings Postern manages](../deployment/edge.md#zone-wide-settings-postern-manages).
+
+### postern edge ssl-status
+
+Prints the SSL/TLS-mode settings (`edge_cf_manage_ssl_mode`, `edge_cf_ssl_mode` target) and the provisioner-written convergence state: when the zone `ssl-set` last succeeded, the actual mode Cloudflare left the zone in (`zone_ssl_current_mode`, which may sit below the target under raise-only), the consecutive-failure count, and the verbatim last Cloudflare error. Reads the shared state file only; the portal holds no Cloudflare token.
+
 ## Diagnostics
 
 One command verifies the whole deployment end to end.

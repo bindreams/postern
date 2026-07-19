@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http/httptest"
 	"net/netip"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -1089,5 +1092,61 @@ func TestRunCmd_RejectsInvalidArgs(t *testing.T) {
 				t.Errorf("error %q does not contain hint %q", err.Error(), tc.hint)
 			}
 		})
+	}
+}
+
+func TestSSLSetNonCloudflareErrors(t *testing.T) {
+	err := runCmd(context.Background(), "route53", nil, "ssl-set", "example.com", []string{"strict"})
+	if err == nil || !strings.Contains(err.Error(), "only supported for DNS_PROVIDER=cloudflare") {
+		t.Fatalf("expected cloudflare-only error, got: %v", err)
+	}
+}
+
+func TestSSLSetBadTargetErrors(t *testing.T) {
+	err := runCmd(context.Background(), "cloudflare", nil, "ssl-set", "example.com", []string{"off"})
+	if err == nil || !strings.Contains(err.Error(), "target must be 'full' or 'strict'") {
+		t.Fatalf("expected target validation error, got: %v", err)
+	}
+}
+
+func TestSSLSetWrongArgCountErrors(t *testing.T) {
+	err := runCmd(context.Background(), "cloudflare", nil, "ssl-set", "example.com", []string{})
+	if err == nil || !strings.Contains(err.Error(), "expected <full|strict>") {
+		t.Fatalf("expected arg-count error, got: %v", err)
+	}
+}
+
+func TestSSLSetHappyPathDispatch(t *testing.T) {
+	// End-to-end through runCmd: the switch case must wire zone/target/token through to
+	// cloudflareZoneSSLSet and PATCH the live-zone setting. cloudflareZoneSSLSet itself is
+	// exercised directly in cloudflare_ssl_test.go, so this is the only test of the
+	// dispatch wiring. Override the package base URL to reach the fake CF.
+	f := newFakeCFSSL("example.com", "flexible")
+	srv := httptest.NewServer(f.handler())
+	t.Cleanup(srv.Close)
+	orig := cloudflareAPIBase
+	cloudflareAPIBase = srv.URL
+	t.Cleanup(func() { cloudflareAPIBase = orig })
+	t.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	// Capture stdout: ssl-set must print the observed mode (the SslModeRunner reads it).
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+	err := runCmd(context.Background(), "cloudflare", nil, "ssl-set", "example.com", []string{"strict"})
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("runCmd ssl-set: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "strict" {
+		t.Errorf("ssl-set stdout = %q, want \"strict\" (observed mode for SslModeRunner)", string(out))
+	}
+	if f.sslValue != "strict" {
+		t.Errorf("ssl value = %q, want strict (runCmd must dispatch zone/target to cloudflareZoneSSLSet)", f.sslValue)
+	}
+	if countMethod(f.requestLog, "PATCH") != 1 {
+		t.Errorf("expected exactly 1 PATCH via runCmd, log=%v", f.requestLog)
 	}
 }

@@ -20,6 +20,7 @@
 //	postern-dns caa-delete  <fqdn> <flags> <tag> <value>
 //	postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
 //	postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
+//	postern-dns ssl-set     <domain> full|strict
 //
 // Provider selection: env var DNS_PROVIDER (matches a known provider name).
 // Provider config: each provider's native env vars (e.g. CLOUDFLARE_API_TOKEN,
@@ -147,9 +148,10 @@ func usage() {
   postern-dns tlsa-set    <fqdn> <usage> <selector> <matching-type> <cert-hex>
   postern-dns tlsa-delete <fqdn> <usage> <selector> <matching-type> <cert-hex>
   postern-dns ech-set     <domain> on|off
+  postern-dns ssl-set     <domain> full|strict
 
   --proxied is Cloudflare-only (true rejected, false ignored, on other providers).
-  ech-set is Cloudflare-only (rejected on other providers).
+  ech-set and ssl-set are Cloudflare-only (rejected on other providers).
 
 env vars:
   DNS_PROVIDER -- provider name (cloudflare, route53, gandi, digitalocean,
@@ -287,6 +289,27 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 		}
 		return cloudflareZoneEchSet(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, on)
 
+	case "ssl-set":
+		if len(args) != 1 {
+			return fmt.Errorf("ssl-set: expected <full|strict>, got %d arg(s)", len(args))
+		}
+		target, perr := parseSSLTarget(args[0])
+		if perr != nil {
+			return perr
+		}
+		if providerName != "cloudflare" {
+			return fmt.Errorf("ssl-set is only supported for DNS_PROVIDER=cloudflare (got %q): "+
+				"the zone-level SSL/TLS mode is a Cloudflare feature", providerName)
+		}
+		observed, serr := cloudflareZoneSSLSet(ctx, newCFClient(os.Getenv("CLOUDFLARE_API_TOKEN")), zone, target)
+		if serr != nil {
+			return serr
+		}
+		// Print the mode the zone was LEFT in on stdout so the caller (SslModeRunner)
+		// can persist it and `edge ssl-status` can surface target-vs-actual drift.
+		fmt.Println(observed)
+		return nil
+
 	default:
 		return fmt.Errorf("unknown command %q", cmd)
 	}
@@ -335,6 +358,17 @@ func parseOnOff(s string) (bool, error) {
 		return false, nil
 	default:
 		return false, fmt.Errorf("ech-set: value must be 'on' or 'off' (got %q)", s)
+	}
+}
+
+// parseSSLTarget validates the ssl-set target argument. off/flexible are rejected:
+// ssl-set only ever RAISES to a secure mode.
+func parseSSLTarget(s string) (string, error) {
+	switch s {
+	case "full", "strict":
+		return s, nil
+	default:
+		return "", fmt.Errorf("ssl-set: target must be 'full' or 'strict' (got %q)", s)
 	}
 }
 

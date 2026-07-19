@@ -22,7 +22,7 @@ An edge buys censorship-resistance the origin alone cannot:
 Prerequisites:
 
 - Your domain's nameservers are delegated to Cloudflare (the zone is active in your Cloudflare account).
-- A Cloudflare API token with `Zone:DNS:Edit` on that zone — the same token used for DKIM / cert DNS-01 (see [certificates](certificates.md)).
+- A Cloudflare API token with `Zone:DNS:Edit` on that zone, plus `Zone:Zone Settings:Edit` for the zone ECH/SSL-mode management (see below) — the same token used for DKIM / cert DNS-01 (see [certificates](certificates.md)).
 - Your origin's public IPv4 (IPv6 optional).
 
 In `.env` (the edge section of [example.env](https://github.com/bindreams/postern/blob/main/example.env) mirrors this):
@@ -58,6 +58,47 @@ On first start the provisioner:
 1. nginx's watcher applies the snippets (validate-then-reload) so real-client-IP recovery goes live without a restart.
 
 Authenticated Origin Pull mTLS is on by default (`EDGE_CF_AUTHENTICATED_ORIGIN_PULL=true`): nginx demands Cloudflare's origin-pull client certificate on every `:443` handshake. Setting this variable under any non-`cloudflare` profile is rejected at start.
+
+### Zone-wide settings Postern manages
+
+Under `EDGE_PROFILE=cloudflare` + `DNS_PROVIDER=cloudflare`, Postern converges two
+**zone-wide** Cloudflare settings (both converge-only — raised/enabled, never reverted):
+
+| Setting                     | Postern sets                                                                                 | Opt out                         | Notes                                                                                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **SSL/TLS encryption mode** | `Full (strict)` (raise-only from `off`/`flexible`; `EDGE_CF_SSL_MODE=full` to target `full`) | `EDGE_CF_MANAGE_SSL_MODE=false` | Without this, a `Flexible`/`Off` zone makes Cloudflare fetch the origin over HTTP, which nginx 308-redirects → `ERR_TOO_MANY_REDIRECTS`. |
+| **ECH**                     | `on`                                                                                         | `EDGE_CF_MANAGE_ZONE_ECH=false` | So the front actually serves `ech=` for `ECH_ENABLED` clients.                                                                           |
+
+Both are **zone-wide** — they affect every proxied hostname in the Cloudflare zone.
+On a shared root-domain zone, opt out (or, for SSL, target `full`) as needed.
+
+Under auto-cert-renewal (`compose.cert.yaml`), each managed setting is also a **hard
+startup gate**: nginx and mta wait for the provisioner to converge it before starting.
+Enabling both ECH and SSL-mode management means both zone-settings PATCHes must succeed
+for the stack to come up, and a transient Cloudflare failure on either delays startup
+until the next reconcile tick (~1 h). Under the default BYO-cert mode this is signal-only.
+
+**Cloudflare API-token permissions** the provisioner token needs:
+
+| Permission                    | Why                                                          |
+| ----------------------------- | ------------------------------------------------------------ |
+| `Zone : DNS : Edit`           | Publish/proxy the apex/mail/mta-sts A/AAAA/CAA/TLSA records. |
+| `Zone : Zone : Read`          | Resolve the zone ID.                                         |
+| `Zone : Zone Settings : Edit` | Flip the zone **ECH** setting **and** the **SSL/TLS mode**.  |
+
+An automation/CI token that only publishes DNS should stay narrower —
+`DNS : Edit` + `Zone : Read`, **without** `Zone Settings : Edit` — so it can never
+mutate zone-wide settings on a shared zone.
+
+```{warning}
+**Upgrading an existing Cloudflare-edge deployment:** SSL/TLS-mode management is on by
+default and needs `Zone : Zone Settings : Edit`. A token scoped only `DNS : Edit` +
+`Zone : Read` (sufficient before this feature) gets a **403** on the zone-settings
+write, so the provisioner never reports the mode set. Under `compose.cert.yaml` — where
+nginx and mta gate startup on the provisioner's health — that **blocks nginx/mta from
+starting**. **Broaden the token to include `Zone Settings : Edit` before upgrading**, or
+set `EDGE_CF_MANAGE_SSL_MODE=false` to keep managing the mode yourself.
+```
 
 ### Lock down the origin
 

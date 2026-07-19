@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     # is zone-WIDE and requires a Zone Settings:Edit CF token, and ECH can break clients
     # on hostile networks, so it is not auto-on. Meaningful ONLY under edge_profile=cloudflare.
     edge_cf_manage_zone_ech: bool = False
+    # cloudflare profile only: auto-manage the zone's SSL/TLS encryption mode (raise-only,
+    # see cloudflare_ssl.go). Default-ON (opt-out) UNLIKE zone-ECH: a Flexible/Off zone is a
+    # hard ERR_TOO_MANY_REDIRECTS breakage. Zone-WIDE + needs a Zone Settings:Edit token.
+    # Meaningful ONLY under edge_profile=cloudflare; explicit-set under another profile fails loud.
+    edge_cf_manage_ssl_mode: bool = True
+    # cloudflare profile only: target mode to raise to. "strict" validates the origin
+    # cert; "full" suits a shared zone with an invalid-cert co-tenant. Typed `str`, not
+    # `Literal` -- see the value-check in _check_edge_settings for why (scoped to when
+    # management is active, matching the provisioner).
+    edge_cf_ssl_mode: str = "strict"
 
     # ECH (client SNI concealment) =====================================================================================
     # ECH mode is per-connection (connections.ech: never/auto/always). This is only
@@ -202,4 +212,19 @@ class Settings(BaseSettings):
             raise ValueError("EDGE_CF_AUTHENTICATED_ORIGIN_PULL is only meaningful under EDGE_PROFILE=cloudflare")
         if (self.edge_profile != "cloudflare" and "edge_cf_manage_zone_ech" in self.model_fields_set):
             raise ValueError("EDGE_CF_MANAGE_ZONE_ECH is only meaningful under EDGE_PROFILE=cloudflare")
+        if (self.edge_profile != "cloudflare" and "edge_cf_manage_ssl_mode" in self.model_fields_set):
+            raise ValueError("EDGE_CF_MANAGE_SSL_MODE is only meaningful under EDGE_PROFILE=cloudflare")
+        if (self.edge_profile != "cloudflare" and "edge_cf_ssl_mode" in self.model_fields_set):
+            raise ValueError("EDGE_CF_SSL_MODE is only meaningful under EDGE_PROFILE=cloudflare")
+        # Enforce the full/strict VALUE only when management is actually active. This scopes
+        # the check to exactly when the provisioner consumes it (ssl_mode_enabled = cloudflare
+        # edge + cloudflare provider + manage), so the two containers -- which both read the
+        # same EDGE_CF_SSL_MODE env with no shared validator -- accept/reject the identical
+        # set. A stray value under manage=false is inert and must not split the stack (portal
+        # crashing while the provisioner boots). Exact-match, mirroring ssl_mode.parse_ssl_target.
+        if (
+            self.edge_profile == "cloudflare" and self.edge_cf_manage_ssl_mode
+            and self.edge_cf_ssl_mode not in ("full", "strict")
+        ):
+            raise ValueError(f"EDGE_CF_SSL_MODE must be 'full' or 'strict' (got {self.edge_cf_ssl_mode!r})")
         return self

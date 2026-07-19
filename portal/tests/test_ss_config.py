@@ -138,42 +138,71 @@ def test_connection_rejects_invalid_ech():
 
 # Client config: ECH ===================================================================================================
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
-def test_client_config_ech_off_by_default(plugin_name):
-    conn = _make_connection().model_copy(update={"plugin": plugin_name})
+def test_client_config_ech_never_emits_nothing(plugin_name):
+    conn = _make_connection().model_copy(update={"plugin": plugin_name, "ech": "never"})
     cfg = client_config(conn, DOMAIN)
-    # Byte-identical to the pre-ECH output.
     assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
 
 
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
+@pytest.mark.parametrize("mode", ["auto", "always"])
 @pytest.mark.parametrize("doh_url", ["https://cloudflare-dns.com/dns-query", "https://dns.example.net/dns-query"])
-def test_client_config_ech_enabled_appends_opts(plugin_name, doh_url):
-    conn = _make_connection().model_copy(update={"plugin": plugin_name})
-    cfg = client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url=doh_url)
+def test_client_config_ech_auto_always_append_opts(plugin_name, mode, doh_url):
+    conn = _make_connection().model_copy(update={"plugin": plugin_name, "ech": mode})
+    cfg = client_config(conn, DOMAIN, ech_doh_url=doh_url)
     base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
-    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=always;ech-doh={doh_url}"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech={mode};ech-doh={doh_url}"
 
 
-def test_client_config_ech_enabled_empty_doh_raises():
-    conn = _make_connection()
+def test_client_config_auto_without_doh_emits_nothing():
+    """auto is fail-open: no DoH -> no ECH, not an error."""
+    conn = _make_connection().model_copy(update={"ech": "auto"})
+    cfg = client_config(conn, DOMAIN, ech_doh_url="")
+    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+
+
+def test_client_config_never_ignores_available_doh():
+    """never means never, even when a DoH URL is configured."""
+    conn = _make_connection().model_copy(update={"ech": "never"})
+    cfg = client_config(conn, DOMAIN, ech_doh_url="https://cloudflare-dns.com/dns-query")
+    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+
+
+def test_client_config_never_ignores_malformed_doh():
+    """never never touches ech_doh_url, so even a metachar-laden URL must not raise."""
+    conn = _make_connection().model_copy(update={"ech": "never"})
+    cfg = client_config(conn, DOMAIN, ech_doh_url="https://ex.test/dns;inject=x")
+    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+
+
+def test_client_config_always_without_doh_raises():
+    conn = _make_connection().model_copy(update={"ech": "always"})
     with pytest.raises(ValueError, match="ech_doh_url"):
-        client_config(conn, DOMAIN, ech_enabled=True)
+        client_config(conn, DOMAIN, ech_doh_url="")
 
 
-def test_client_config_ech_enabled_rejects_metachar_doh():
-    conn = _make_connection()
+@pytest.mark.parametrize("mode", ["auto", "always"])
+@pytest.mark.parametrize(
+    "bad_doh",
+    [
+        "https://ex.test/dns;inject=x",  # ';' separator
+        "https://ex.test/dns\\x",  # backslash
+        "https://ex.test/ dns",  # whitespace
+    ]
+)
+def test_client_config_ech_rejects_metachar_doh(mode, bad_doh):
+    conn = _make_connection().model_copy(update={"ech": mode})
     with pytest.raises(ValueError, match="SIP003"):
-        client_config(conn, DOMAIN, ech_enabled=True, ech_doh_url="https://ex.test/dns;inject=x")
+        client_config(conn, DOMAIN, ech_doh_url=bad_doh)
 
 
-def test_server_config_has_no_ech_params():
-    """ECH is client-only; server_config must never grow ECH params. Assert both the
-    signature (no ech params) and the output (no ech token)."""
+@pytest.mark.parametrize("mode", ["never", "auto", "always"])
+def test_server_config_has_no_ech_params(mode):
+    """server_config must never emit ECH for ANY connection mode (security boundary)."""
     import inspect
     params = inspect.signature(server_config).parameters
-    assert "ech_enabled" not in params
-    assert "ech_doh_url" not in params
-    conn = _make_connection()
+    assert "ech_enabled" not in params and "ech_doh_url" not in params
+    conn = _make_connection().model_copy(update={"ech": mode})
     opts = server_config(conn, DOMAIN)["servers"][0]["plugin_opts"]
     assert "ech=" not in opts and "ech-doh=" not in opts
 

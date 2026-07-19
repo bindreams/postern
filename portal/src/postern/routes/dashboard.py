@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 
@@ -10,6 +11,8 @@ from fastapi.templating import Jinja2Templates
 
 from postern import db
 from postern.ss_config import client_config
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 _template_dir = Path(__file__).resolve().parent.parent / "templates"
@@ -68,12 +71,19 @@ async def download_config(request: Request, connection_id: str):
         return Response(status_code=404)
 
     settings = request.app.state.settings
-    config = client_config(
-        conn,
-        settings.domain,
-        ech_enabled=settings.ech_enabled,
-        ech_doh_url=settings.ech_doh_url,
-    )
+    try:
+        config = client_config(conn, settings.domain, ech_doh_url=settings.ech_doh_url)
+    except ValueError as e:
+        # client_config raises for a blank ECH_DOH_URL (ech=always) or a metachar-laden
+        # one; the metachar case can't reach here because Settings pre-validates URL format
+        # at startup, so in production this is always the blank-DoH case. The exception text
+        # (logged below) carries the exact cause regardless.
+        logger.warning("config download for connection %s failed: %s", conn.id, e)
+        return Response(
+            status_code=503,
+            media_type="text/plain",
+            content="This connection requires ECH but ECH_DOH_URL is not configured. Set ECH_DOH_URL.",
+        )
     config_json = json.dumps(config, indent=2)
     filename = _safe_filename(settings.product_name, conn.label)
 

@@ -119,6 +119,23 @@ def test_model_validate_rejects_invalid_plugin():
         Connection.model_validate({**conn.model_dump(), "plugin": "bogus"})
 
 
+# Connection ech field =================================================================================================
+def test_connection_default_ech_is_auto():
+    conn = Connection(user_id="u", path_token="x" * 24, label="L", password="P")
+    assert conn.ech == "auto"
+
+
+@pytest.mark.parametrize("mode", ["never", "auto", "always"])
+def test_connection_accepts_ech_modes(mode):
+    conn = Connection(user_id="u", path_token="x" * 24, label="L", password="P", ech=mode)
+    assert conn.ech == mode
+
+
+def test_connection_rejects_invalid_ech():
+    with pytest.raises(ValidationError):
+        Connection(user_id="u", path_token="x" * 24, label="L", password="P", ech="sometimes")
+
+
 # Client config: ECH ===================================================================================================
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
 def test_client_config_ech_off_by_default(plugin_name):

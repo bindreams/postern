@@ -41,8 +41,8 @@ class Enablement:
     mta_enabled: bool  # MX/SPF/DMARC/MTA-STS/TLS-RPT/TLSA + mail/mta-sts A/AAAA publisher
     dns_enabled: bool  # apex/wildcard/mail/mta-sts A/AAAA + CAA publisher
     edge_enabled: bool  # Cloudflare edge: IP-range refresh + proxied apex (mta-sts gray)
-    ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (ech + cloudflare edge + provider)
-    ssl_mode_enabled: bool = False  # CF zone SSL/TLS-mode auto-manage (cloudflare edge + provider); NOT gated on ECH
+    ech_zone_enabled: bool = False  # CF zone-ECH auto-enable (cloudflare edge + provider + manage_zone_ech)
+    ssl_mode_enabled: bool = False  # CF zone SSL/TLS-mode auto-manage (cloudflare edge + provider + manage_ssl_mode)
 
 
 def mta_deployed_from_profiles(compose_profiles: str) -> bool:
@@ -54,15 +54,24 @@ def mta_deployed_from_profiles(compose_profiles: str) -> bool:
     return "with-mta" in tokens
 
 
+# Zone-ECH opt-in default, shared by healthcheck.py + entrypoint.py so their two
+# independent env reads can't diverge -- a mismatch would deadlock service_healthy
+# (health gate computes it enabled while the loop never runs the ech tick).
+MANAGE_ZONE_ECH_DEFAULT = False
+# SSL/TLS-mode management is default-ON (opt-out): a Flexible/Off zone is a hard
+# ERR_TOO_MANY_REDIRECTS breakage, so batteries-included matters more than for ECH.
+# Shared for the same anti-divergence reason as MANAGE_ZONE_ECH_DEFAULT.
+MANAGE_SSL_MODE_DEFAULT = True
+
+
 def compute_enablement(
     *,
     dns_provider: str,
     cert_renewal: bool,
     edge_profile: str,
     mta_deployed: bool,
-    ech_enabled: bool = False,
-    manage_zone_ech: bool = True,
-    manage_ssl_mode: bool = True,
+    manage_zone_ech: bool = MANAGE_ZONE_ECH_DEFAULT,
+    manage_ssl_mode: bool = MANAGE_SSL_MODE_DEFAULT,
 ) -> Enablement:
     """Derive the enablement matrix from raw env values (case/space-insensitive)."""
     provider = (dns_provider or "none").strip().lower()
@@ -81,10 +90,13 @@ def compute_enablement(
     # MTA's mail host (mail A). Without a provider, postern-dns fails -- so never
     # enable the publisher then.
     dns = have_provider and (cert or edge or mta)
-    # Zone-ECH is Cloudflare + orange-cloud specific and fail-closed (ech=always
-    # breaks clients without the front), so it stays off outside a managed CF edge.
-    ech_zone = ech_enabled and edge and provider == "cloudflare" and manage_zone_ech
-    # NOT gated on ech_enabled (unlike ech_zone): the redirect loop is ECH-independent.
+    # Zone-ECH is opt-in (manage_zone_ech default false): it is zone-wide, needs a
+    # Zone Settings:Edit CF token, and ECH can break clients on hostile networks.
+    # Per-connection ECH is independent of this.
+    ech_zone = edge and provider == "cloudflare" and manage_zone_ech
+    # SSL/TLS-mode management is structurally identical to zone-ECH but default-ON
+    # (opt-out via EDGE_CF_MANAGE_SSL_MODE=false); see MANAGE_SSL_MODE_DEFAULT. Also
+    # zone-wide + needs a Zone Settings:Edit token.
     ssl_mode = edge and provider == "cloudflare" and manage_ssl_mode
 
     return Enablement(

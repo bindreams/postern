@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 
 from postern.models import Connection
+
+logger = logging.getLogger(__name__)
 
 CIPHER = "chacha20-ietf-poly1305"
 SERVER_PORT = 80
@@ -40,8 +43,16 @@ def server_config(conn: Connection, domain: str) -> dict:
     }
 
 
-def client_config(conn: Connection, domain: str, *, ech_enabled: bool = False, ech_doh_url: str = "") -> dict:
+def client_config(conn: Connection, domain: str, *, ech_doh_url: str = "") -> dict:
     """Generate a shadowsocks client config for download.
+
+    ECH is per-connection (`conn.ech`); ECH is armed by the plugin only when
+    ech-doh is set:
+      - "never"  -> append nothing.
+      - "auto"   -> ;ech=auto;ech-doh=<url> if ech_doh_url set, else nothing
+                    (opportunistic degrades to plaintext -- not an error).
+      - "always" -> ;ech=always;ech-doh=<url>; empty ech_doh_url raises (fail-closed
+                    cannot be honored). server_config never emits ech.
 
     For galoshes connections we set `mode: tcp_and_udp` so sslocal opens
     UDP-ASSOCIATE -- otherwise galoshes' raison d'etre over plain v2ray-plugin
@@ -64,19 +75,22 @@ def client_config(conn: Connection, domain: str, *, ech_enabled: bool = False, e
         local plugin socket. SIP003 plugins are TCP-only by spec; this is the
         SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
-    if ech_enabled:
-        # Defend the splice point: ech_doh_url is appended verbatim into the ;-separated
-        # SIP003 plugin_opts. Settings validates operator-supplied URLs, but this keeps
-        # the function self-safe for any direct caller.
-        if not ech_doh_url:
-            raise ValueError("client_config: ech_doh_url must be non-empty when ech_enabled=True")
-        if ";" in ech_doh_url or "\\" in ech_doh_url or any(c.isspace() for c in ech_doh_url):
-            raise ValueError(
-                "client_config: ech_doh_url must not contain ';', '\\', or whitespace (SIP003 metacharacters)"
-            )
     plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
-    if ech_enabled:
-        plugin_opts += f";ech=always;ech-doh={ech_doh_url}"
+    if conn.ech in ("auto", "always"):
+        if not ech_doh_url:
+            if conn.ech == "always":
+                raise ValueError("client_config: ech_doh_url must be non-empty for ech=always")
+            logger.debug("client_config: ech=auto for %s but ECH_DOH_URL is unset; omitting ECH", conn.id)
+        else:
+            # Defense-in-depth: Settings._validate_ech_doh_url already rejects these
+            # SIP003 metacharacters at startup, so the only production caller (the route,
+            # via settings.ech_doh_url) can't reach this. It guards direct/non-Settings
+            # callers (and is exercised by tests that bypass Settings).
+            if ";" in ech_doh_url or "\\" in ech_doh_url or any(c.isspace() for c in ech_doh_url):
+                raise ValueError(
+                    "client_config: ech_doh_url must not contain ';', '\\', or whitespace (SIP003 metacharacters)"
+                )
+            plugin_opts += f";ech={conn.ech};ech-doh={ech_doh_url}"
     server: dict = {
         "address": domain,
         "port": 443,

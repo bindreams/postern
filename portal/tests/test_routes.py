@@ -105,6 +105,37 @@ async def test_dashboard_with_valid_session(client, app_settings):
     assert "alice@example.com" in response.text
 
 
+async def test_dashboard_shows_ech_badge_for_non_auto(client, app_settings):
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Alice", email="alice@example.com")
+        await db.create_user(database, user)
+        await db.create_connection(
+            database,
+            Connection(
+                user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k", ech="never"
+            )
+        )
+        await db.create_session(database, Session(token="dash-tok", user_id=user.id, expires_at=_expires_str()))
+    client.cookies.set("session", "dash-tok")
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert "ech-badge" in r.text and "never" in r.text
+
+
+async def test_dashboard_no_ech_badge_for_auto(client, app_settings):
+    async with db.get_connection(app_settings.database_path) as database:
+        user = User(name="Bob", email="bob@example.com")
+        await db.create_user(database, user)
+        await db.create_connection(
+            database, Connection(user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k")
+        )  # default auto
+        await db.create_session(database, Session(token="dash-tok2", user_id=user.id, expires_at=_expires_str()))
+    client.cookies.set("session", "dash-tok2")
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert "ech-badge" not in r.text
+
+
 # Config download ======================================================================================================
 async def test_config_download_requires_auth(client):
     response = await client.get("/connection/fake-id/config", follow_redirects=False)
@@ -681,45 +712,43 @@ async def test_login_identity_card_ignores_x_real_ip_from_public_peer(app_settin
 
 
 # ECH settings wiring ==================================================================================================
-async def test_download_config_ech_off_by_default(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "t.db"), secret_key="test-secret")
+async def _download_opts(tmp_path, *, conn_ech, ech_doh_url=None):
+    kw = {"database_path": str(tmp_path / "t.db"), "secret_key": "test-secret"}
+    if ech_doh_url is not None:
+        kw["ech_doh_url"] = ech_doh_url
+    settings = Settings(**kw)
     app = PosternApp(settings)
     async with db.get_connection(settings.database_path) as database:
         await db.migrate(database)
         app.state.db = database
         user = User(name="A", email="a@example.com")
         await db.create_user(database, user)
-        conn = Connection(user_id=user.id, path_token="abcdef123456789012345678", label="L", password="k")
+        conn = Connection(user_id=user.id, path_token="abcdef123456789012345678", label="L", password="k", ech=conn_ech)
         await db.create_connection(database, conn)
         await db.create_session(database, Session(token="tok", user_id=user.id, expires_at=_expires_str()))
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as c:
             c.cookies.set("session", "tok")
             resp = await c.get(f"/connection/{conn.id}/config")
-    assert resp.status_code == 200
-    opts = resp.json()["servers"][0]["plugin_opts"]
-    assert opts == f"tls;fast-open;path=/t/{conn.path_token};host={settings.domain}"
+    # On 200 the second slot is the plugin_opts string; on error it's the response body.
+    body = resp.json()["servers"][0]["plugin_opts"] if resp.status_code == 200 else resp.text
+    return resp.status_code, body, settings
 
 
-async def test_download_config_ech_enabled(tmp_path):
-    settings = Settings(database_path=str(tmp_path / "t.db"), secret_key="test-secret", ech_enabled=True)
-    app = PosternApp(settings)
-    async with db.get_connection(settings.database_path) as database:
-        await db.migrate(database)
-        app.state.db = database
-        user = User(name="A", email="a@example.com")
-        await db.create_user(database, user)
-        conn = Connection(user_id=user.id, path_token="abcdef123456789012345678", label="L", password="k")
-        await db.create_connection(database, conn)
-        await db.create_session(database, Session(token="tok", user_id=user.id, expires_at=_expires_str()))
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            c.cookies.set("session", "tok")
-            resp = await c.get(f"/connection/{conn.id}/config")
-    assert resp.status_code == 200
-    opts = resp.json()["servers"][0]["plugin_opts"]
-    expected = (
-        f"tls;fast-open;path=/t/{conn.path_token};host={settings.domain}"
-        f";ech=always;ech-doh={settings.ech_doh_url}"
-    )
-    assert opts == expected
+async def test_download_config_ech_never(tmp_path):
+    status, opts, s = await _download_opts(tmp_path, conn_ech="never")
+    assert status == 200
+    assert opts == f"tls;fast-open;path=/t/abcdef123456789012345678;host={s.domain}"
+
+
+@pytest.mark.parametrize("mode", ["auto", "always"])
+async def test_download_config_ech_auto_always(tmp_path, mode):
+    status, opts, s = await _download_opts(tmp_path, conn_ech=mode)
+    assert status == 200
+    assert opts == f"tls;fast-open;path=/t/abcdef123456789012345678;host={s.domain};ech={mode};ech-doh={s.ech_doh_url}"
+
+
+async def test_download_config_always_blank_doh_is_clean_error(tmp_path):
+    status, body, _s = await _download_opts(tmp_path, conn_ech="always", ech_doh_url="")
+    assert status == 503
+    assert "ECH_DOH_URL" in body

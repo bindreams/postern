@@ -25,6 +25,14 @@ class PluginChoice(str, Enum):
     galoshes = "galoshes"
 
 
+class EchChoice(str, Enum):
+    """Per-connection ECH mode. .value is persisted to connections.ech."""
+
+    never = "never"
+    auto = "auto"
+    always = "always"
+
+
 app = typer.Typer(name="postern")
 user_app = typer.Typer(name="user", help="Manage users")
 connection_app = typer.Typer(name="connection", help="Manage connections")
@@ -140,6 +148,11 @@ def connection_add(
         "--plugin",
         help="SIP003 plugin: 'v2ray-plugin' (default) or 'galoshes' (adds UDP via yamux).",
     ),
+    ech: EchChoice = typer.Option(
+        EchChoice.auto,
+        "--ech",
+        help="ECH mode: auto (default, opportunistic) / always (fail-closed) / never (off).",
+    ),
 ) -> None:
     """Create a new connection for a user."""
     settings = _settings()
@@ -150,16 +163,35 @@ def connection_add(
             user = await db.get_user_by_email(database, user_email)
             if user is None:
                 return None
-
-            path_token = secrets.token_hex(12)
-            password = generate_password()
-
+            # Front self-check runs only AFTER the user is confirmed, so a bad email
+            # doesn't cause a wasted DoH round-trip or a misleading "not serving ECH" error.
+            if ech is EchChoice.always:
+                if not settings.ech_doh_url:
+                    typer.echo("--ech always requires ECH_DOH_URL to be set", err=True)
+                    raise typer.Exit(1)
+                from postern.ech import check_apex_ech
+                status = check_apex_ech(settings.domain, settings.ech_doh_url)
+                if status == "absent":
+                    typer.echo(
+                        f"refusing --ech always: {settings.domain} is not serving ECH (apex HTTPS record has no "
+                        "ech=). A fail-closed connection would never connect. Use --ech auto, or enable ECH at "
+                        "your front first.",
+                        err=True,
+                    )
+                    raise typer.Exit(1)
+                if status == "inconclusive":
+                    typer.echo(
+                        f"warning: could not confirm {settings.domain} serves ECH over DoH; creating anyway. "
+                        "Verify with `postern ech verify`.",
+                        err=True,
+                    )
             conn = Connection(
                 user_id=user.id,
-                path_token=path_token,
+                path_token=secrets.token_hex(12),
+                password=generate_password(),
                 label=label,
-                password=password,
                 plugin=plugin.value,
+                ech=ech.value,
             )
             await db.create_connection(database, conn)
             return conn
@@ -168,7 +200,7 @@ def connection_add(
     if conn is None:
         typer.echo(f"User not found: {user_email}")
         raise typer.Exit(1)
-    typer.echo(f"Created connection {conn.id} ({conn.plugin})")
+    typer.echo(f"Created connection {conn.id} ({conn.plugin}, ech={conn.ech})")
     _trigger_reconcile(settings)
 
 
@@ -195,7 +227,7 @@ def connection_list(user_email: str | None = None) -> None:
         return
     for c in connections:
         status = "enabled" if c.enabled else "DISABLED"
-        typer.echo(f"  {c.id}  {c.label}  [{c.plugin}]  {status}")
+        typer.echo(f"  {c.id}  {c.label}  [{c.plugin}]  [ech:{c.ech}]  {status}")
 
 
 @connection_app.command("disable")
@@ -626,7 +658,6 @@ def ech_show() -> None:
     from postern_provisioner import ech as ech_state
     settings = _settings()
     typer.echo(f"domain:                  {settings.domain}")
-    typer.echo(f"ech_enabled:             {settings.ech_enabled}")
     typer.echo(f"ech_doh_url:             {settings.ech_doh_url}")
     typer.echo(f"edge_profile:            {settings.edge_profile}")
     typer.echo(f"dns_provider:            {settings.dns_provider}")
@@ -648,9 +679,6 @@ def ech_verify() -> None:
     DoH unreachable)."""
     from postern.ech import check_apex_ech
     settings = _settings()
-    if not settings.ech_enabled:
-        typer.echo("ECH_ENABLED is not set in this deployment", err=True)
-        raise typer.Exit(1)
     status = check_apex_ech(settings.domain, settings.ech_doh_url)
     if status == "present":
         typer.echo(f"ech OK: {settings.domain} HTTPS record serves ech=")

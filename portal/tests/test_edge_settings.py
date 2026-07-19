@@ -141,8 +141,8 @@ class TestEdgeFromEnv:
 
 
 # zone-ECH management flag =============================================================================================
-def test_manage_zone_ech_defaults_true():
-    assert _settings().edge_cf_manage_zone_ech is True
+def test_manage_zone_ech_defaults_false():
+    assert _settings().edge_cf_manage_zone_ech is False
 
 
 def test_manage_zone_ech_ok_under_cloudflare():

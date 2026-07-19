@@ -147,43 +147,56 @@ DOMAIN=postern.example.com
 
 ECH (Encrypted Client Hello) hides the SNI from the on-path network. It is a
 **client-side, front-side** feature — Postern does no ECH itself and publishes no
-ECH config; your front (Cloudflare, or any ECH-capable proxy) does. Postern's part
-is to rewrite the **downloaded** client config's `plugin_opts` to
-`…;ech=always;ech-doh=<url>` so the tunnel plugin performs ECH.
+ECH config; your front (Cloudflare, or any ECH-capable proxy) does.
 
-Two settings, off by default and **not** coupled to `EDGE_PROFILE`:
+ECH mode is set **per connection**, at creation time — there is no server-wide
+toggle:
 
-- `ECH_ENABLED=true` — append the ECH opts to downloaded client configs.
-- `ECH_DOH_URL` — the DoH resolver the client uses to fetch the ECH config
-  (default `https://cloudflare-dns.com/dns-query`; any public DoH resolver works,
-  independent of your front).
+```bash
+docker compose exec portal postern connection add alice@example.com "phone" --ech always
+```
 
-`ech=always` is **fail-closed**: if the front does not actually serve an ECH config
-for your domain, downloaded clients **refuse to connect**. Enable only once the
-front is confirmed serving ECH (for Cloudflare: orange-clouded + zone ECH enabled).
-Requires plugin builds with ECH support (ex-ray ≥ v0.2.0, galoshes ≥ v0.3.0).
+- `never` — never attempt ECH. Escape hatch for networks that drop ECH ClientHellos.
+- `auto` — (default) opportunistic: use ECH if the front serves it, else fall
+  back to plaintext. Fail-open.
+- `always` — fail-closed: the downloaded client refuses to connect if ECH is
+  unavailable. `connection add --ech always` self-checks the front over DoH
+  before creating the connection and refuses if it confirms the front is not
+  serving ECH.
+
+`auto` and `always` both need `ECH_DOH_URL` set (default
+`https://cloudflare-dns.com/dns-query`; any public DoH resolver works,
+independent of your front) — the DoH resolver the plugin uses to fetch the ECH
+config at connect time. Postern's part is to rewrite the **downloaded** client
+config's `plugin_opts` with `;ech=<mode>;ech-doh=<url>` so the tunnel plugin
+performs ECH. Requires plugin builds with ECH support (ex-ray ≥ v0.2.0,
+galoshes ≥ v0.3.0). Use `always` only once the front is confirmed serving ECH
+(for Cloudflare: orange-clouded + zone ECH enabled) — otherwise those clients
+never connect.
 
 ### Batteries-included ECH front (Cloudflare)
 
-When `ECH_ENABLED=true`, `EDGE_PROFILE=cloudflare`, and `DNS_PROVIDER=cloudflare`,
-the provisioner automatically enables Cloudflare's **zone-level ECH setting** so
-the front actually serves ECH — otherwise `ech=always` clients fail-closed and
-refuse to connect. This closes the gap between "Postern stamps ECH into configs"
-and "the front serves it."
+Set `EDGE_CF_MANAGE_ZONE_ECH=true` (opt-in, off by default) alongside
+`EDGE_PROFILE=cloudflare` and `DNS_PROVIDER=cloudflare`, and the provisioner
+automatically enables Cloudflare's **zone-level ECH setting** so the front
+actually serves ECH — otherwise `always` connections fail-closed and `auto`
+connections silently fall back to plaintext. This closes the gap between
+"Postern's clients request ECH" and "the front serves it."
 
-- **Opt out:** set `EDGE_CF_MANAGE_ZONE_ECH=false`. The setting is **zone-wide**
-  (it affects every proxied hostname in the Cloudflare zone), so on a shared
-  root-domain zone you may prefer to manage it yourself.
-- **Never reverted:** disabling ECH later does **not** turn the zone setting back
+- **Off by default:** the setting is **zone-wide** (it affects every proxied
+  hostname in the Cloudflare zone) and requires a `Zone Settings:Edit` CF
+  token, so on a shared root-domain zone — or with a narrower-scoped token —
+  you may prefer to manage it yourself.
+- **Never reverted:** disabling it later does **not** turn the zone setting back
   off — reverting a zone-wide toggle could break unrelated services. Turn it off
   in the Cloudflare dashboard if you need to.
 - **If enablement fails** (wrong Cloudflare plan tier, API token missing
   `Zone Settings:Edit`, transient CF outage), the forcing function is a
   **signal**, in every deployment mode: the provisioner container goes
-  **unhealthy**, logs the verbatim Cloudflare error every tick, and the ECH
-  clients you handed out cannot connect — three converging cues that lead to the
-  fix. Run `postern ech verify` / `postern ech show` to see the state and the last
-  error. Under cert auto-renewal (`compose.cert.yaml`) that unhealthy provisioner
+  **unhealthy**, logs the verbatim Cloudflare error every tick, and the
+  `always` clients you handed out cannot connect — three converging cues that
+  lead to the fix. Run `postern ech verify` / `postern ech show` to see the
+  state and the last error. Under cert auto-renewal (`compose.cert.yaml`) that unhealthy provisioner
   *additionally* blocks nginx/mta startup (they `depends_on` it); under the default
   BYO-cert mode there is no such hard block — the signal is the mechanism.
 - **Verify:** `postern ech verify` queries the apex HTTPS record over DoH and

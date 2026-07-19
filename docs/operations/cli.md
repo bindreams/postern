@@ -42,6 +42,17 @@ Each connection is one tunnel: a 24-hex-character path token, a random password,
 docker compose exec portal postern connection add alice@example.com "phone" --plugin galoshes
 ```
 
+`--ech` selects the ECH mode: `never`, `auto` (default, opportunistic — uses ECH
+when the front serves it, else falls back to plaintext), or `always`
+(fail-closed — refuses to connect if ECH is unavailable). `--ech always`
+self-checks the front over DoH before creating the connection: refuses if the
+front is confirmed not serving ECH, warns and proceeds if inconclusive. See
+[Enabling ECH](../deployment/edge.md#enabling-ech).
+
+```bash
+docker compose exec portal postern connection add alice@example.com "phone" --ech always
+```
+
 ### postern connection list
 
 Lists connections (id, label, plugin, enabled/disabled). `--user-email EMAIL` filters by user and exits 1 if the email is unknown.
@@ -128,11 +139,11 @@ Check whether the front actually serves Encrypted Client Hello — see [Enabling
 
 ### postern ech verify
 
-Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present. Requires `ECH_ENABLED=true` (errors otherwise). Exits 0 when present, 1 when absent, 2 when inconclusive.
+Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present — always runs, independent of any connection's ECH mode. Exits 0 when present, 1 when absent, 2 when inconclusive.
 
 ### postern ech show
 
-Prints the ECH settings (`domain`, `ech_enabled`, `ech_doh_url`, `edge_profile`, `dns_provider`, `edge_cf_manage_zone_ech`), the provisioner-written zone-ECH state (last-enabled time, consecutive failures, and the verbatim last Cloudflare error), and the live DoH front-serving status.
+Prints the ECH settings (`domain`, `ech_doh_url`, `edge_profile`, `dns_provider`, `edge_cf_manage_zone_ech`), the provisioner-written zone-ECH state (last-enabled time, consecutive failures, and the verbatim last Cloudflare error), and the live DoH front-serving status.
 
 ## Edge
 

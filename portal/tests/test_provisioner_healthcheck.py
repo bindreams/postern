@@ -138,7 +138,7 @@ def _managed_ech_env(monkeypatch):
     monkeypatch.setenv("CERT_RENEWAL", "false")
     monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
     monkeypatch.setenv("COMPOSE_PROFILES", "with-edge")  # no with-mta
-    monkeypatch.setenv("ECH_ENABLED", "true")
+    monkeypatch.setenv("EDGE_CF_MANAGE_ZONE_ECH", "true")
 
 
 def test_unhealthy_when_ech_managed_but_not_enabled(monkeypatch, _patch_paths):
@@ -149,7 +149,7 @@ def test_unhealthy_when_ech_managed_but_not_enabled(monkeypatch, _patch_paths):
     assert healthcheck.main() == 1
 
 
-def test_healthy_when_ech_enabled_ok(monkeypatch, _patch_paths):
+def test_healthy_when_ech_zone_ok(monkeypatch, _patch_paths):
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     (keydir / "ech_zone_state.json").write_text(json.dumps({"last_enabled_ok_iso": "2026-07-14T00:00:00+00:00"}))
@@ -183,9 +183,25 @@ def test_ech_half_absent_when_manage_flag_off(monkeypatch, _patch_paths):
     assert healthcheck.main() == 0
 
 
+def test_ech_half_absent_when_manage_flag_unset(monkeypatch, _patch_paths):
+    """EDGE_CF_MANAGE_ZONE_ECH unset -> False (MANAGE_ZONE_ECH_DEFAULT): the healthcheck
+    must NOT gate on zone-ECH state. Pins healthcheck.py's env default to the opt-in."""
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _seed_ssl_set_ok(keydir)  # SSL half is default-on under a cloudflare edge; seed it so only ECH is under test
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-edge")
+    monkeypatch.delenv("EDGE_CF_MANAGE_ZONE_ECH", raising=False)
+    # No ech_zone_state.json -- would make main() return 1 IF the ECH half were active.
+    assert healthcheck.main() == 0
+
+
 # SSL/TLS-mode half ====================================================================================================
 def _managed_ssl_env(monkeypatch):
-    # cloudflare edge WITHOUT ECH_ENABLED -> SSL half active, ECH half inactive (isolated).
+    # cloudflare edge with SSL management on (default) -> SSL half active. ECH half stays
+    # inactive: EDGE_CF_MANAGE_ZONE_ECH defaults off (opt-in) and is left unset here.
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "false")
     monkeypatch.setenv("EDGE_PROFILE", "cloudflare")

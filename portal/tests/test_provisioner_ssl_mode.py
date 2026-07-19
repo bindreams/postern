@@ -98,7 +98,9 @@ def test_reconcile_counts_failures_and_preserves_prior_ok():
 
 def test_reconcile_accumulates_consecutive_failures():
     prior = ssl_mode.SslModeState(consecutive_failures=2)
-    new = ssl_mode.reconcile_ssl_mode(prior, settings=_settings(), runner=FakeRunner(fail=True, stderr="boom"), now=_NOW)
+    new = ssl_mode.reconcile_ssl_mode(
+        prior, settings=_settings(), runner=FakeRunner(fail=True, stderr="boom"), now=_NOW
+    )
     assert new.consecutive_failures == 3
 
 
@@ -110,12 +112,15 @@ def test_reconcile_recovery_restamps_set_ok():
 
 
 def test_reconcile_records_launch_failure_in_state():
+
     class MissingBinaryRunner:
 
         def set(self, domain, target):
             raise FileNotFoundError(2, "No such file or directory", "/usr/local/bin/postern-dns")
 
-    new = ssl_mode.reconcile_ssl_mode(ssl_mode.SslModeState(), settings=_settings(), runner=MissingBinaryRunner(), now=_NOW)
+    new = ssl_mode.reconcile_ssl_mode(
+        ssl_mode.SslModeState(), settings=_settings(), runner=MissingBinaryRunner(), now=_NOW
+    )
     assert new.consecutive_failures == 1
     assert new.last_set_ok_iso is None
     assert "postern-dns" in new.last_error
@@ -146,8 +151,10 @@ def test_reconcile_and_persist_distinct_log_on_write_failure(tmp_path: Path, mon
     monkeypatch.setattr(ssl_mode, "write_state", boom)
     with pytest.raises(OSError):
         ssl_mode.reconcile_and_persist(
-            settings=_settings(), runner=FakeRunner(fail=True, stderr="403 token lacks Zone Settings:Edit"),
-            state_dir=tmp_path, now=_NOW,
+            settings=_settings(),
+            runner=FakeRunner(fail=True, stderr="403 token lacks Zone Settings:Edit"),
+            state_dir=tmp_path,
+            now=_NOW,
         )
     assert "persisting ssl-mode state failed" in caplog.text
     # Must not claim success on the compound-failure path. Level-based (no INFO record

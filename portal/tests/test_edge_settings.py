@@ -191,7 +191,9 @@ def test_ssl_mode_explicit_default_value_under_none_still_rejected():
         _settings(edge_profile="none", edge_cf_manage_ssl_mode=True)  # True is the default
     with pytest.raises(ValidationError):
         _settings(
-            edge_profile="generic", edge_trusted_cidrs="10.0.0.0/8", edge_realip_header="X-Real-IP",
+            edge_profile="generic",
+            edge_trusted_cidrs="10.0.0.0/8",
+            edge_realip_header="X-Real-IP",
             edge_cf_ssl_mode="strict",  # "strict" is the default
         )
 
@@ -224,9 +226,7 @@ def test_ssl_mode_bad_value_rejected_by_both_when_managing(variant):
     # With management ON (default), a bad value is rejected by BOTH sides.
     from postern_provisioner.ssl_mode import parse_ssl_target
     with pytest.raises(ValidationError):
-        _settings(
-            edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="1.2.3.4", edge_cf_ssl_mode=variant
-        )
+        _settings(edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="1.2.3.4", edge_cf_ssl_mode=variant)
     with pytest.raises(ValueError):
         parse_ssl_target(variant)
 
@@ -238,12 +238,18 @@ def test_ssl_mode_bad_value_tolerated_when_management_off(variant):
     # is False), so a stray value can't split the stack.
     from postern_provisioner.enablement import compute_enablement
     s = _settings(
-        edge_profile="cloudflare", dns_provider="cloudflare", public_ipv4="1.2.3.4",
-        edge_cf_manage_ssl_mode=False, edge_cf_ssl_mode=variant,
+        edge_profile="cloudflare",
+        dns_provider="cloudflare",
+        public_ipv4="1.2.3.4",
+        edge_cf_manage_ssl_mode=False,
+        edge_cf_ssl_mode=variant,
     )
     assert s.edge_cf_ssl_mode == variant  # portal tolerates the inert value
     assert not compute_enablement(
-        dns_provider="cloudflare", cert_renewal=False, edge_profile="cloudflare", mta_deployed=False,
+        dns_provider="cloudflare",
+        cert_renewal=False,
+        edge_profile="cloudflare",
+        mta_deployed=False,
         manage_ssl_mode=False,
     ).ssl_mode_enabled  # provisioner won't read/validate it
 

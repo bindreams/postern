@@ -224,8 +224,10 @@ class Settings(BaseSettings):
         # same EDGE_CF_SSL_MODE env with no shared validator -- accept/reject the identical
         # set. A stray value under manage=false is inert and must not split the stack (portal
         # crashing while the provisioner boots). Exact-match, mirroring ssl_mode.parse_ssl_target.
-        if (self.edge_profile == "cloudflare" and self.edge_cf_manage_ssl_mode
-                and self.edge_cf_ssl_mode not in ("full", "strict")):
+        if (
+            self.edge_profile == "cloudflare" and self.edge_cf_manage_ssl_mode
+            and self.edge_cf_ssl_mode not in ("full", "strict")
+        ):
             raise ValueError(f"EDGE_CF_SSL_MODE must be 'full' or 'strict' (got {self.edge_cf_ssl_mode!r})")
         return self
 

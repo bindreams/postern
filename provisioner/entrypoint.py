@@ -570,9 +570,8 @@ def _sleep_with_triggers() -> None:
         slept += TRIGGER_POLL_SECONDS
 
 
-def _build_ticks(
-    domain: str, selector_prefix: str, ssl_target: str, counters: dict[str, int], enablement: Enablement
-) -> dict[str, Callable[[], None]]:
+def _build_ticks(domain: str, selector_prefix: str, ssl_target: str, counters: dict[str, int],
+                 enablement: Enablement) -> dict[str, Callable[[], None]]:
     """Assemble the per-subsystem tick callables. Kept separate from run_combined_loop so
     the wiring (esp. the ssl tick + its target) is unit-testable without the infinite loop."""
     return {
@@ -624,8 +623,13 @@ def main() -> NoReturn:
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
     logger.info(
         "enablement: dkim=%s cert=%s dns=%s mta_records=%s edge=%s ssl_mode=%s zone_ech=%s",
-        enablement.dkim_enabled, enablement.cert_enabled, enablement.dns_enabled, enablement.mta_enabled,
-        enablement.edge_enabled, enablement.ssl_mode_enabled, enablement.ech_zone_enabled,
+        enablement.dkim_enabled,
+        enablement.cert_enabled,
+        enablement.dns_enabled,
+        enablement.mta_enabled,
+        enablement.edge_enabled,
+        enablement.ssl_mode_enabled,
+        enablement.ech_zone_enabled,
     )
 
     if not (enablement.dkim_enabled or enablement.cert_enabled or enablement.edge_enabled):

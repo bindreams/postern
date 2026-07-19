@@ -51,7 +51,8 @@ def test_ssl_status_surfaces_target_vs_actual_drift(monkeypatch):
     _env(monkeypatch, EDGE_PROFILE="cloudflare", DNS_PROVIDER="cloudflare", PUBLIC_IPV4="203.0.113.10")
     from postern_provisioner import ssl_mode as ssl_state
     monkeypatch.setattr(
-        ssl_state, "read_state",
+        ssl_state,
+        "read_state",
         lambda *a, **k: ssl_state.SslModeState(last_set_ok_iso="2026-07-18T00:00:00+00:00", last_observed_mode="full"),
     )
     result = runner.invoke(app, ["edge", "ssl-status"])

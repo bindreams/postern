@@ -25,9 +25,7 @@ def entrypoint(monkeypatch):
     monkeypatch.setitem(sys.modules, "postern_mta", _mta)
     monkeypatch.setitem(sys.modules, "postern_mta.dkim", postern.mta.dkim)
     monkeypatch.setitem(sys.modules, "postern_mta.rotation", postern.mta.rotation)
-    spec = importlib.util.spec_from_file_location(
-        "provisioner_entrypoint", REPO_ROOT / "provisioner" / "entrypoint.py"
-    )
+    spec = importlib.util.spec_from_file_location("provisioner_entrypoint", REPO_ROOT / "provisioner" / "entrypoint.py")
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -81,7 +79,10 @@ def test_ssl_target_from_env_reads_the_right_var_and_validates(entrypoint, monke
 def _en(entrypoint, *, manage_ssl_mode):
     from postern_provisioner.enablement import compute_enablement
     return compute_enablement(
-        dns_provider="cloudflare", cert_renewal=False, edge_profile="cloudflare", mta_deployed=False,
+        dns_provider="cloudflare",
+        cert_renewal=False,
+        edge_profile="cloudflare",
+        mta_deployed=False,
         manage_ssl_mode=manage_ssl_mode,
     )
 

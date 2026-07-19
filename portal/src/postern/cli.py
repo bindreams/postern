@@ -671,6 +671,30 @@ def ech_verify() -> None:
     raise typer.Exit(2)
 
 
+edge_app = typer.Typer(name="edge", help="Inspect the Cloudflare edge (zone SSL/TLS mode)")
+app.add_typer(edge_app)
+
+
+@edge_app.command("ssl-status")
+def edge_ssl_status() -> None:
+    """Show the Cloudflare zone SSL/TLS-mode settings and the provisioner's
+    convergence state (incl. the last Cloudflare error)."""
+    from postern_provisioner import ssl_mode as ssl_state
+    settings = _settings()
+    typer.echo(f"domain:                   {settings.domain}")
+    typer.echo(f"edge_profile:             {settings.edge_profile}")
+    typer.echo(f"dns_provider:             {settings.dns_provider}")
+    typer.echo(f"edge_cf_manage_ssl_mode:  {settings.edge_cf_manage_ssl_mode}")
+    typer.echo(f"edge_cf_ssl_mode:         {settings.edge_cf_ssl_mode}")  # configured target
+    # Provisioner-written state (shared postern-mta-data volume); see
+    # SslModeState.last_observed_mode for the raise-only target-vs-actual semantics.
+    state = ssl_state.read_state()
+    typer.echo(f"zone_ssl_set_at:          {state.last_set_ok_iso or '(never)'}")
+    typer.echo(f"zone_ssl_current_mode:    {state.last_observed_mode or '(unknown)'}")
+    typer.echo(f"zone_ssl_failures:        {state.consecutive_failures}")
+    typer.echo(f"zone_ssl_last_error:      {state.last_error or '(none)'}")
+
+
 # Doctor ===============================================================================================================
 def _tlsa_cert_hex(domain: str, certdir: Path = Path("/etc/letsencrypt")) -> str | None:
     """sha256(SubjectPublicKeyInfo) hex of the leaf cert for `domain`, or None

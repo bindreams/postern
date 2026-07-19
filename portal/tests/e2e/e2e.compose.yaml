@@ -38,6 +38,11 @@ services:
       SMTP_PASSWORD: ""
       SMTP_FROM: noreply@postern.test
       DOMAIN: postern.test
+      # The e2e front serves no ECH, so keep ECH off here: an empty ECH_DOH_URL
+      # makes default-`auto` connections emit no ech opt, so downloaded configs
+      # stay ECH-free (the tunnel test pins that) and the client does no DoH
+      # lookup against the isolated CI network.
+      ECH_DOH_URL: ""
       SHADOWSOCKS_NETWORK: e2e-shadowsocks
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:

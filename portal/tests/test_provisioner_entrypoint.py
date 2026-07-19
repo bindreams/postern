@@ -28,6 +28,7 @@ def entrypoint(monkeypatch):
     spec = importlib.util.spec_from_file_location(
         "provisioner_entrypoint", REPO_ROOT / "provisioner" / "entrypoint.py"
     )
+    assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

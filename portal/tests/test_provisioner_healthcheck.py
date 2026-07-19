@@ -19,6 +19,7 @@ def _patch_paths(monkeypatch, tmp_path: Path):
     monkeypatch.setattr(healthcheck.dns_records_state, "DEFAULT_CERTDIR", certdir)
     monkeypatch.setattr(healthcheck.mta_records_state, "DEFAULT_KEYDIR", keydir)
     monkeypatch.setattr(healthcheck.ech_state, "DEFAULT_STATE_DIR", keydir)
+    monkeypatch.setattr(healthcheck.ssl_mode_state, "DEFAULT_STATE_DIR", keydir)
     # Clean baseline so a test that relies on "MTA not deployed" isn't polluted by
     # an ambient COMPOSE_PROFILES/EDGE_PROFILE. Tests opt in explicitly.
     monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
@@ -32,6 +33,12 @@ def _seed_mta_records_reconciled(keydir: Path) -> None:
     (keydir / "mta_records_state.json").write_text(json.dumps({
         "last_reconciled_iso": "2026-05-11T00:00:00+00:00",
     }))
+
+
+def _seed_ssl_set_ok(keydir: Path) -> None:
+    """Mark the ssl-mode as set so the SSL healthcheck half passes; needed by any
+    cloudflare-edge test that expects health (the half is active under EDGE_PROFILE=cloudflare)."""
+    (keydir / "ssl_mode_state.json").write_text(json.dumps({"last_set_ok_iso": "2026-07-18T00:00:00+00:00"}))
 
 
 def test_healthy_when_both_disabled(monkeypatch):
@@ -79,6 +86,7 @@ def test_healthy_when_provider_set_but_mta_not_deployed(monkeypatch, _patch_path
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     # No mta_records_state.json on purpose -- nothing publishes it without with-mta.
+    _seed_ssl_set_ok(keydir)
     monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
     monkeypatch.setenv("CERT_RENEWAL", "false")
     monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
@@ -145,6 +153,7 @@ def test_healthy_when_ech_enabled_ok(monkeypatch, _patch_paths):
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
     (keydir / "ech_zone_state.json").write_text(json.dumps({"last_enabled_ok_iso": "2026-07-14T00:00:00+00:00"}))
+    _seed_ssl_set_ok(keydir)
     _managed_ech_env(monkeypatch)
     assert healthcheck.main() == 0
 
@@ -168,6 +177,53 @@ def test_unhealthy_when_ech_enablement_regresses_after_first_success(monkeypatch
 def test_ech_half_absent_when_manage_flag_off(monkeypatch, _patch_paths):
     keydir, _ = _patch_paths
     (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _seed_ssl_set_ok(keydir)
     _managed_ech_env(monkeypatch)
     monkeypatch.setenv("EDGE_CF_MANAGE_ZONE_ECH", "false")  # ech_zone_enabled False -> half skipped
+    assert healthcheck.main() == 0
+
+
+# SSL/TLS-mode half ====================================================================================================
+def _managed_ssl_env(monkeypatch):
+    # cloudflare edge WITHOUT ECH_ENABLED -> SSL half active, ECH half inactive (isolated).
+    monkeypatch.setenv("DNS_PROVIDER", "cloudflare")
+    monkeypatch.setenv("CERT_RENEWAL", "false")
+    monkeypatch.setenv("EDGE_PROFILE", "cloudflare")
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-edge")
+
+
+def test_unhealthy_when_ssl_managed_but_not_set(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _managed_ssl_env(monkeypatch)
+    assert healthcheck.main() == 1
+
+
+def test_healthy_when_ssl_set_ok(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _seed_ssl_set_ok(keydir)
+    _managed_ssl_env(monkeypatch)
+    assert healthcheck.main() == 0
+
+
+def test_unhealthy_when_ssl_regresses_after_first_success(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    (keydir / "ssl_mode_state.json").write_text(
+        json.dumps({
+            "last_set_ok_iso": "2026-07-18T00:00:00+00:00",
+            "consecutive_failures": 2,
+            "last_error": "SSL/TLS mode not available on this plan",
+        })
+    )
+    _managed_ssl_env(monkeypatch)
+    assert healthcheck.main() == 1
+
+
+def test_ssl_half_absent_when_manage_flag_off(monkeypatch, _patch_paths):
+    keydir, _ = _patch_paths
+    (keydir / "state.json").write_text(json.dumps({"state": "STABLE"}))
+    _managed_ssl_env(monkeypatch)
+    monkeypatch.setenv("EDGE_CF_MANAGE_SSL_MODE", "false")
     assert healthcheck.main() == 0

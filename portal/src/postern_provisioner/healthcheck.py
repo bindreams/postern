@@ -22,6 +22,11 @@ Four halves, all green required:
   non-null) AND is not currently failing (consecutive_failures == 0), so the
   signal tracks current reality rather than "ever worked once".
 
+- SSL/TLS mode (only when Postern manages the Cloudflare zone SSL/TLS mode): the
+  zone `ssl-set` has succeeded at least once (ssl_mode_state.json's last_set_ok_iso
+  is non-null) AND is not currently failing (consecutive_failures == 0), so the
+  signal tracks current reality rather than "ever worked once".
+
 Used by docker-compose's `depends_on: condition: service_healthy` so nginx
 and mta block startup until the provisioner has done its first-issuance work.
 """
@@ -37,6 +42,7 @@ from postern.cert import state as cert_state
 from postern.mta import rotation
 from postern_provisioner import ech as ech_state
 from postern_provisioner import mta_records as mta_records_state
+from postern_provisioner import ssl_mode as ssl_mode_state
 from postern_provisioner.enablement import compute_enablement, mta_deployed_from_profiles
 
 
@@ -59,6 +65,7 @@ def main() -> int:
         mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
         ech_enabled=_bool_env("ECH_ENABLED", False),
         manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", True),
+        manage_ssl_mode=_bool_env("EDGE_CF_MANAGE_SSL_MODE", True),
     )
 
     # DKIM half --------------------------------------------------------------------------------------------------------
@@ -121,6 +128,27 @@ def main() -> int:
             print(
                 f"ech: Cloudflare zone ECH enablement is currently failing "
                 f"({ech.consecutive_failures} consecutive); last_error: {ech.last_error or '(none)'}",
+                file=sys.stderr,
+            )
+            return 1
+
+    # SSL/TLS-mode half (only when Postern manages the CF zone SSL/TLS mode) ---------------------------------------------
+    # Red until the first successful `ssl-set`, and red again on a later failure streak
+    # so the signal tracks current reality (same rule as the ECH half).
+    if enablement.ssl_mode_enabled:
+        ssl = ssl_mode_state.read_state()
+        if ssl.last_set_ok_iso is None:
+            print(
+                "ssl: Cloudflare zone SSL/TLS mode not yet set (last_set_ok_iso is null); "
+                "ensure the CF API token has Zone Settings:Edit (see docs/deployment/edge.md); "
+                f"last_error: {ssl.last_error or '(none)'}",
+                file=sys.stderr,
+            )
+            return 1
+        if ssl.consecutive_failures > 0:
+            print(
+                f"ssl: Cloudflare zone SSL/TLS mode setting is currently failing "
+                f"({ssl.consecutive_failures} consecutive); last_error: {ssl.last_error or '(none)'}",
                 file=sys.stderr,
             )
             return 1

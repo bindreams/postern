@@ -50,6 +50,7 @@ from postern_provisioner import ech as ech_driver  # noqa: E402
 from postern_provisioner import edge_ranges  # noqa: E402
 from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
 from postern_provisioner.enablement import (  # noqa: E402
+    MANAGE_ZONE_ECH_DEFAULT,
     Enablement,
     compute_enablement,
     mta_deployed_from_profiles,
@@ -508,7 +509,7 @@ def _try_advance_edge(counters: dict[str, int]) -> None:
 # Zone-ECH reconciler (Cloudflare zone-level ECH setting) ==============================================================
 def _try_advance_ech(domain: str, counters: dict[str, int]) -> None:
     """Ensure the Cloudflare zone-ECH setting is ON so the front serves ech= for
-    ECH_ENABLED clients. Idempotent GET-then-PATCH via postern-dns; count+warn on
+    clients that request ECH (auto/always). Idempotent GET-then-PATCH via postern-dns; count+warn on
     failure (like dkim/cert/dns). All read/reconcile/write-skip logic lives in the
     tested `reconcile_and_persist`; this is only env-wiring + the counter. Caller
     gates on enablement.ech_zone_enabled."""
@@ -565,8 +566,7 @@ def main() -> NoReturn:
         # the Cloudflare edge profile also sets DNS_PROVIDER=cloudflare without
         # deploying the MTA.
         mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
-        ech_enabled=_bool_env("ECH_ENABLED", False),
-        manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", True),
+        manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", MANAGE_ZONE_ECH_DEFAULT),
     )
 
     # DKIM init is unconditional (matches the pre-cert-renewal behaviour).
@@ -575,6 +575,11 @@ def main() -> NoReturn:
     # postern-mta-data volume even in cert-only / edge-only deployments.
     state = ensure_initial_key(domain, selector_prefix)
     logger.info("rotation state on startup: %s, selectors=%s", state.state, state.active_selectors)
+    logger.info(
+        "zone-ECH management: %s",
+        "enabled" if enablement.ech_zone_enabled else
+        "disabled (EDGE_CF_MANAGE_ZONE_ECH is now opt-in; set it =true to re-enable)",
+    )
 
     if not (enablement.dkim_enabled or enablement.cert_enabled or enablement.edge_enabled):
         logger.info(

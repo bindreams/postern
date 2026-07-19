@@ -1,7 +1,7 @@
 """Reconciler + state for the Cloudflare zone-level ECH setting.
 
 Activated (via the enable-gate) only for a managed-ECH deployment:
-ECH_ENABLED + EDGE_PROFILE=cloudflare + DNS_PROVIDER=cloudflare + EDGE_CF_MANAGE_ZONE_ECH.
+EDGE_PROFILE=cloudflare + DNS_PROVIDER=cloudflare + EDGE_CF_MANAGE_ZONE_ECH.
 Sibling of [postern_provisioner.dns_records]: each tick shells `postern-dns ech-set
 <domain> on` (idempotent GET-then-PATCH inside the Go binary) and persists a small
 state file so the provisioner healthcheck can gate startup on "the PATCH succeeded

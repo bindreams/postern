@@ -330,3 +330,30 @@ func TestCloudflareZoneEchContract(t *testing.T) {
 	}
 	t.Logf("cfcontract OK: zone ECH GET/PATCH round-trips on<->off, idempotent re-set stable")
 }
+
+// TestCloudflareZoneSSLContract verifies -- against a LIVE zone -- the assumption the
+// hermetic tests cannot: that Cloudflare's zone-settings endpoint is named "ssl" and
+// returns one of the four modes sslModeRank knows. READ-ONLY: it performs NO write, so
+// it is safe on any zone (incl. the shared prod+test zone; zone-wide-setting MUTATION
+// tests stay manual). The raise-only logic is covered in cloudflare_ssl_test.go, and
+// the PATCH plumbing is the shared getZoneSetting/patchZoneSetting path already
+// live-exercised by the ECH contract test.
+func TestCloudflareZoneSSLContract(t *testing.T) {
+	token, zone := contractEnv(t)
+	ctx := context.Background()
+	client := newCFClient(token)
+
+	zoneID, err := client.zoneID(ctx, zone)
+	if err != nil {
+		t.Fatalf("cfcontract: resolve zone %q: %v", zone, err)
+	}
+	mode, err := client.getZoneSetting(ctx, zoneID, "ssl")
+	if err != nil {
+		t.Fatalf("cfcontract: read ssl mode: %v "+
+			"(token needs Zone Settings:Read and the plan must expose the ssl setting)", err)
+	}
+	if _, ok := sslModeRank(mode); !ok {
+		t.Fatalf("cfcontract: live CF returned an unknown ssl mode %q -- update sslModeRank", mode)
+	}
+	t.Logf("cfcontract OK: zone %q ssl=%q is a recognized mode (endpoint + enum verified, no mutation)", zone, mode)
+}

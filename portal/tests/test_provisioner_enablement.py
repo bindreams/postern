@@ -155,16 +155,16 @@ def _cf_edge(**kw):
     return en.compute_enablement(**base)
 
 
-def test_ech_zone_enabled_requires_all_four():
-    assert _cf_edge(ech_enabled=True, manage_zone_ech=True).ech_zone_enabled
+def test_ech_zone_enabled_requires_edge_provider_and_flag():
+    assert _cf_edge(manage_zone_ech=True).ech_zone_enabled
 
 
-def test_ech_zone_off_when_ech_disabled():
-    assert not _cf_edge(ech_enabled=False, manage_zone_ech=True).ech_zone_enabled
+def test_ech_zone_off_by_default():
+    assert not _cf_edge().ech_zone_enabled  # manage_zone_ech defaults False
 
 
 def test_ech_zone_off_when_manage_flag_off():
-    assert not _cf_edge(ech_enabled=True, manage_zone_ech=False).ech_zone_enabled
+    assert not _cf_edge(manage_zone_ech=False).ech_zone_enabled
 
 
 def test_ech_zone_off_under_generic_edge():
@@ -173,7 +173,6 @@ def test_ech_zone_off_under_generic_edge():
         cert_renewal=False,
         edge_profile="generic",
         mta_deployed=False,
-        ech_enabled=True,
         manage_zone_ech=True,
     )
     assert not e.ech_zone_enabled
@@ -185,7 +184,6 @@ def test_ech_zone_off_without_cloudflare_provider():
         cert_renewal=False,
         edge_profile="cloudflare",
         mta_deployed=False,
-        ech_enabled=True,
         manage_zone_ech=True,
     )
     assert not e.ech_zone_enabled
@@ -194,5 +192,13 @@ def test_ech_zone_off_without_cloudflare_provider():
 def test_ech_tick_dispatched_only_when_enabled():
     calls: list[str] = []
     ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ech")}
-    en.run_enabled_ticks(_cf_edge(ech_enabled=True, manage_zone_ech=True), ticks)
+    en.run_enabled_ticks(_cf_edge(manage_zone_ech=True), ticks)
     assert "ech" in calls
+
+
+def test_ech_tick_not_dispatched_when_disabled():
+    """The opt-in gate must actually prevent the zone-wide CF Settings:Edit call."""
+    calls: list[str] = []
+    ticks = {name: (lambda n=name: calls.append(n)) for name in (*_TICKS, "ech")}
+    en.run_enabled_ticks(_cf_edge(manage_zone_ech=False), ticks)
+    assert "ech" not in calls

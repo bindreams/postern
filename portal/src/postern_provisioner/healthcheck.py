@@ -17,10 +17,11 @@ Four halves, all green required:
   cert-only or edge-only deployment (both set DNS_PROVIDER but never run the
   mta_records tick, so last_reconciled_iso would stay null forever).
 
-- ECH (only when Postern manages the Cloudflare zone-ECH setting): the zone-ECH
-  PATCH has succeeded at least once (ech_zone_state.json's last_enabled_ok_iso is
-  non-null) AND is not currently failing (consecutive_failures == 0), so the
-  signal tracks current reality rather than "ever worked once".
+- ECH (only when Postern manages the Cloudflare zone-ECH setting
+  (`EDGE_CF_MANAGE_ZONE_ECH=true`)): the zone-ECH PATCH has succeeded at least
+  once (ech_zone_state.json's last_enabled_ok_iso is non-null) AND is not
+  currently failing (consecutive_failures == 0), so the signal tracks current
+  reality rather than "ever worked once".
 
 Used by docker-compose's `depends_on: condition: service_healthy` so nginx
 and mta block startup until the provisioner has done its first-issuance work.
@@ -37,7 +38,7 @@ from postern.cert import state as cert_state
 from postern.mta import rotation
 from postern_provisioner import ech as ech_state
 from postern_provisioner import mta_records as mta_records_state
-from postern_provisioner.enablement import compute_enablement, mta_deployed_from_profiles
+from postern_provisioner.enablement import MANAGE_ZONE_ECH_DEFAULT, compute_enablement, mta_deployed_from_profiles
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -57,8 +58,7 @@ def main() -> int:
         cert_renewal=cert_renewal,
         edge_profile=os.environ.get("EDGE_PROFILE", "none"),
         mta_deployed=mta_deployed_from_profiles(os.environ.get("COMPOSE_PROFILES", "")),
-        ech_enabled=_bool_env("ECH_ENABLED", False),
-        manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", True),
+        manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", MANAGE_ZONE_ECH_DEFAULT),
     )
 
     # DKIM half --------------------------------------------------------------------------------------------------------

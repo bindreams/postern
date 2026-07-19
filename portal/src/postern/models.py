@@ -32,6 +32,9 @@ class Connection(BaseModel):
     # migration 2 is the catch-all defence for any code path that bypasses the
     # Pydantic boundary.
     plugin: Literal["v2ray-plugin", "galoshes"] = "v2ray-plugin"
+    # Per-connection ECH mode. No per-instance validation on model_copy() (same
+    # Pydantic caveat as `plugin`); the migration-3 CHECK is the catch-all.
+    ech: Literal["never", "auto", "always"] = "auto"
 
 
 class OtpCode(BaseModel):

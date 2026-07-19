@@ -84,14 +84,14 @@ Active only with the `with-mta` compose profile. DNS records, DKIM rotation, and
 
 Fronting the public `:443` endpoint with a CDN/reverse proxy is covered in [edge](edge.md); TLS-passthrough gateways (Traefik, HAProxy) in [gateway](gateway.md).
 
-| Variable                            | Default | Description                                                                                                                                                                                                                          |
-| ----------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `EDGE_PROFILE`                      | `none`  | `none` is direct-to-origin. `cloudflare` orange-clouds the apex (requires `DNS_PROVIDER=cloudflare`, `PUBLIC_IPV4`, and `with-edge` in `COMPOSE_PROFILES`). `generic` is any other trusted reverse proxy that sets a real-IP header. |
-| `EDGE_TRUSTED_CIDRS`                | `""`    | `generic` only, required: CIDR(s) allowed to set the real-IP header. Comma/space/tab/newline-separated.                                                                                                                              |
-| `EDGE_REALIP_HEADER`                | `""`    | `generic` only, required: header name carrying the real client IP (e.g. `X-Real-IP`).                                                                                                                                                |
-| `EDGE_CF_AUTHENTICATED_ORIGIN_PULL` | `true`  | `cloudflare` only: require Cloudflare Authenticated Origin Pull mTLS at the origin. The CA is Cloudflare-global — it proves "reached us via Cloudflare", not "via your zone". Setting it under any other profile fails loud.         |
-| `EDGE_CF_MANAGE_ZONE_ECH`           | `false` | `cloudflare` only: auto-enable Cloudflare's zone-level ECH setting so the front actually serves ECH for `ECH_ENABLED` clients. The toggle is zone-WIDE; set `false` to manage it yourself on a shared zone. Postern only ever turns it ON, never off. Setting it under any other profile fails loud. |
-| `PROXY_PROTOCOL_FROM`               | `""`    | CIDR(s) allowed to send PROXY protocol v2 to nginx's `:443`; comma/space-separated. Set only when a TLS-passthrough proxy fronts nginx and you are not using `compose.gateway.yaml`, which sets a safe default for you.              |
+| Variable                            | Default | Description                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EDGE_PROFILE`                      | `none`  | `none` is direct-to-origin. `cloudflare` orange-clouds the apex (requires `DNS_PROVIDER=cloudflare`, `PUBLIC_IPV4`, and `with-edge` in `COMPOSE_PROFILES`). `generic` is any other trusted reverse proxy that sets a real-IP header.                                                                                     |
+| `EDGE_TRUSTED_CIDRS`                | `""`    | `generic` only, required: CIDR(s) allowed to set the real-IP header. Comma/space/tab/newline-separated.                                                                                                                                                                                                                  |
+| `EDGE_REALIP_HEADER`                | `""`    | `generic` only, required: header name carrying the real client IP (e.g. `X-Real-IP`).                                                                                                                                                                                                                                    |
+| `EDGE_CF_AUTHENTICATED_ORIGIN_PULL` | `true`  | `cloudflare` only: require Cloudflare Authenticated Origin Pull mTLS at the origin. The CA is Cloudflare-global — it proves "reached us via Cloudflare", not "via your zone". Setting it under any other profile fails loud.                                                                                             |
+| `EDGE_CF_MANAGE_ZONE_ECH`           | `false` | `cloudflare` only, opt-in: auto-enable Cloudflare's zone-level ECH setting so the front actually serves ECH for `auto`/`always` connections. Off by default: the toggle is zone-WIDE and needs a `Zone Settings:Edit` CF token. Postern only ever turns it ON, never off. Setting it under any other profile fails loud. |
+| `PROXY_PROTOCOL_FROM`               | `""`    | CIDR(s) allowed to send PROXY protocol v2 to nginx's `:443`; comma/space-separated. Set only when a TLS-passthrough proxy fronts nginx and you are not using `compose.gateway.yaml`, which sets a safe default for you.                                                                                                  |
 
 ```{warning}
 Setting `PROXY_PROTOCOL_FROM` without a PROXY-v2-sending proxy in front makes nginx drop **all** `:443` connections — browsers cannot speak PROXY protocol. Only set it when nginx's `:443` is unreachable except through that trusted proxy (host ports stripped or firewalled); otherwise anyone who can reach `:443` can forge a PROXY header and spoof their source IP.
@@ -99,12 +99,19 @@ Setting `PROXY_PROTOCOL_FROM` without a PROXY-v2-sending proxy in front makes ng
 
 ## ECH (client SNI concealment)
 
-Encrypted Client Hello hides the hostname in the TLS handshake. When enabled, the v2ray/ex-ray plugin requests an ECH config via DoH before connecting.
+Encrypted Client Hello hides the hostname in the TLS handshake. ECH mode is **per-connection** (`postern connection add --ech never|auto|always`, see [CLI reference](../operations/cli.md#postern-connection-add)) — there is no server-wide enable flag. `auto`/`always` connections have the v2ray/ex-ray plugin request an ECH config via DoH before connecting.
 
-| Variable      | Default                                | Description                                                                                                                                                                                                 |
-| ------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ECH_ENABLED` | `false`                                | Enable ECH in generated client configs (`ech=always`). Decoupled from `EDGE_PROFILE`. Enable only once your front serves ECH, or clients refuse to connect.                                                 |
-| `ECH_DOH_URL` | `https://cloudflare-dns.com/dns-query` | DoH resolver URL used by the plugin to fetch the ECH config. Must be an `https://` URL; must not contain `;`, `\`, or whitespace (SIP003 metacharacters). Validated at startup regardless of `ECH_ENABLED`. |
+| Variable      | Default                                | Description                                                                                                                                                                                   |
+| ------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ECH_DOH_URL` | `https://cloudflare-dns.com/dns-query` | DoH resolver the plugin uses for `auto`/`always` connections. Must be an `https://` URL; must not contain `;`, `\`, or whitespace (SIP003 metacharacters). Validated at startup whenever set. |
+
+```{note}
+**Upgrading to per-connection ECH (`ECH_ENABLED` is removed).** Migration 3 sets every existing connection to `ech=auto` (opportunistic). Two consequences:
+- Deployments that ran `ECH_ENABLED=true` (fail-closed) have those connections become **fail-open** `auto` — ECH is still used when available, but no longer *required*. To keep fail-closed, recreate affected connections with `postern connection add --ech always`.
+- The server-wide toggle is gone. `ECH_DOH_URL` (default Cloudflare) is now the only client-side ECH knob; `auto` connections opportunistically attempt ECH whenever it is set. `EDGE_CF_MANAGE_ZONE_ECH` (now default `false`) is the separate, opt-in switch for postern to enable ECH at a Cloudflare front.
+
+You can remove any leftover `ECH_ENABLED` line from your `.env` — it is now ignored.
+```
 
 ## Compose
 

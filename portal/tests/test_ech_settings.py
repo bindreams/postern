@@ -20,7 +20,7 @@ def test_ech_doh_url_default():
     assert s.ech_doh_url == "https://cloudflare-dns.com/dns-query"
 
 
-# URL syntax is always validated when a value is present ================================================================
+# URL syntax is always validated when a value is present ===============================================================
 def test_ech_doh_url_valid_passes():
     s = _settings(ech_doh_url="https://dns.example/dns-query")
     assert s.ech_doh_url == "https://dns.example/dns-query"

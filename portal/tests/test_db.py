@@ -403,10 +403,13 @@ async def test_migration_3_adds_ech_backfilled_auto(settings):
 
         cursor = await conn.execute("SELECT ech, plugin FROM connections WHERE id='c1'")
         row = await cursor.fetchone()
+        assert row is not None
         assert row["ech"] == "auto"  # backfilled
         assert row["plugin"] == "galoshes"  # preserved
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
-        assert (await cursor.fetchone())[0] == 3
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == 3
 
 
 async def test_migration_3_check_rejects_invalid_ech(test_db):
@@ -457,4 +460,6 @@ async def test_migration_3_is_resumable_after_partial_failure(settings):
 
         await db.migrate(conn)
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
-        assert (await cursor.fetchone())[0] == max(db.MIGRATIONS)
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == max(db.MIGRATIONS)

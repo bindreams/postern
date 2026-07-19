@@ -109,8 +109,12 @@ async def test_dashboard_shows_ech_badge_for_non_auto(client, app_settings):
     async with db.get_connection(app_settings.database_path) as database:
         user = User(name="Alice", email="alice@example.com")
         await db.create_user(database, user)
-        await db.create_connection(database, Connection(
-            user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k", ech="never"))
+        await db.create_connection(
+            database,
+            Connection(
+                user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k", ech="never"
+            )
+        )
         await db.create_session(database, Session(token="dash-tok", user_id=user.id, expires_at=_expires_str()))
     client.cookies.set("session", "dash-tok")
     r = await client.get("/")
@@ -122,8 +126,9 @@ async def test_dashboard_no_ech_badge_for_auto(client, app_settings):
     async with db.get_connection(app_settings.database_path) as database:
         user = User(name="Bob", email="bob@example.com")
         await db.create_user(database, user)
-        await db.create_connection(database, Connection(
-            user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k"))  # default auto
+        await db.create_connection(
+            database, Connection(user_id=user.id, path_token="abcdef123456789012345678", label="Phone", password="k")
+        )  # default auto
         await db.create_session(database, Session(token="dash-tok2", user_id=user.id, expires_at=_expires_str()))
     client.cookies.set("session", "dash-tok2")
     r = await client.get("/")

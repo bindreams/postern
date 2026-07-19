@@ -84,18 +84,16 @@ class Settings(BaseSettings):
     # defence-in-depth layer. Meaningful ONLY under edge_profile=cloudflare --
     # setting it under any other profile fails loud.
     edge_cf_authenticated_origin_pull: bool = True
-    # cloudflare profile only: auto-enable Cloudflare's zone-level ECH setting so
-    # the front actually serves ECH (publishes ech= in the apex HTTPS record) for
-    # ECH_ENABLED clients. On by default -- but the toggle is zone-WIDE, so
-    # shared-zone operators can opt out. Meaningful ONLY under edge_profile=cloudflare
-    # (+ ech_enabled); explicit-set under another profile fails loud.
-    edge_cf_manage_zone_ech: bool = True
+    # cloudflare profile only: opt in to postern auto-enabling Cloudflare's zone-level
+    # ECH setting (publishes ech= in the apex HTTPS record). OFF by default: the toggle
+    # is zone-WIDE and requires a Zone Settings:Edit CF token, and ECH can break clients
+    # on hostile networks, so it is not auto-on. Meaningful ONLY under edge_profile=cloudflare.
+    edge_cf_manage_zone_ech: bool = False
 
     # ECH (client SNI concealment) =====================================================================================
-    # ech=always is fail-closed; enable only once your front serves ECH or downloaded
-    # clients refuse to connect. Deliberately decoupled from EDGE_PROFILE.
-    # See docs/deployment/edge.md.
-    ech_enabled: bool = False
+    # ECH mode is per-connection (connections.ech: never/auto/always). This is only
+    # the DoH resolver the plugin uses to fetch the front's ECH config for
+    # auto/always connections (and that `postern ech verify` queries).
     ech_doh_url: str = "https://cloudflare-dns.com/dns-query"
 
     # Public IPs (cert manager publishes apex/wildcard A/AAAA when CERT_RENEWAL=true) ==================================
@@ -119,10 +117,9 @@ class Settings(BaseSettings):
     @field_validator("ech_doh_url")
     @classmethod
     def _validate_ech_doh_url(cls, v: str) -> str:
-        # Applied whenever a value is present (independent of ech_enabled): the DoH URL
-        # is spliced verbatim into the ;-separated SIP003 plugin_opts, so it must be a
-        # well-formed https URL with no SIP003 metacharacters. Empty is allowed here
-        # ("not configured"); _check_ech_settings requires a value only when ech_enabled.
+        # Applied whenever a value is present: the DoH URL is spliced verbatim into the
+        # ;-separated SIP003 plugin_opts, so it must be a well-formed https URL with no
+        # SIP003 metacharacters. Empty is allowed here ("not configured").
         if not v:
             return v
         from urllib.parse import unquote, urlsplit
@@ -205,13 +202,4 @@ class Settings(BaseSettings):
             raise ValueError("EDGE_CF_AUTHENTICATED_ORIGIN_PULL is only meaningful under EDGE_PROFILE=cloudflare")
         if (self.edge_profile != "cloudflare" and "edge_cf_manage_zone_ech" in self.model_fields_set):
             raise ValueError("EDGE_CF_MANAGE_ZONE_ECH is only meaningful under EDGE_PROFILE=cloudflare")
-        return self
-
-    @model_validator(mode="after")
-    def _check_ech_settings(self) -> Self:
-        # Format is enforced by _validate_ech_doh_url regardless of state; here we only
-        # require the value to be PRESENT when the feature is on (ech=always with no DoH
-        # source is a config the plugin itself rejects).
-        if self.ech_enabled and not self.ech_doh_url:
-            raise ValueError("ECH_ENABLED=true requires ECH_DOH_URL (the DoH resolver used to fetch the ECH config)")
         return self

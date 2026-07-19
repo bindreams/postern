@@ -318,6 +318,14 @@ button { font-family: inherit; }
   font-family: var(--font-mono);
   text-transform: uppercase; letter-spacing: 0.5px;
 }
+.ech-badge {
+  font-size: 9px;
+  background: #2a1e35;
+  padding: 1px 6px; border-radius: 3px;
+  color: #c88ba0;
+  font-family: var(--font-mono);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
 .dl-btn {
   background: transparent;
   border: 1px solid var(--border-input);

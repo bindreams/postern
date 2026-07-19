@@ -94,6 +94,33 @@ MIGRATIONS: dict[int, str] = {
         DROP TABLE connections;
         ALTER TABLE connections_new RENAME TO connections;
     """,
+    # ECH becomes per-connection. Same table-rebuild + resumable DROP-IF-EXISTS
+    # pattern as migration 2 (ALTER cannot attach a CHECK). BREAKING: all existing
+    # rows backfill to the 'auto' default (opportunistic). A deployment that ran
+    # ECH_ENABLED=true was emitting fail-closed ech=always for every connection and
+    # becomes fail-open auto here -- ECH_ENABLED is gone, so intent cannot be
+    # preserved; recreate with `--ech always` if fail-closed is required. See the
+    # docs upgrade note.
+    3: """
+        DROP TABLE IF EXISTS connections_new;
+        CREATE TABLE connections_new (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            path_token TEXT NOT NULL UNIQUE,
+            label TEXT NOT NULL,
+            password TEXT NOT NULL,
+            enabled BOOLEAN NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            plugin TEXT NOT NULL DEFAULT 'v2ray-plugin'
+                CHECK (plugin IN ('v2ray-plugin', 'galoshes')),
+            ech TEXT NOT NULL DEFAULT 'auto'
+                CHECK (ech IN ('never', 'auto', 'always'))
+        );
+        INSERT INTO connections_new (id, user_id, path_token, label, password, enabled, created_at, plugin, ech)
+        SELECT id, user_id, path_token, label, password, enabled, created_at, plugin, 'auto' FROM connections;
+        DROP TABLE connections;
+        ALTER TABLE connections_new RENAME TO connections;
+    """,
 }
 
 
@@ -172,17 +199,9 @@ async def delete_user(db: aiosqlite.Connection, user_id: str) -> bool:
 # Connection queries ===================================================================================================
 async def create_connection(db: aiosqlite.Connection, conn: Connection) -> Connection:
     await db.execute(
-        """INSERT INTO connections (id, user_id, path_token, label, password, enabled, plugin)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (
-            conn.id,
-            conn.user_id,
-            conn.path_token,
-            conn.label,
-            conn.password,
-            conn.enabled,
-            conn.plugin,
-        ),
+        """INSERT INTO connections (id, user_id, path_token, label, password, enabled, plugin, ech)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (conn.id, conn.user_id, conn.path_token, conn.label, conn.password, conn.enabled, conn.plugin, conn.ech),
     )
     await db.commit()
     return conn

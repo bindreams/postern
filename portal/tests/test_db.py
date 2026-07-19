@@ -329,7 +329,7 @@ async def test_migration_2_adds_plugin_column_with_v2ray_default(settings):
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == max(db.MIGRATIONS)
 
 
 async def test_migration_2_rejects_invalid_plugin(test_db):
@@ -380,4 +380,81 @@ async def test_migration_2_is_resumable_after_partial_failure(settings):
         cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
         row = await cursor.fetchone()
         assert row is not None
-        assert row[0] == 2
+        assert row[0] == max(db.MIGRATIONS)
+
+
+async def test_migration_3_adds_ech_backfilled_auto(settings):
+    async with db.get_connection(settings.database_path) as conn:
+        await conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)")
+        for v in (1, 2):
+            for stmt in db.MIGRATIONS[v].split(";"):
+                stmt = stmt.strip()
+                if stmt:
+                    await conn.execute(stmt)
+            await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (v, ))
+        await conn.execute("INSERT INTO users (id, name, email) VALUES ('u1', 'A', 'a@x')")
+        await conn.execute(
+            "INSERT INTO connections (id, user_id, path_token, label, password, plugin) "
+            f"VALUES ('c1', 'u1', '{'aa' * 12}', 'L', 'P', 'galoshes')"
+        )
+        await conn.commit()
+
+        await db.migrate(conn)
+
+        cursor = await conn.execute("SELECT ech, plugin FROM connections WHERE id='c1'")
+        row = await cursor.fetchone()
+        assert row["ech"] == "auto"  # backfilled
+        assert row["plugin"] == "galoshes"  # preserved
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        assert (await cursor.fetchone())[0] == 3
+
+
+async def test_migration_3_check_rejects_invalid_ech(test_db):
+    await db.create_user(test_db, User(name="A", email="a@x"))
+    cursor = await test_db.execute("SELECT id FROM users WHERE email='a@x'")
+    user_id = (await cursor.fetchone())["id"]
+    with pytest.raises(sqlite3.IntegrityError):
+        await test_db.execute(
+            "INSERT INTO connections (id, user_id, path_token, label, password, ech) "
+            "VALUES ('c1', ?, ?, 'L', 'P', 'sometimes')",
+            (user_id, "aa" * 12),
+        )
+        await test_db.commit()
+
+
+@pytest.mark.parametrize("mode", ["never", "auto", "always"])
+async def test_migration_3_check_allows_modes(test_db, mode):
+    await db.create_user(test_db, User(name="A", email=f"a{mode}@x"))
+    cursor = await test_db.execute("SELECT id FROM users WHERE email=?", (f"a{mode}@x", ))
+    user_id = (await cursor.fetchone())["id"]
+    await test_db.execute(
+        "INSERT INTO connections (id, user_id, path_token, label, password, ech) VALUES (?, ?, ?, 'L', 'P', ?)",
+        (f"c-{mode}", user_id, mode + "aa" * 11, mode),
+    )
+    await test_db.commit()
+    cursor = await test_db.execute("SELECT ech FROM connections WHERE id=?", (f"c-{mode}", ))
+    assert (await cursor.fetchone())["ech"] == mode
+
+
+async def test_create_connection_persists_ech(test_db):
+    user = User(name="A", email="a@x")
+    await db.create_user(test_db, user)
+    conn = Connection(user_id=user.id, path_token="aa11bb22cc33dd44ee55ff66", label="L", password="k", ech="never")
+    await db.create_connection(test_db, conn)
+    fetched = await db.get_connection_by_id(test_db, conn.id)
+    assert fetched is not None and fetched.ech == "never"
+
+
+async def test_migration_3_is_resumable_after_partial_failure(settings):
+    """A crash that left a stranded connections_new must not wedge migration 3 --
+    mirrors test_migration_2_is_resumable_after_partial_failure."""
+    async with db.get_connection(settings.database_path) as conn:
+        await db.migrate(conn)
+        await conn.execute("CREATE TABLE connections_new (junk TEXT)")
+        await conn.execute("DELETE FROM schema_version")
+        await conn.execute("INSERT INTO schema_version VALUES (2)")
+        await conn.commit()
+
+        await db.migrate(conn)
+        cursor = await conn.execute("SELECT MAX(version) FROM schema_version")
+        assert (await cursor.fetchone())[0] == max(db.MIGRATIONS)

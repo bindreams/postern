@@ -31,7 +31,7 @@ jobs:
       CF_CONTRACT_TEST_ZONE: ${{ vars.CF_CONTRACT_TEST_ZONE }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           # Stay pinned to the toolchain the module declares. GOTOOLCHAIN=auto
           # then fetches the exact `toolchain` at build time.

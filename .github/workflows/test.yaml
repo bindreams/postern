@@ -28,7 +28,7 @@ jobs:
         working-directory: provisioner/postern-dns
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           # Stay pinned to the toolchain the module declares. GOTOOLCHAIN=auto
           # then fetches the exact `toolchain` (go1.26.4) at build time.

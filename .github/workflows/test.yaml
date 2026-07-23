@@ -84,7 +84,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=shadowsocks
 
       - name: Build e2e compose images (kept out of the pytest fixture so the build is not subject to the per-test timeout)
-        uses: docker/bake-action@v5
+        uses: docker/bake-action@v7
         with:
           # workdir must be the compose file's directory: bake resolves `context:` relative
           # to its cwd, not the compose file location, and the compose file uses `../../..`
@@ -143,7 +143,7 @@ jobs:
       # shadowsocks image is not required. Shared cache scope `e2e` so the
       # identical portal/nginx layers reuse artifacts from the parallel e2e job.
       - name: Build e2e-edge compose images (kept out of the pytest fixture so the build is not subject to the per-test timeout)
-        uses: docker/bake-action@v5
+        uses: docker/bake-action@v7
         with:
           workdir: portal/tests/e2e
           files: e2e-edge.compose.yaml
@@ -193,7 +193,7 @@ jobs:
       # e2e job (buildx's content-addressable cache deduplicates across scopes,
       # but staying in one scope is simpler).
       - name: Build e2e + e2e-mta compose images
-        uses: docker/bake-action@v5
+        uses: docker/bake-action@v7
         with:
           workdir: portal/tests/e2e
           files: |

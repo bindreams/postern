@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtensionOID, ExtendedKeyUsageOID
 
 from tests.e2e._certs import generate_test_pki
@@ -58,14 +58,26 @@ def test_fullchain_is_leaf_then_ca(tmp_path):
 
 
 # Algorithm tests ======================================================================================================
-def test_keys_are_ed25519(tmp_path):
+def test_keys_are_ecdsa_p256(tmp_path):
+    """NOT Ed25519 (issue #191).
+
+    ex-ray >= v0.2.0 dials through uTLS imitating Chrome, whose
+    signature_algorithms extension offers ECDSA and RSA but not ed25519. Against
+    an Ed25519 chain nginx answers `no suitable signature algorithm` and every
+    tunnel test fails at the TLS handshake as a bare "Empty reply from server".
+    The CA is checked too: the client verifies the CA's signature over the leaf,
+    so an Ed25519 CA breaks the handshake even under an ECDSA leaf.
+    """
     generate_test_pki(tmp_path)
     ca = _load_cert(tmp_path / "ca.pem")
     leaf = _load_first_cert(tmp_path / "fullchain.pem")
-    assert isinstance(ca.public_key(), Ed25519PublicKey)
-    assert isinstance(leaf.public_key(), Ed25519PublicKey)
+    for label, cert in (("ca", ca), ("leaf", leaf)):
+        pub = cert.public_key()
+        assert isinstance(pub, ec.EllipticCurvePublicKey), f"{label} key is {type(pub).__name__}, expected ECDSA"
+        assert isinstance(pub.curve, ec.SECP256R1), f"{label} curve is {pub.curve.name}, expected secp256r1"
     privkey = serialization.load_pem_private_key((tmp_path / "privkey.pem").read_bytes(), password=None)
-    assert isinstance(privkey, Ed25519PrivateKey)
+    assert isinstance(privkey, ec.EllipticCurvePrivateKey)
+    assert isinstance(privkey.curve, ec.SECP256R1)
 
 
 # Signature / chain validity ===========================================================================================
@@ -74,9 +86,9 @@ def test_leaf_is_signed_by_ca(tmp_path):
     ca = _load_cert(tmp_path / "ca.pem")
     leaf = _load_first_cert(tmp_path / "fullchain.pem")
     ca_pub = ca.public_key()
-    assert isinstance(ca_pub, Ed25519PublicKey)
-    # Ed25519 verify: raises on mismatch.
-    ca_pub.verify(leaf.signature, leaf.tbs_certificate_bytes)
+    assert isinstance(ca_pub, ec.EllipticCurvePublicKey)
+    # ECDSA verify: raises InvalidSignature on mismatch.
+    ca_pub.verify(leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm))
     assert leaf.issuer == ca.subject
 
 
@@ -84,12 +96,13 @@ def test_privkey_matches_leaf(tmp_path):
     generate_test_pki(tmp_path)
     leaf = _load_first_cert(tmp_path / "fullchain.pem")
     privkey = serialization.load_pem_private_key((tmp_path / "privkey.pem").read_bytes(), password=None)
-    assert isinstance(privkey, Ed25519PrivateKey)
+    assert isinstance(privkey, ec.EllipticCurvePrivateKey)
+    # EC public keys have no Raw encoding; compare the DER SubjectPublicKeyInfo.
     leaf_pub_bytes = leaf.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+        encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
     priv_pub_bytes = privkey.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+        encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
     assert leaf_pub_bytes == priv_pub_bytes
 

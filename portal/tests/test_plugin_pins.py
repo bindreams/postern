@@ -43,7 +43,7 @@ RENOVATE_MARKER = "# renovate: datasource=github-tags depName=bindreams/hole"
 ARG_RE = re.compile(r"^ARG (?P<name>EX_RAY_VERSION|GALOSHES_VERSION)=(?P<value>v\S+)$")
 
 
-# helpers =====
+# helpers ==============================================================================================================
 def _pins(path: Path) -> list[tuple[int, str, str, bool]]:
     """Return (line_number, arg_name, version, has_renovate_marker) for each pin in `path`."""
     lines = (REPO_ROOT / path).read_text().splitlines()
@@ -61,14 +61,13 @@ def _all_pins() -> list[tuple[Path, int, str, str, bool]]:
     return [(path, *pin) for path in PINNED_FILES for pin in _pins(path)]
 
 
-# tests =====
+# tests ================================================================================================================
 def test_every_pinned_file_declares_both_plugins():
     """A file that stops pinning a plugin would make the agreement tests vacuous."""
     for path in PINNED_FILES:
         names = {name for _, name, _, _ in _pins(path)}
-        assert names == {"EX_RAY_VERSION", "GALOSHES_VERSION"}, (
-            f"{path} pins {sorted(names)}; expected both EX_RAY_VERSION and GALOSHES_VERSION."
-        )
+        assert names == {"EX_RAY_VERSION", "GALOSHES_VERSION"
+                         }, (f"{path} pins {sorted(names)}; expected both EX_RAY_VERSION and GALOSHES_VERSION.")
 
 
 def test_plugin_pins_agree_across_stages_and_images():
@@ -96,9 +95,10 @@ def test_plugin_pins_meet_the_ech_floor():
 
 def test_every_plugin_pin_carries_the_renovate_marker():
     """An unmarked ARG is invisible to Renovate and drifts away from the marked ones."""
-    unmarked = [f"  {path}:{line_number} ({name}={value})"
-                for path, line_number, name, value, marked in _all_pins()
-                if not marked]
+    unmarked = [
+        f"  {path}:{line_number} ({name}={value})" for path, line_number, name, value, marked in _all_pins()
+        if not marked
+    ]
     assert not unmarked, (
         f"These plugin pins lack the Renovate marker comment {RENOVATE_MARKER!r} on the "
         f"line directly above, so Renovate will not bump them:\n" + "\n".join(unmarked)

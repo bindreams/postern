@@ -7,13 +7,16 @@ and runnable as a standalone script for ad-hoc compose bring-up:
 
 Output (all PEM):
     ca.pem        - root CA cert (also written as chain.pem for nginx OCSP)
-    privkey.pem   - leaf private key (Ed25519)
+    privkey.pem   - leaf private key (ECDSA P-256)
     fullchain.pem - leaf cert + CA cert (concatenated for nginx)
     chain.pem     - CA cert only, byte-identical to ca.pem
 
 Cert shape is documented in the plan; key invariants enforced here:
-- Ed25519 keys (instant generation, accepted by nginx/OpenSSL3, Go crypto/tls,
-  Python ssl).
+- ECDSA P-256 keys. NOT Ed25519: ex-ray >= v0.2.0 dials through uTLS imitating
+  Chrome, and Chrome's signature_algorithms extension does not offer ed25519, so
+  an Ed25519 chain makes nginx answer `no suitable signature algorithm` and the
+  tunnel handshake dies (issue #191). P-256 is also what Let's Encrypt issues,
+  so the harness matches production rather than merely satisfying OpenSSL.
 - not_valid_after = now + 30 days; not_valid_before = now - 5 minutes (the
   backdate absorbs host/container clock skew).
 - SANs cover {hostname} and *.{hostname}; CN is informational.
@@ -26,7 +29,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
@@ -71,7 +75,7 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
     ca_not_after = not_before + CLOCK_SKEW_MARGIN + CA_VALIDITY
 
     # Root CA ==========================================================================================================
-    ca_key = Ed25519PrivateKey.generate()
+    ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Postern Test Root CA")])
     ca_ski = x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key())
 
@@ -85,10 +89,10 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
     ca_builder = ca_builder.add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
     ca_builder = ca_builder.add_extension(CA_KEY_USAGE, critical=True)
     ca_builder = ca_builder.add_extension(ca_ski, critical=False)
-    ca_cert = ca_builder.sign(private_key=ca_key, algorithm=None)  # algorithm=None is required for Ed25519
+    ca_cert = ca_builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
 
     # Leaf =============================================================================================================
-    leaf_key = Ed25519PrivateKey.generate()
+    leaf_key = ec.generate_private_key(ec.SECP256R1())
     leaf_subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, hostname)])
     leaf_san = x509.SubjectAlternativeName([x509.DNSName(hostname), x509.DNSName(f"*.{hostname}")])
     leaf_aki = x509.AuthorityKeyIdentifier.from_issuer_subject_key_identifier(ca_ski)
@@ -108,7 +112,7 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
         x509.SubjectKeyIdentifier.from_public_key(leaf_key.public_key()), critical=False
     )
     leaf_builder = leaf_builder.add_extension(leaf_aki, critical=False)
-    leaf_cert = leaf_builder.sign(private_key=ca_key, algorithm=None)  # algorithm=None is required for Ed25519
+    leaf_cert = leaf_builder.sign(private_key=ca_key, algorithm=hashes.SHA256())
 
     # Serialize ========================================================================================================
     ca_pem = ca_cert.public_bytes(serialization.Encoding.PEM)

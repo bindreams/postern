@@ -26,6 +26,7 @@ RUN <<-EOF
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray-license
+# renovate: datasource=github-tags depName=bindreams/hole
 ARG EX_RAY_VERSION=v0.2.0
 # ex-ray is Apache-2.0; NOTICES.md carries the MIT attribution for the
 # v2ray-plugin-derived config-building (see crates/ex-ray/README.md).
@@ -39,7 +40,7 @@ EOF
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.3.0
+ARG GALOSHES_VERSION=v0.3.1
 RUN <<-EOF
 	set -eu
 	# Release asset names omit the leading `v`; tags include it.
@@ -55,7 +56,8 @@ RUN <<-EOF
 EOF
 
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes-license
-ARG GALOSHES_VERSION=v0.3.0
+# renovate: datasource=github-tags depName=bindreams/hole
+ARG GALOSHES_VERSION=v0.3.1
 RUN wget -q -O /LICENSE.md \
 	"https://raw.githubusercontent.com/bindreams/hole/refs/tags/releases/galoshes/${GALOSHES_VERSION}/crates/galoshes/LICENSE.md"
 

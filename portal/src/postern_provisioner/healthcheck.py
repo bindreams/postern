@@ -137,7 +137,7 @@ def main() -> int:
             )
             return 1
 
-    # SSL/TLS-mode half (only when Postern manages the CF zone SSL/TLS mode) ---------------------------------------------
+    # SSL/TLS-mode half (only when Postern manages the CF zone SSL/TLS mode) -------------------------------------------
     # Red until the first successful `ssl-set`, and red again on a later failure streak
     # so the signal tracks current reality (same rule as the ECH half).
     if enablement.ssl_mode_enabled:

@@ -38,7 +38,7 @@ services:
     build:
       context: ../../..
       dockerfile: portal/Dockerfile
-    image: local/postern-portal
+    image: local/postern-portal-test
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -52,6 +52,11 @@ services:
       SMTP_FROM: noreply@postern.test
       DOMAIN: postern.test
       SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
+      # Edge suite never creates a connection, so this image is never built here --
+      # _image_exists logs and returns early each pass, which is intended. Pointing
+      # at the production tag would instead let this portal's orphan sweep adopt
+      # and remove a co-located production stack's containers.
+      SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:
       - postern-e2e-edge-data:/data
@@ -71,7 +76,7 @@ services:
 
   nginx:
     build: ../../../nginx
-    image: local/nginx
+    image: local/nginx-test
     container_name: postern-e2e-edge-nginx
     environment:
       DOMAIN: postern.test

@@ -26,7 +26,7 @@ services:
     build:
       context: ../../..
       dockerfile: mta/Dockerfile
-    image: local/postern-mta
+    image: local/postern-mta-test
     container_name: postern-e2e-mta-mta
     hostname: mail.postern.test
     environment:
@@ -101,7 +101,7 @@ services:
     build:
       context: ../../..
       dockerfile: provisioner/Dockerfile
-    image: local/postern-provisioner
+    image: local/postern-provisioner-test
     container_name: postern-e2e-mta-provisioner
     user: "110:110"
     environment:
@@ -125,6 +125,10 @@ services:
       SMTP_HOST: mta-submit
       SMTP_PORT: "587"
       SMTP_FROM: noreply@postern.test
+      # Restated from e2e.compose.yaml's portal block: this guard checks this
+      # file's own text and does not assume it is always layered onto the
+      # base file. Redundant, not conflicting, when it is.
+      SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
     # Mirror production: read-only mount of the DKIM keydir so the test fixtures
     # can read state.json and <selector>.txt via `compose exec portal python -c ...`
     # (the portal is distroless, but `python` is available).

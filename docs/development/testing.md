@@ -94,13 +94,13 @@ One-time prerequisites, all required:
   Renovate (Mend Cloud App) authenticates to `dhi.io` independently of GitHub Actions. Credentials live in the Mend UI at [developer.mend.io](https://developer.mend.io) under the repo's Credentials section, as `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`. Rotating the Docker Hub PAT requires updating GitHub Actions secrets and Mend credentials together.
   ```
 
-- **The `local/shadowsocks-server` image** must exist before the suite starts (compose does not build it). From the repo root:
+- **The `local/shadowsocks-server-test` image** must exist before the suite starts (compose does not build it). The e2e stack builds `-test`-suffixed images so a test run can never overwrite the unsuffixed `local/` tags a production `docker compose up -d` deploys. From the repo root:
 
   ```bash
-  docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+  docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server-test .
   ```
 
-- **The compose images** (`local/postern-portal`, `local/nginx`, `local/postern-ssclient`) must also exist beforehand — the session fixture only runs `compose up --wait`, keeping the build out of the per-test timeout. From the repo root:
+- **The compose images** (`local/postern-portal-test`, `local/nginx-test`, `local/postern-ssclient-test`) must also exist beforehand — the session fixture only runs `compose up --wait`, keeping the build out of the per-test timeout. From the repo root:
 
   ```bash
   docker compose -p postern-e2e -f portal/tests/e2e/e2e.compose.yaml build
@@ -129,7 +129,7 @@ The compose project is `postern-e2e-edge` and nginx publishes on `127.0.0.1:8453
 
 ## Hermetic MTA suite (`e2e_mta`)
 
-Boots the production `mta` + `provisioner` images alongside a mailpit "recipient MTA" — no real DNS, no port-25 outbound. It verifies DKIM signing + verification, postmaster forwarding, milter tempfail behavior, and a handful of architectural invariants (opendkim UID/GID, internal-network flag, Postfix listener health).
+Boots the `mta` + `provisioner` images — the production Dockerfiles, tagged `-test` — alongside a mailpit "recipient MTA" — no real DNS, no port-25 outbound. It verifies DKIM signing + verification, postmaster forwarding, milter tempfail behavior, and a handful of architectural invariants (opendkim UID/GID, internal-network flag, Postfix listener health).
 
 ```bash
 cd portal
@@ -177,7 +177,7 @@ You need a domain you control plus provider credentials. The test publishes and 
 Run, from the repo root:
 
 ```bash
-docker build -f provisioner/Dockerfile -t local/postern-provisioner .
+docker build -f provisioner/Dockerfile -t local/postern-provisioner-test .
 cd portal
 uv run pytest -m e2e_mta_real -v --timeout=300
 ```

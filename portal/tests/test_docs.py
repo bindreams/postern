@@ -44,6 +44,7 @@ MUST_KEEP_CODE = [
     ("deployment/email.md", "milter_default_action = tempfail", "mta/etc/main.cf.tmpl"),
     ("development/testing.md", "e2e_mta_real", "portal/pyproject.toml"),
     ("development/testing.md", "e2e_mta_outbound", "portal/pyproject.toml"),
+    ("development/testing.md", "local/shadowsocks-server-test", "portal/tests/e2e/_helpers.py"),
     ("development/architecture.md", "default-src", "nginx/etc/nginx.conf.tmpl"),
     ("operations/index.md", ".reconcile-now", "portal/src/postern/reconciler.py"),
     ("development/architecture.md", "token_hex(12)", "portal/src/postern/cli.py"),

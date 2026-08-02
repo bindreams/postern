@@ -22,7 +22,7 @@ is incompatible with a CI job that runs on every PR; it belongs in the
 ``e2e_mta_outbound`` (maintainer-only, VPS) tier.
 
 Tests do not boot a compose stack: they invoke ``postern-dns`` via ``docker run
---rm`` against the ``local/postern-provisioner`` image (built by CI before
+--rm`` against the ``local/postern-provisioner-test`` image (built by CI before
 running pytest), and call ``postern.mta.dnssec`` from the host. Resolver
 isolation: every ``dns.resolver.Resolver`` instance uses ``configure=False``
 with explicit upstreams (1.1.1.1 + 8.8.8.8) and ``cache=None``.
@@ -43,6 +43,8 @@ import pytest
 
 # postern is installed via `uv sync` in CI; locally it must be available too.
 from postern.mta import dnssec as mta_dnssec
+
+from ._helpers import E2E_PROVISIONER_IMAGE
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +114,7 @@ def _provider_env_dict(env: dict[str, str]) -> list[str]:
 
 
 def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
-    """Run the postern-dns binary in a one-off ``local/postern-provisioner`` container.
+    """Run the postern-dns binary in a one-off ``local/postern-provisioner-test`` container.
 
     --network bridge (not --network none): the libdns API call needs HTTPS to
     reach the provider's API endpoint. We don't mount the docker socket or pass
@@ -133,7 +135,7 @@ def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess
         "--entrypoint",
         "postern-dns",
         *_provider_env_dict(env),
-        "local/postern-provisioner",
+        E2E_PROVISIONER_IMAGE,
         *args,
     ]
     try:

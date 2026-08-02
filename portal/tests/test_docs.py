@@ -26,7 +26,7 @@ MUST_KEEP = {
     "deployment/gateway.md": ["forge a PROXY header", "broken header"],
     "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA"],
     "operations/rename.md": ["_domainkey", "docker compose down"],
-    "operations/index.md": ["postern reconcile"],
+    "operations/index.md": ["postern reconcile", "scripts/verify-deploy.py"],
     "development/architecture.md": ["`CONTAINERS`, `NETWORKS`, `IMAGES`"],
     "getting-started.md": ["local/shadowsocks-server", "requires HTTPS"],
     "connecting.md": ["galoshes", "127.0.0.1:1080"],
@@ -47,6 +47,7 @@ MUST_KEEP_CODE = [
     ("development/testing.md", "local/shadowsocks-server-test", "portal/tests/e2e/_helpers.py"),
     ("development/architecture.md", "default-src", "nginx/etc/nginx.conf.tmpl"),
     ("operations/index.md", ".reconcile-now", "portal/src/postern/reconciler.py"),
+    ("operations/index.md", "GIT_REVISION", "compose.yaml"),
     ("development/architecture.md", "token_hex(12)", "portal/src/postern/cli.py"),
     ("development/architecture.md", "postern.managed", "portal/src/postern/reconciler.py"),
 ]

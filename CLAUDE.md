@@ -78,6 +78,7 @@ These are load-bearing. Changing any of them without understanding the chain wil
 - **`/brand-icon` indirection.** Templates reference `/brand-icon`, never `/static/brand-default.svg` directly. The route ([portal/src/postern/routes/brand_icon.py](portal/src/postern/routes/brand_icon.py)) validates extension (.svg/.png), resolves the path canonically, caps size at 256 KB, and falls back to the built-in default on any error so a misconfigured `PRODUCT_ICON_PATH` never takes the portal down.
 - **MMDB reader lifecycle.** `GeoIPReaders` ([portal/src/postern/identity.py](portal/src/postern/identity.py)) is constructed at lifespan startup, lazily opens MMDB files on first lookup, re-opens them when the underlying file's mtime advances (so monthly DB rotations need no portal restart), and is closed at lifespan shutdown. `maxminddb.Reader.get()` is thread-safe; the lazy-init / reopen path holds an internal `threading.Lock`. `GeoIPReaders("")` is a valid no-op constructor.
 - **No inline JS bootstrap.** [portal/src/postern/static/postern.js](portal/src/postern/static/postern.js) is wrapped in an IIFE and self-bootstraps on `DOMContentLoaded`. Templates never call into it. Adding template-side JS is forbidden (CSP); add new behavior to `postern.js` and gate it on element presence (`if (!el) return;`).
+- **Build provenance is a three-place chain.** `GIT_REVISION` build arg (all five first-party Dockerfiles) → `org.opencontainers.image.revision` label (+ `POSTERN_REVISION` env on the portal, read by `postern version`) → [scripts/verify-deploy.py](scripts/verify-deploy.py), which fails a deploy whose containers are not on images built from `HEAD`. A new first-party image must add the `ARG`/`LABEL` pair as the last instruction of its final stage and, if compose builds it, forward `GIT_REVISION: ${GIT_REVISION:-}` in `build.args`. Pinned by [portal/tests/test_build_revision.py](portal/tests/test_build_revision.py). The gate also asserts a container's health status (from its Docker `HEALTHCHECK`, when one is defined) is not `unhealthy` — point-in-time, not polled: `starting` (the status right after `up -d`, before the first probe) passes. It is host-side on purpose: desired state lives in the compose files, which the portal cannot read, and a stale portal cannot be trusted to report its own staleness. `--tunnels` (opt-in; the reconciler recreates `ss-*` containers asynchronously after a portal restart, so it races a bare `up -d`) scopes to this deployment's own `postern.instance` label, mirroring `reconciler.resolve_instance_id`, so a host running more than one Postern deployment does not report a different deployment's tunnels as this one's.
 
 ## Where things live
 
@@ -188,15 +189,24 @@ Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcomm
 - Don't make the zone SSL/TLS-mode reconciler downgrade, revert, or bump `full`→`strict`; it is raise-only (floor `full`) and converge-only. Don't call `ssl-set` with `off`/`flexible` (only `full`/`strict` are valid targets).
 - Don't flip `EDGE_CF_MANAGE_SSL_MODE` to opt-in to match zone-ECH; SSL-mode management is deliberately default-on (opt-out) because a Flexible/Off zone is a hard `ERR_TOO_MANY_REDIRECTS` breakage.
 - Don't call the Cloudflare settings API from the portal; `postern edge ssl-status` reads `ssl_mode_state.json` only.
+- Don't build a first-party image without `--build-arg GIT_REVISION` (or `export GIT_REVISION` for compose builds). An unstamped image has no provenance and `scripts/verify-deploy.py` fails it.
+- Don't treat `docker compose ps` showing `Up` or `/healthz` returning 200 as deploy evidence. They are liveness, not version.
 
 ## Useful commands
 
 ```bash
+# Stamp the revision into every image so a deploy that did not happen is detectable.
+GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"
+export GIT_REVISION
+
 # Build the per-connection tunnel image (compose doesn't build this one)
-docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
 
 # Build and run the full stack (includes mta + provisioner via COMPOSE_PROFILES=with-mta in .env)
 docker compose up -d --build
+
+# Prove it. Non-zero exit means something did not actually deploy.
+scripts/verify-deploy.py
 
 # Run the admin CLI
 docker compose exec portal postern user list

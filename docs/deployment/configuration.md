@@ -127,9 +127,14 @@ These are read by docker compose during interpolation, not by the portal.
 | ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `COMPOSE_PROFILES` | `with-mta`     | Profiles to activate: `with-mta` (built-in MTA, on by default), `with-cert-renewal`, `with-edge`. Comment out `with-mta` to use a third-party relay instead. |
 | `COMPOSE_FILE`     | `compose.yaml` | Compose file stack. Append overlays as needed, e.g. `compose.yaml:compose.cert.yaml` for cert auto-renewal; `compose.edge.yaml` layers last.                 |
+| `GIT_REVISION`     | *(unset)*      | Git revision stamped into every first-party image as `org.opencontainers.image.revision`. Set it in the shell before building; `scripts/verify-deploy.py --print-revision` computes it. Unset means unstamped images, which the deploy gate fails. |
 
 ```{note}
 Profiles must be set in `.env` — a CLI-only `docker compose --profile` flag is not visible to the provisioner container.
+```
+
+```{warning}
+Do **not** put `GIT_REVISION` in `.env`. Compose interpolates `.env` first-class, so a value parked there silently pins one revision into every future build, and `scripts/verify-deploy.py` will then certify a stale deployment as current.
 ```
 
 ## Changing the domain

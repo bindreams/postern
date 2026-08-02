@@ -6,6 +6,8 @@ This page takes you from an empty server to a verified working tunnel: install t
 
 - **A Linux host with Docker Engine and Docker Compose v2.** Postern runs as a single-host Compose stack.
 
+- **Python 3.9 or newer on the host.** `scripts/verify-deploy.py` (the post-deploy gate) uses only the standard library, but it needs an interpreter. Every supported distribution ships one.
+
 - **A public domain you control**, with DNS pointing at the host (`postern.example.com` throughout these docs).
 
 - **A free Docker Hub account with a Personal Access Token.** The base images come from [Docker Hardened Images](https://docs.docker.com/dhi/) (`dhi.io`); the catalog is free, but pulls require authentication. Before the first build:
@@ -60,14 +62,19 @@ This page takes you from an empty server to a verified working tunnel: install t
 1. Build the per-connection tunnel image. Compose does not build this one — the reconciler spawns it at runtime, so it must exist first:
 
    ```bash
-   docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+   GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"
+   export GIT_REVISION
+   docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
    ```
 
 1. Build and start the rest of the stack:
 
    ```bash
    docker compose up -d --build
+   scripts/verify-deploy.py
    ```
+
+   The second command is the deploy gate — a non-zero exit means something did not actually deploy. See [updates](operations/index.md#updates).
 
 ## Create the first user and connection
 

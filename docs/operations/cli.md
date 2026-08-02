@@ -178,3 +178,7 @@ revision: 4f1c9a2b...
 `revision: unknown` means the image was built without the `GIT_REVISION` build arg — see [updates](index.md). `--json` emits `{"version": ..., "revision": ...}`.
 
 The revision is deliberately **not** exposed on `/healthz`: that endpoint is unauthenticated and internet-reachable, and a git SHA there is both a positive Postern fingerprint and an exact index of which fixes a deployment is missing.
+
+```{warning}
+Never set `POSTERN_REVISION` yourself (e.g. in `.env`). It reaches the portal process as a plain container environment variable, which `env_file: .env` can override independently of the image — unlike the `org.opencontainers.image.revision` label `scripts/verify-deploy.py` actually checks, which is baked into the image and cannot be overridden this way. A stray `POSTERN_REVISION` would make `postern version` report a value the deploy gate does not agree with, not authoritative provenance.
+```

@@ -96,6 +96,15 @@ def test_exit_code_one_on_any_failure():
     assert [c.label for c in report.failures] == ["b"]
 
 
+def test_exit_code_override_wins_over_the_computed_value():
+    """main()'s CollectError path needs a Report whose printed text/JSON
+    reads as a failure (it carries one failing Check) but whose exit_code is
+    2, not the computed 1 -- "could not run" is not "the deployment is
+    stale"."""
+    report = vd.Report(project="", revision="abc", checks=[vd.Check("a", "fail", fix="x")], exit_code_override=2)
+    assert report.exit_code == 2
+
+
 # Rendering ------------------------------------------------------------------------------------------------------------
 def test_render_text_shows_project_revision_markers_and_fixes():
     report = vd.Report(
@@ -180,7 +189,8 @@ class FakeRunner:
         project_names=None,
         containers_out=None,
         tunnels_out=None,
-        config_out=None
+        config_out=None,
+        ps_out=None,
     ):
         self.image_overrides = image_overrides or {}
         self.calls: list[tuple[list[str], object]] = []
@@ -193,7 +203,10 @@ class FakeRunner:
                 lambda a: a[:3] == ["docker", "compose", "config"] and "--format" in a,
                 _ok(_CONFIG_JSON) if config_out is None else config_out
             ),
-            (lambda a: a[:2] == ["docker", "ps"] and any("compose.project" in x for x in a), _ok(project_names)),
+            (
+                lambda a: a[:2] == ["docker", "ps"] and any("compose.project" in x for x in a),
+                _ok(project_names) if ps_out is None else ps_out
+            ),
             (
                 lambda a: a[:2] == ["docker", "ps"] and any("postern.managed" in x
                                                             for x in a), _ok("ss-abc\n" if tunnels else "")
@@ -363,6 +376,35 @@ def test_collect_raises_when_compose_config_fails():
     assert "env file" in str(excinfo.value)
 
 
+def test_collect_raises_when_docker_ps_fails():
+    """A broken `docker ps` (daemon down, bad filter) has no useful partial
+    output the way `docker inspect` does -- reading it as "zero containers"
+    would misreport a broken environment as every service missing (a FAIL,
+    exit 1) instead of "could not run" (exit 2)."""
+    runner = FakeRunner(ps_out=vd.Completed(1, "", "Cannot connect to the Docker daemon"))
+    with pytest.raises(vd.CollectError) as excinfo:
+        _collect(runner)
+    assert "Cannot connect to the Docker daemon" in str(excinfo.value)
+
+
+def test_collect_raises_on_a_malformed_inspect_line():
+    """A GIT_REVISION value containing an embedded tab would shift every
+    field after it; silently truncating/padding could reassign `health` to
+    part of a `revision` value instead of raising."""
+    bad = f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\n"  # only 7 fields
+    with pytest.raises(vd.CollectError):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_an_unparseable_exit_code():
+    """An unparseable ExitCode must not silently become 0 -- completed_one_shot
+    treats exit 0 as "ran to completion", which would downgrade a real
+    failure to a passing skip."""
+    bad = f"/postern-portal\tportal\trunning\tnot-a-number\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n"
+    with pytest.raises(vd.CollectError):
+        _collect(FakeRunner(containers_out=bad))
+
+
 def test_collect_refuses_an_empty_service_set():
     """A wrong --project-dir must not produce a green run that verified
     nothing. Same vacuous-pass guard the docs gates use."""
@@ -479,6 +521,17 @@ def test_missing_container_fails():
     assert "docker compose up -d --build" in check.fix
 
 
+def test_fix_hints_never_use_the_status_swallowing_export_form():
+    """`export VAR=$(cmd)` always returns 0 regardless of cmd's exit status
+    (verified separately), so a failing --print-revision inside a fix hint
+    would go unnoticed and the chained `&&` would rebuild yet another
+    unstamped image. Every fix hint that computes GIT_REVISION must use the
+    two-statement `VAR=$(cmd) && export VAR` form instead."""
+    check = _labels(vd.evaluate(_obs(containers=()), HEAD))["service portal: running"]
+    assert 'export GIT_REVISION="$(' not in check.fix
+    assert 'GIT_REVISION="$(scripts/verify-deploy.py --print-revision)" && export GIT_REVISION' in check.fix
+
+
 def test_exited_container_fails():
     obs = _obs(
         containers=_portal_and_proxy(
@@ -571,11 +624,15 @@ def test_same_revision_different_id_names_the_rebuild_case():
     assert check.status == "fail" and "same revision" in check.detail
 
 
-def test_unprovenanced_tag_names_the_e2e_case():
-    """The realistic #194 collision: e2e builds carry NO revision, so the tag
-    ends up with an empty label."""
+def test_unprovenanced_tag_is_diagnosed_without_naming_a_specific_culprit():
+    """An unprovenanced rebuild (empty revision label) could come from
+    anywhere -- a manual build, a different checkout, a restored image.
+    Naming one specific historical cause risks becoming stale advice once
+    that cause is fixed elsewhere."""
     check = _labels(vd.evaluate(_moved_tag(""), HEAD))["service portal: image identity"]
-    assert check.status == "fail" and "#194" in check.detail
+    assert check.status == "fail"
+    assert "rebuilt without provenance" in check.detail
+    assert "#194" not in check.detail
 
 
 def test_missing_tag_fails():
@@ -644,6 +701,39 @@ def test_exited_tunnel_fails():
     obs = _obs(ss_containers=(_cs("", "ss-abc", "sha256:ddd", HEAD, "", state="exited", exit_code=1), ))
     check = _labels(vd.evaluate(obs, HEAD, tunnels=True))["tunnel ss-abc: running"]
     assert check.status == "fail" and "exited" in check.detail
+
+
+def test_no_tunnel_containers_with_tunnels_requested_is_honestly_ambiguous():
+    """Zero tunnels is indistinguishable, from this tool alone, between "no
+    connections are enabled" and "the reconcile pass this check trusts has
+    not converged yet" -- resolving that needs an authoritative expected
+    count from the portal, which would violate the no-portal-dependency
+    design (see the module docstring). The message must say so rather than
+    implying a confirmed-empty state."""
+    report = vd.evaluate(_obs(ss_containers=()), HEAD, tunnels=True)
+    check = _labels(report)["tunnels: image identity"]
+    assert check.status == "skip"
+    assert "has not converged yet" in check.detail
+    assert report.exit_code == 0
+
+
+def test_tunnels_present_but_image_not_local_is_one_failure_not_one_per_tunnel():
+    """When the tunnel tag itself is missing locally, every tunnel is "wrong"
+    for the identical reason, and `postern reconcile` cannot fix that --
+    only rebuilding the image can. A per-tunnel mismatch row with a
+    guaranteed-no-op fix would be actively misleading."""
+    obs = _obs(
+        ss_containers=(_cs("", "ss-abc", "sha256:ddd", HEAD, ""), _cs("", "ss-def", "sha256:eee", HEAD, "")),
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": ""},
+    )
+    report = vd.evaluate(obs, HEAD, tunnels=True)
+    labels = _labels(report)
+    check = labels["tunnels: image identity"]
+    assert check.status == "fail"
+    assert "not present locally" in check.detail
+    assert "shadowsocks/Dockerfile" in check.fix
+    assert "tunnel ss-abc: image identity" not in labels
+    assert "tunnel ss-def: image identity" not in labels
 
 
 def _dirty_obs(dirty):
@@ -735,6 +825,21 @@ def test_main_reports_a_collect_failure_as_a_check_not_a_traceback(monkeypatch, 
     captured = capsys.readouterr()
     assert "env file .env not found" in captured.out
     assert "Traceback" not in captured.out + captured.err
+
+
+def test_main_collect_failure_json_exit_code_matches_the_process_exit_code(monkeypatch, capsys, isolated):
+    """The JSON payload's `exit_code` field and the real process exit code
+    must agree -- a caller that parses the JSON (rather than reading `$?`)
+    must not read a 1 where the process actually returned 2."""
+
+    def boom(*a, **k):
+        raise vd.CollectError("env file .env not found")
+
+    monkeypatch.setattr(vd, "collect", boom)
+    process_exit_code = vd.main([*isolated, "--json"])
+    assert process_exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["exit_code"] == 2
 
 
 def test_main_reports_a_missing_project_dir_as_a_check_not_a_traceback(repo):

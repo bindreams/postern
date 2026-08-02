@@ -19,8 +19,8 @@ Two staleness modes, each with a different fix:
   * stale revision -- the image was never rebuilt from this checkout
     (`docker compose up -d --build` was skipped). This is issue #195's incident.
   * stale image ID -- the tag was rebuilt but the container was not recreated,
-    OR something else on this host moved the tag (until #194 lands, the e2e
-    suite builds into the same global tags as production).
+    OR something else on this host moved the tag (a manual build, a different
+    checkout, a restored image).
 
 Plus a liveness check: a container's health status (from its Docker
 HEALTHCHECK, when one is defined) must not be `unhealthy`. This is
@@ -72,6 +72,12 @@ class Report:
     project: str
     revision: str
     checks: list[Check] = field(default_factory=list)
+    # Overrides the computed 0/1 below. Exists solely for main()'s CollectError
+    # path: that Report carries one failing Check (so the printed text/JSON
+    # reads as a failure), but the process must exit 2, not 1 -- "could not
+    # run" is not a verdict, and the JSON payload's exit_code field must agree
+    # with the real process exit code or a caller parsing the JSON is misled.
+    exit_code_override: int | None = None
 
     @property
     def failures(self) -> list[Check]:
@@ -79,6 +85,8 @@ class Report:
 
     @property
     def exit_code(self) -> int:
+        if self.exit_code_override is not None:
+            return self.exit_code_override
         return 1 if self.failures else 0
 
 
@@ -120,7 +128,11 @@ def git_revision(repo: Path) -> str:
 
     def git(*args: str) -> str:
         try:
-            proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+            # errors="replace": a git output byte sequence invalid for the
+            # locale's encoding must not raise UnicodeDecodeError -- that would
+            # violate "no failure path produces a traceback" the same way an
+            # uncaught OSError would.
+            proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, errors="replace")
         except OSError as exc:  # git not installed
             raise RevisionError(f"cannot run git: {exc}") from exc
         if proc.returncode != 0:
@@ -202,7 +214,8 @@ class Observation:
 
 def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     try:
-        proc = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True)
+        # errors="replace": see the matching comment in git_revision.git().
+        proc = subprocess.run(list(argv), cwd=cwd, capture_output=True, text=True, errors="replace")
     except OSError as exc:
         # A typo'd --project-dir, or `docker` missing from PATH. Same class as
         # RevisionError: a misconfiguration must read as a message, not a stack
@@ -251,18 +264,34 @@ def resolve_instance_id(config: dict, project: str) -> str:
 
 
 def _parse_containers(stdout: str) -> tuple[ContainerState, ...]:
+    """Parse `_CONTAINER_FMT`'s tab-separated output.
+
+    Both checks below raise CollectError rather than padding/truncating or
+    defaulting silently: a label value an operator controls (GIT_REVISION,
+    forwarded verbatim into org.opencontainers.image.revision) could in
+    principle contain a tab or newline, which would shift every field after
+    it. A field-count mismatch is exactly that shift; an unparseable exit
+    code is the same failure surfacing one field over. Either one silently
+    misreading `revision` or `health` -- or defaulting `exit_code` to 0, which
+    `ContainerState.completed_one_shot` treats as "exited cleanly" -- is worse
+    than a loud stop.
+    """
     states: list[ContainerState] = []
     for line in stdout.splitlines():
         if not line.strip():
             continue
-        parts = (line.split("\t") + [""] * 8)[:8]
+        parts = line.split("\t")
+        if len(parts) != 8:
+            raise CollectError(f"docker inspect produced {len(parts)} fields (expected 8) in line: {line!r}")
         name, service, state, exit_code, restart_policy, image_id, revision, health = parts
+        if not exit_code.strip().lstrip("-").isdigit():
+            raise CollectError(f"docker inspect produced a non-numeric exit code {exit_code!r} for {name!r}")
         states.append(
             ContainerState(
                 service=service,
                 name=name.lstrip("/"),
                 state=state,
-                exit_code=int(exit_code) if exit_code.strip().lstrip("-").isdigit() else 0,
+                exit_code=int(exit_code),
                 restart_policy=restart_policy,
                 image_id=image_id,
                 revision=revision,
@@ -291,6 +320,14 @@ def _names(run: Runner, *filters: str) -> list[str]:
     for docker_filter in filters:
         argv += ["--filter", docker_filter]
     result = run([*argv, "--format", "{{.Names}}"], None)
+    if result.returncode != 0:
+        # Unlike `docker inspect` (see `_inspect`'s docstring), a non-zero
+        # `docker ps` has no useful partial output -- it means the daemon or
+        # the filter expression is broken, not "some names were not found".
+        # Reading it as "zero containers" would misreport a broken
+        # environment as every service missing (exit 1), when it must be
+        # exit 2: not a verdict about the deployment.
+        raise CollectError(f"docker ps failed: {result.stderr.strip()}")
     return [n.strip() for n in result.stdout.splitlines() if n.strip()]
 
 
@@ -378,7 +415,15 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
 # `VAR=x cmd --flag "$VAR"` does not work either -- the shell expands "$VAR"
 # before the assignment takes effect, so the build arg arrives empty. Hence two
 # statements, not a one-line prefix.
-_EXPORT = 'export GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"'
+#
+# The two statements must be `VAR=$(cmd) && export VAR`, NOT `export
+# VAR=$(cmd)`: `export` is a declaration command and always returns 0
+# regardless of the substitution's exit status (verified: `export
+# FOO="$(exit 3)"; echo $?` prints 0 in both bash and zsh), so a failing
+# --print-revision would be swallowed and the chained `&&` would proceed to
+# rebuild yet another unstamped image -- the exact failure mode
+# docs/operations/index.md's runbook calls out avoiding.
+_EXPORT = 'GIT_REVISION="$(scripts/verify-deploy.py --print-revision)" && export GIT_REVISION'
 _UP = f"{_EXPORT} && docker compose up -d --build"
 _SS_BUILD = (
     f"{_EXPORT} && docker build -f shadowsocks/Dockerfile "
@@ -414,8 +459,8 @@ def _check_identity(label: str, container: ContainerState, service: ServiceSpec,
     if not tag_revision:
         detail = (
             f"{moved}: the tag was rebuilt without provenance -- something other than a "
-            "postern deploy moved it, e.g. the e2e suite, which builds into the same "
-            "global tags (issue #194)"
+            "postern deploy moved it (a manual `docker build`, a different checkout, or a "
+            "restored image)"
         )
     elif tag_revision == container.revision:
         detail = f"{moved}: same revision, so the tag was rebuilt rather than advanced"
@@ -571,24 +616,47 @@ def evaluate(
             )
         )
     elif not obs.ss_containers:
-        checks.append(Check("tunnels: image identity", "skip", "no tunnel containers"))
+        # Not distinguishable from "the reconcile pass this check trusts
+        # already completed hasn't converged yet" -- see --tunnels' own help
+        # text and the CLAUDE.md invariant this check is pinned by. A
+        # deployment can legitimately have zero enabled connections, so this
+        # cannot become a FAIL without an authoritative expected count, which
+        # would mean querying the portal -- exactly the "no portal
+        # dependency" property this script is built around (see the module
+        # docstring's reason 2).
+        checks.append(
+            Check(
+                "tunnels: image identity", "skip", "no tunnel containers for this instance -- either no "
+                "connections are enabled, or the reconcile pass this check trusts has not converged yet"
+            )
+        )
     else:
         ss_tag_id = obs.tag_ids.get(obs.ss_image, "")
-        for tunnel in obs.ss_containers:
-            if tunnel.state != "running":
-                checks.append(Check(f"tunnel {tunnel.name}: running", "fail", f"is {tunnel.state}", _RECONCILE))
-                continue
-            checks.append(Check(f"tunnel {tunnel.name}: running", "ok", tunnel.state))
-            label = f"tunnel {tunnel.name}: image identity"
-            if ss_tag_id and tunnel.image_id == ss_tag_id:
-                checks.append(Check(label, "ok", f"on {ss_tag_id[:19]}"))
-            else:
-                checks.append(
-                    Check(
-                        label, "fail", f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}",
-                        _RECONCILE
+        if not ss_tag_id:
+            # One row, not one per tunnel: every tunnel is equally "wrong" in
+            # the same way (the tag we'd compare against does not exist
+            # locally), and `postern reconcile` cannot fix that -- _SS_BUILD
+            # can. A per-tunnel loop below would repeat a mismatch message
+            # with a fix that is a guaranteed no-op.
+            checks.append(
+                Check("tunnels: image identity", "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD)
+            )
+        else:
+            for tunnel in obs.ss_containers:
+                if tunnel.state != "running":
+                    checks.append(Check(f"tunnel {tunnel.name}: running", "fail", f"is {tunnel.state}", _RECONCILE))
+                    continue
+                checks.append(Check(f"tunnel {tunnel.name}: running", "ok", tunnel.state))
+                label = f"tunnel {tunnel.name}: image identity"
+                if tunnel.image_id == ss_tag_id:
+                    checks.append(Check(label, "ok", f"on {ss_tag_id[:19]}"))
+                else:
+                    checks.append(
+                        Check(
+                            label, "fail", f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}",
+                            _RECONCILE
+                        )
                     )
-                )
 
     return Report(project=obs.project, revision=expected_revision, checks=checks)
 
@@ -706,9 +774,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "run from the deployment's project directory, or pass --project-dir"
                 )
             ],
+            exit_code_override=2,  # a CollectError is "could not run", not "stale" -- keep JSON and $? in agreement
         )
         print(render_json(report) if args.output_json else render_text(report), end="")
-        return 2
+        return report.exit_code
     report = evaluate(observation, expected, allow_dirty=args.allow_dirty, tunnels=args.tunnels)
     print(render_json(report) if args.output_json else render_text(report), end="")
     return report.exit_code

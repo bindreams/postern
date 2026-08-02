@@ -134,7 +134,7 @@ Profiles must be set in `.env` — a CLI-only `docker compose --profile` flag is
 ```
 
 ```{warning}
-Do **not** put `GIT_REVISION` in `.env`. Compose interpolates `.env` first-class, so a value parked there silently pins one revision into every future build, and `scripts/verify-deploy.py` will then certify a stale deployment as current.
+Do **not** put `GIT_REVISION` in `.env`. Compose interpolates `.env` first-class, so a value parked there silently pins every future build to that one fixed revision — after the next `git pull`, images keep carrying the old SHA while `scripts/verify-deploy.py` compares against the checkout's new `HEAD`, and the gate fails with a revision mismatch that looks exactly like a deploy that did not take.
 ```
 
 ## Changing the domain

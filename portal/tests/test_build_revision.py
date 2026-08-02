@@ -95,8 +95,16 @@ def test_compose_forwards_the_revision_to_every_built_service():
 def test_overlays_declare_no_builds():
     """If an overlay ever adds a `build:` it needs the arg too -- fail here so
     the omission is not silent. Globbed, not listed: a NEW overlay file is
-    exactly the omission this is meant to catch."""
-    overlays = sorted(p for p in REPO_ROOT.glob("compose*.yaml") if p.name != "compose.yaml")
+    exactly the omission this is meant to catch.
+
+    Two glob shapes at repo root: the existing overlays are `compose.<name>.yaml`
+    (matched by `compose*.yaml`); CLAUDE.md's general Compose-file convention is
+    `<name>.compose.yaml` for a supplementary file, which `compose*.yaml` would
+    NOT match. Glob both so a future root overlay following either convention
+    is covered.
+    """
+    overlays = sorted((set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml"))) -
+                      {REPO_ROOT / "compose.yaml"})
     assert overlays, "found no compose overlays -- this gate would pass vacuously"
     for path in overlays:
         for name, svc in (load_compose(path).get("services") or {}).items():

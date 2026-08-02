@@ -27,6 +27,7 @@ MUST_KEEP = {
     "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA"],
     "operations/rename.md": ["_domainkey", "docker compose down"],
     "operations/index.md": ["postern reconcile", "scripts/verify-deploy.py"],
+    "operations/cli.md": ["Never set `POSTERN_REVISION`"],
     "development/architecture.md": ["`CONTAINERS`, `NETWORKS`, `IMAGES`"],
     "getting-started.md": ["local/shadowsocks-server", "requires HTTPS"],
     "connecting.md": ["galoshes", "127.0.0.1:1080"],

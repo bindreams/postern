@@ -444,6 +444,14 @@ def test_resolve_ss_image_without_a_portal_service():
     assert vd.resolve_ss_image({"services": {}}, "") == "local/shadowsocks-server"
 
 
+def test_resolve_ss_image_is_case_insensitive():
+    """`Settings` (pydantic-settings) has no model_config overriding the
+    library default of case-INSENSITIVE env vars -- a lowercase `.env` entry
+    is authoritative for the portal and must not be missed here."""
+    config = {"services": {"portal": {"environment": {"shadowsocks_image": "local/from-lowercase-env"}}}}
+    assert vd.resolve_ss_image(config, "") == "local/from-lowercase-env"
+
+
 # Instance resolution --------------------------------------------------------------------------------------------------
 def test_resolve_instance_id_defaults_to_the_project_name():
     assert vd.resolve_instance_id({"services": {}}, "postern") == "postern"
@@ -457,6 +465,11 @@ def test_resolve_instance_id_prefers_an_override():
 def test_resolve_instance_id_ignores_a_blank_override():
     config = {"services": {"portal": {"environment": {"INSTANCE_ID": ""}}}}
     assert vd.resolve_instance_id(config, "postern") == "postern"
+
+
+def test_resolve_instance_id_is_case_insensitive():
+    config = {"services": {"portal": {"environment": {"instance_id": "lower-inst"}}}}
+    assert vd.resolve_instance_id(config, "postern") == "lower-inst"
 
 
 # Evaluation -----------------------------------------------------------------------------------------------------------
@@ -669,6 +682,31 @@ def test_no_healthcheck_configured_skips():
     obs = _obs(containers=_portal_and_proxy(_cs("portal", "postern-portal", "sha256:aaa", HEAD, "")))
     check = _labels(vd.evaluate(obs, HEAD))["service portal: health"]
     assert check.status == "skip" and "no healthcheck" in check.detail
+
+
+def test_exited_container_with_a_stale_unhealthy_probe_skips_health_not_fails():
+    """Docker stops probing on exit and freezes Health.Status at the last
+    probe. The provisioner (restart: "no", HEALTHCHECK defined) can exit 0
+    cleanly with a stale "unhealthy" from before shutdown -- exactly the
+    completed_one_shot case the neighboring `running` check already skips.
+    A frozen, no-longer-meaningful probe result must not fail the gate."""
+    obs = _obs(
+        containers=_portal_and_proxy(
+            _cs(
+                "portal",
+                "postern-portal",
+                "sha256:aaa",
+                HEAD,
+                "unhealthy",
+                state="exited",
+                exit_code=0,
+                restart_policy="no"
+            )
+        )
+    )
+    check = _labels(vd.evaluate(obs, HEAD))["service portal: health"]
+    assert check.status == "skip"
+    assert "frozen" in check.detail
 
 
 def test_orphan_container_fails():

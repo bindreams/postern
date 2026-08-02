@@ -8,6 +8,7 @@ the running container's image to prove the deploy actually happened.
 The ARG/LABEL pair is last in the final stage so a new revision invalidates
 only the final layer.
 """
+import subprocess
 from pathlib import Path
 
 from ._compose import load_compose
@@ -37,16 +38,31 @@ def _discovered_dockerfiles() -> set[str]:
     """Every deployable Dockerfile, found rather than listed -- so ADDING one
     reds this gate and forces a decision instead of silently escaping it.
 
+    `git ls-files`, not a filesystem walk: this repo's own workflow
+    (CLAUDE.local.md) puts full nested checkouts -- each with its own
+    portal/Dockerfile, nginx/Dockerfile, etc. -- under the gitignored
+    `.tmp/claude/worktrees/`. A `Path.rglob` would find every one of those
+    too and red this gate on any machine that follows that workflow.
+
     Matches the repo's naming convention (CLAUDE.md): a Dockerfile is named
     exactly `Dockerfile` or `<name>.Dockerfile`. `*Dockerfile*` alone would
     also match `portal/Dockerfile.dockerignore`, which is a BuildKit ignore
     file, not a Dockerfile.
     """
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "--", "*Dockerfile*"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     found = set()
-    for path in REPO_ROOT.rglob("*Dockerfile*"):
-        if not path.is_file() or not (path.name == "Dockerfile" or path.name.endswith(".Dockerfile")):
+    for rel in result.stdout.splitlines():
+        rel = rel.strip()
+        if not rel:
             continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
+        name = rel.rsplit("/", 1)[-1]
+        if not (name == "Dockerfile" or name.endswith(".Dockerfile")):
+            continue
         if rel.startswith("external/") or rel.startswith("portal/tests/"):
             continue
         found.add(rel)

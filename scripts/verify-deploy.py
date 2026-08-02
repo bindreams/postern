@@ -224,6 +224,20 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
+def _portal_env(config: dict) -> dict[str, str]:
+    """The compose-resolved portal environment, keyed upper-case.
+
+    `Settings` (pydantic-settings) has no `model_config` overriding the
+    library default, which is case-INSENSITIVE: a `.env` entry spelled
+    `shadowsocks_image=...` or `instance_id=...` is authoritative for the
+    portal, and a case-sensitive `dict.get` here would miss it -- silently,
+    in the passing direction, which is the one failure mode this script
+    exists to eliminate.
+    """
+    raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
+    return {k.upper(): v for k, v in raw.items()}
+
+
 def resolve_ss_image(config: dict, flag: str) -> str:
     """The tunnel image ref the portal will actually spawn.
 
@@ -239,8 +253,7 @@ def resolve_ss_image(config: dict, flag: str) -> str:
     """
     if flag:
         return flag
-    portal_env = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
-    return portal_env.get("SHADOWSOCKS_IMAGE") or DEFAULT_SS_IMAGE
+    return _portal_env(config).get("SHADOWSOCKS_IMAGE") or DEFAULT_SS_IMAGE
 
 
 def resolve_instance_id(config: dict, project: str) -> str:
@@ -258,8 +271,7 @@ def resolve_instance_id(config: dict, project: str) -> str:
     deployment (production + an e2e run, two checkouts, ...) from reporting
     a DIFFERENT deployment's tunnels as this one's.
     """
-    portal_env = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
-    override = (portal_env.get("INSTANCE_ID") or "").strip()
+    override = (_portal_env(config).get("INSTANCE_ID") or "").strip()
     return override or project
 
 
@@ -559,8 +571,18 @@ def evaluate(
         # Health: point-in-time, not polled. `starting` (right after `up -d`,
         # before the first probe) passes; only `unhealthy` fails. A container
         # with no HEALTHCHECK reports "" and is skipped, not blamed.
+        #
+        # Gated on state == "running": Docker stops probing on exit and
+        # freezes Health.Status at whatever the last probe said, so an exited
+        # `restart: "no"` container (the provisioner, exactly the case
+        # `completed_one_shot` above exists to not red-flag) can carry a
+        # stale "unhealthy" from its last probe before it shut down cleanly,
+        # or a stale "healthy" from before it crashed. Neither says anything
+        # about a container that is not running right now.
         health_label = f"service {service.name}: health"
-        if not container.health:
+        if container.state != "running":
+            checks.append(Check(health_label, "skip", "not running; health status is a frozen last-probe value"))
+        elif not container.health:
             checks.append(Check(health_label, "skip", "no healthcheck configured"))
         elif container.health == "unhealthy":
             checks.append(

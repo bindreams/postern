@@ -11,6 +11,11 @@ from pathlib import Path
 from postern.settings import Settings
 
 from ._compose import load_compose
+# The e2e image-name constants live in _helpers.py (it's what _edge_helpers.py,
+# test_tunnel.py, and test_mta_real.py actually import for their docker
+# run/build calls); import rather than redefine so there is one source of
+# truth to check the compose files against, not two that could drift.
+from .e2e._helpers import E2E_NGINX_IMAGE, E2E_PROVISIONER_IMAGE, E2E_SHADOWSOCKS_IMAGE
 
 # portal/tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -19,9 +24,6 @@ TEST_SUFFIX = "-test"
 E2E_SOURCE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
 CI_DIR = REPO_ROOT / ".github"
 DOCS_DIR = REPO_ROOT / "docs"
-E2E_SHADOWSOCKS_IMAGE = f"local/shadowsocks-server{TEST_SUFFIX}"
-E2E_NGINX_IMAGE = f"local/nginx{TEST_SUFFIX}"
-E2E_PROVISIONER_IMAGE = f"local/postern-provisioner{TEST_SUFFIX}"
 
 # Any `local/<name>` reference, boundary-anchored so `/usr/local/bin/...` and
 # `sslocal` -- both of which appear for real under portal/tests/e2e/ -- can
@@ -57,8 +59,10 @@ def _files_under(root: Path) -> list[Path]:
 
 def _services(path: Path) -> dict:
     data = load_compose(path)
-    services = data.get("services") or {}
-    assert isinstance(services, dict), f"{path.relative_to(REPO_ROOT)}: services: is not a mapping"
+    rel = path.relative_to(REPO_ROOT)
+    assert "services" in data, f"{rel}: no top-level 'services' key"
+    services = data["services"]
+    assert isinstance(services, dict), f"{rel}: services: is not a mapping"
     return services
 
 
@@ -92,8 +96,7 @@ def production_images() -> set[str]:
 
 
 def test_production_image_inventory_is_complete():
-    """Tripwire, not a ban list: a new production service must make a human look
-    at whether the e2e side needs a matching -test image."""
+    """Pins production_images()'s docstring-stated tripwire behavior."""
     assert production_images() == {
         "local/nginx",
         "local/postern-portal",
@@ -132,8 +135,7 @@ def test_e2e_compose_images_use_test_suffix():
     images = _e2e_compose_service_images()
     assert images, "no e2e compose service declares a local/ image -- this guard would pass vacuously"
     problems = [
-        f"{path.relative_to(REPO_ROOT)}: service {name!r} declares {image!r}"
-        for path, name, image in images
+        f"{path.relative_to(REPO_ROOT)}: service {name!r} declares {image!r}" for path, name, image in images
         if not _is_e2e_owned(image)
     ]
     assert not problems, (
@@ -146,8 +148,8 @@ def test_e2e_portal_services_point_reconciler_at_e2e_shadowsocks_image():
     """Every e2e compose file that declares a `portal` service must pin
     SHADOWSOCKS_IMAGE in its own `portal.environment` block. `Settings.
     shadowsocks_image` defaults to the production tag, so an unpinned e2e
-    portal would adopt, recreate, and remove a co-located production stack's
-    `ss-*` containers."""
+    portal would create/recreate `ss-*` containers from the production
+    image instead of the e2e one."""
     files_with_portal = []
     problems = []
     for path in e2e_compose_files():
@@ -162,24 +164,18 @@ def test_e2e_portal_services_point_reconciler_at_e2e_shadowsocks_image():
             problems.append(f"{path.relative_to(REPO_ROOT)}: portal SHADOWSOCKS_IMAGE is {value!r}")
     assert files_with_portal, "no e2e compose file declares a portal service -- this guard would pass vacuously"
     assert not problems, (
-        f"E2e portal services must set SHADOWSOCKS_IMAGE={E2E_SHADOWSOCKS_IMAGE!r}:\n"
-        + "\n".join(f"  {p}" for p in problems)
+        f"E2e portal services must set SHADOWSOCKS_IMAGE={E2E_SHADOWSOCKS_IMAGE!r}:\n" +
+        "\n".join(f"  {p}" for p in problems)
     )
 
 
-def test_e2e_helpers_image_constants_match_compose():
-    """`portal/tests/e2e/_helpers.py` defines its own copies of the nginx,
-    provisioner, and shadowsocks image names (consumed by `_edge_helpers.py`,
-    `test_tunnel.py`, and `test_mta_real.py`'s one-off `docker run`/`docker
-    build` calls). Cross-check them against what the compose files actually
-    declare so the two can't silently drift -- a typo here would only surface
-    as "no such image" at e2e runtime otherwise."""
-    from .e2e._helpers import E2E_NGINX_IMAGE as helpers_nginx_image
-    from .e2e._helpers import E2E_PROVISIONER_IMAGE as helpers_provisioner_image
-    from .e2e._helpers import E2E_SHADOWSOCKS_IMAGE as helpers_shadowsocks_image
-
-    assert helpers_shadowsocks_image == E2E_SHADOWSOCKS_IMAGE
-    expected = {"nginx": helpers_nginx_image, "provisioner": helpers_provisioner_image}
+def test_e2e_compose_images_match_helpers_constants():
+    """The nginx and provisioner images declared in the compose files must
+    match `_helpers.py`'s `E2E_NGINX_IMAGE`/`E2E_PROVISIONER_IMAGE` -- the
+    constants `_edge_helpers.py` and `test_mta_real.py` actually build their
+    `docker run` calls from. A mismatch would only surface as "no such
+    image" at e2e runtime otherwise."""
+    expected = {"nginx": E2E_NGINX_IMAGE, "provisioner": E2E_PROVISIONER_IMAGE}
     checked = set()
     problems = []
     for path, name, image in _e2e_compose_service_images():
@@ -187,7 +183,9 @@ def test_e2e_helpers_image_constants_match_compose():
             continue
         checked.add(name)
         if image != expected[name]:
-            problems.append(f"{path.relative_to(REPO_ROOT)}: {name} image {image!r} != _helpers.py's {expected[name]!r}")
+            problems.append(
+                f"{path.relative_to(REPO_ROOT)}: {name} image {image!r} != _helpers.py's {expected[name]!r}"
+            )
     assert checked == set(expected), f"expected to find compose images for {set(expected)}, found {checked}"
     assert not problems, "\n".join(problems)
 
@@ -201,8 +199,8 @@ def test_no_e2e_source_names_a_production_image():
     problems = _scan(_files_under(E2E_SOURCE_DIR))
     assert not problems, (
         "Nothing under portal/tests/e2e/ may name an unsuffixed local/ image -- "
-        f"use the local/<name>{TEST_SUFFIX} constants in tests/e2e/_helpers.py:\n"
-        + "\n".join(f"  {p}" for p in problems)
+        f"use the local/<name>{TEST_SUFFIX} constants in tests/e2e/_helpers.py:\n" +
+        "\n".join(f"  {p}" for p in problems)
     )
 
 
@@ -247,6 +245,6 @@ def test_e2e_documenting_pages_name_no_production_image():
     assert pages, f"no non-exempt page found under {DOCS_DIR} -- this scan would pass vacuously"
     problems = _scan(pages)
     assert not problems, (
-        "Pages documenting e2e builds must not reference a production image tag:\n"
-        + "\n".join(f"  {p}" for p in problems)
+        "Pages documenting e2e builds must not reference a production image tag:\n" +
+        "\n".join(f"  {p}" for p in problems)
     )

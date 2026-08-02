@@ -52,10 +52,10 @@ services:
       SMTP_FROM: noreply@postern.test
       DOMAIN: postern.test
       SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
-      # Edge suite never creates a connection, so this image is never built here --
-      # _image_exists logs and returns early each pass, which is intended. Pointing
-      # at the production tag would instead let this portal's orphan sweep adopt
-      # and remove a co-located production stack's containers.
+      # See e2e.compose.yaml's portal.environment for why SHADOWSOCKS_IMAGE
+      # must be set. The edge suite never creates a connection, so with the
+      # correct e2e tag here _image_exists (reconciler.py) never finds this
+      # image, and each reconcile pass returns before touching a container.
       SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:

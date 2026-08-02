@@ -465,10 +465,9 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
         "the portal service's SHADOWSOCKS_IMAGE env is missing or wrong"
     )
 
-    # Bump the image with a no-op label change so the digest changes. Tags
-    # the e2e image, never the unsuffixed production default: this build is
-    # a live tag overwrite on whatever host runs the suite, and it is never
-    # restored.
+    # Bump the image with a no-op label change so the digest changes. This
+    # build is a live tag overwrite on whatever host runs the suite, and it
+    # is never restored.
     bump_dockerfile = (f"FROM {E2E_SHADOWSOCKS_IMAGE}\n"
                        "LABEL postern.test.bump=1\n")
     subprocess.run(

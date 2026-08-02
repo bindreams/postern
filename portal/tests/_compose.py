@@ -2,8 +2,7 @@
 
 `compose.gateway.yaml` uses Docker Compose's `!reset` merge tag (`ports: !reset []`),
 which plain `yaml.safe_load` rejects with a ConstructorError. Every test that
-parses a compose file therefore needs this loader, not just the gateway one --
-three modules had grown their own copy of the same workaround.
+parses a compose file needs this loader, not just the gateway one.
 
 Only `!reset` is registered; add `!override` (with its own test) when a file
 first needs it -- not before.

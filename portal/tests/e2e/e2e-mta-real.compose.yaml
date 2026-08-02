@@ -135,8 +135,9 @@ services:
       SMTP_PORT: "587"
       SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
       DOMAIN: ${MTA_TEST_DOMAIN}
-      # Restated from e2e.compose.yaml's portal block -- see the comment in
-      # e2e-mta.compose.yaml's portal.environment for why.
+      # Restated from e2e.compose.yaml's portal block: this guard checks each
+      # file's own text and does not assume it is always layered onto the
+      # base file. Redundant, not conflicting, when it is.
       SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
     volumes:
       - postern-mta-data:/var/lib/opendkim:ro

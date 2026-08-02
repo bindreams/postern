@@ -30,6 +30,6 @@ def load_compose(path: Path) -> dict:
 
     Does not perform Compose's multi-file merge semantics -- callers that need
     the effect of `docker compose -f a -f b config` should shell out to the
-    Compose CLI instead. This function reads exactly one file as YAML.
+    Compose CLI instead.
     """
     return yaml.load(path.read_text(encoding="utf-8"), Loader=ComposeLoader) or {}

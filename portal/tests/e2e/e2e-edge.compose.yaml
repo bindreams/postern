@@ -53,9 +53,14 @@ services:
       DOMAIN: postern.test
       SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
       # See e2e.compose.yaml's portal.environment for why SHADOWSOCKS_IMAGE
-      # must be set. The edge suite never creates a connection, so with the
-      # correct e2e tag here _image_exists (reconciler.py) never finds this
-      # image, and each reconcile pass returns before touching a container.
+      # must be set. The edge suite never creates a connection, so its DB has
+      # no desired containers -- if the e2e shadowsocks image happens to
+      # exist on this host (e.g. the base suite already built it), reconcile
+      # does NOT return early and the orphan sweep removes every
+      # postern.managed=true container host-wide, base stack included (see
+      # issue #197: ownership isn't scoped per stack). Pointing this at the
+      # e2e tag at least keeps that sweep from ALSO recreating containers
+      # from the wrong image; it does not make the sweep itself safe.
       SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:

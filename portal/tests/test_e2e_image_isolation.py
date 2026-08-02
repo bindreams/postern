@@ -111,7 +111,7 @@ def test_production_image_inventory_is_complete():
 
 # E2e compose files ====================================================================================================
 def e2e_compose_files() -> list[Path]:
-    files = sorted(E2E_SOURCE_DIR.glob("*.compose.yaml"))
+    files = sorted(E2E_SOURCE_DIR.rglob("*.compose.yaml"))
     assert files, f"no *.compose.yaml under {E2E_SOURCE_DIR} -- these guards would pass vacuously"
     return files
 

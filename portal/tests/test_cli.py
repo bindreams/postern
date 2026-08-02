@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
@@ -17,7 +18,41 @@ def cli_env(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     monkeypatch.setenv("DATABASE_PATH", db_path)
     monkeypatch.setenv("SECRET_KEY", "test-secret")
+    # Resolved by default -- most tests aren't about instance-identity
+    # warnings and shouldn't have to think about this. Tests that DO care
+    # use _unresolve_identity() below to unset it.
+    monkeypatch.setenv("COMPOSE_PROJECT_NAME", "postern-test")
     return db_path
+
+
+def _unresolve_identity(monkeypatch):
+    """Make resolve_instance_id() return None for the rest of this test --
+    neither env var set. Used by the instance-identity-warning tests below;
+    kept as a shared helper since 5+ tests need it applied identically."""
+    monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
+    monkeypatch.delenv("INSTANCE_ID", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _mock_docker_client(monkeypatch):
+    """`connection disable` and `user delete` both construct a real
+    docker.DockerClient.from_env() (the disabled/deleted-connection legacy-
+    container check) -- CLAUDE.md pins that tests never need a real Docker
+    daemon. Without this, any test invoking either command depends on the
+    ambient DOCKER_HOST: on a host where it points at an unreachable (not
+    refusing) endpoint, docker-py's default 60s connect timeout would hang
+    the whole suite with no obvious cause.
+
+    Default: no container found (the common case, and harmless even for
+    tests that never look at Docker at all). Tests that need different
+    container-lookup behavior use `patch("docker.DockerClient.from_env",
+    ...)` in their own scope, which takes precedence for its duration.
+    """
+    import docker.errors
+    mock_client = MagicMock()
+    mock_client.containers.get.side_effect = docker.errors.NotFound("no such container")
+    monkeypatch.setattr("docker.DockerClient.from_env", MagicMock(return_value=mock_client))
+    return mock_client
 
 
 # User commands ========================================================================================================
@@ -92,6 +127,33 @@ def test_user_disable_not_found(cli_env):
     assert result.exit_code == 1
 
 
+def test_user_disable_warns_when_legacy_container_still_running(cli_env):
+    """`user disable` is the revoke-this-person's-access command -- it must
+    get the identical proactive legacy-container warning `connection
+    disable` and `user delete` do, not leave the operator to discover a
+    still-running pre-upgrade tunnel only via the reconciler's own
+    periodic log line."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+
+    import sqlite3
+    with sqlite3.connect(cli_env) as raw:
+        path_token = raw.execute("SELECT path_token FROM connections WHERE label='Phone'").fetchone()[0]
+
+    container = MagicMock()
+    container.labels = {"postern.managed": "true"}  # legacy: no instance label
+    container.status = "running"
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = container
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        result = runner.invoke(app, ["user", "disable", "alice@example.com"])
+
+    assert result.exit_code == 0
+    assert f"ss-{path_token}" in result.output
+    assert "docker rm -f" in result.output
+
+
 def test_user_delete(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["user", "delete", "alice@example.com"])
@@ -102,6 +164,49 @@ def test_user_delete(cli_env):
 def test_user_delete_not_found(cli_env):
     result = runner.invoke(app, ["user", "delete", "nobody@example.com"])
     assert result.exit_code == 1
+
+
+def test_user_delete_warns_when_legacy_container_still_running(cli_env):
+    """`user delete` cascades the connection row away at the database level
+    -- unlike `connection disable`, there is no surviving row for the
+    reconciler's own periodic check to ever match a legacy container
+    against afterward. This is the ONLY place that check can still happen,
+    so it must run before (or as part of) the delete, using the
+    still-known path_token."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    path_token_label = result.output  # "Created connection <id> (<plugin>, ech=<mode>)"
+    assert "Created connection" in path_token_label
+
+    import sqlite3
+    with sqlite3.connect(cli_env) as raw:
+        path_token = raw.execute("SELECT path_token FROM connections WHERE label='Phone'").fetchone()[0]
+
+    container = MagicMock()
+    container.labels = {"postern.managed": "true"}  # legacy: no instance label
+    container.status = "running"
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = container
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        result = runner.invoke(app, ["user", "delete", "alice@example.com"])
+
+    assert result.exit_code == 0
+    assert f"ss-{path_token}" in result.output
+    assert "docker rm -f" in result.output
+
+
+def test_user_delete_does_not_warn_when_no_connections(cli_env):
+    """A user with zero connections must not trigger any Docker lookup at
+    all -- the common case for `user add` immediately followed by `user
+    delete`."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+
+    with patch("docker.DockerClient.from_env") as mock_from_env:
+        result = runner.invoke(app, ["user", "delete", "alice@example.com"])
+
+    assert result.exit_code == 0
+    mock_from_env.assert_not_called()
 
 
 # Connection commands ==================================================================================================
@@ -327,3 +432,176 @@ def test_reconcile_creates_trigger_file(cli_env, tmp_path):
     result2 = runner.invoke(app, ["reconcile"])
     assert result2.exit_code == 0
     assert trigger.exists()
+
+
+def test_reconcile_fails_when_identity_unresolved(cli_env, monkeypatch):
+    """`postern reconcile` still writes the trigger file (harmless), but must
+    exit nonzero and warn -- silently reporting success while the reconciler
+    is about to no-op on every container would hide the misconfiguration."""
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["reconcile"])
+
+    assert result.exit_code == 1
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_reconcile_succeeds_when_identity_resolved(cli_env):
+    result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0
+    assert "WARNING" not in result.output
+
+
+# Instance identity warnings ===========================================================================================
+def test_user_disable_warns_when_identity_unresolved(cli_env, monkeypatch):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["user", "disable", "alice@example.com"])
+
+    assert result.exit_code == 0  # the disable itself still succeeds
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_user_delete_warns_when_identity_unresolved(cli_env, monkeypatch):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["user", "delete", "alice@example.com"])
+
+    assert result.exit_code == 0
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_connection_add_warns_when_identity_unresolved(cli_env, monkeypatch):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+
+    assert result.exit_code == 0
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_connection_disable_warns_when_identity_unresolved(cli_env, monkeypatch):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["connection", "disable", conn_id])
+
+    assert result.exit_code == 0
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_connection_enable_warns_when_identity_unresolved(cli_env, monkeypatch):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+    runner.invoke(app, ["connection", "disable", conn_id])
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["connection", "enable", conn_id])
+
+    assert result.exit_code == 0
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_connection_add_does_not_warn_when_identity_resolved(cli_env):
+    """The positive case: a correctly-configured deployment (the default
+    cli_env fixture already sets COMPOSE_PROJECT_NAME) must never see this
+    warning -- a regression here would false-positive-spam every ordinary
+    invocation."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+
+    assert result.exit_code == 0
+    assert "WARNING" not in result.output
+
+
+# Disabled-connection container survival warning =======================================================================
+def test_connection_disable_warns_when_legacy_container_still_running(cli_env, monkeypatch):
+    """The proactive, CLI-side counterpart to the reconciler's own
+    _report_legacy_running_containers: `connection disable` immediately
+    surfaces the same manual-remediation guidance instead of leaving the
+    operator to notice only in the reconciler's logs on the next pass."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+    path_token = _connection_path_token(cli_env, conn_id)
+
+    container = MagicMock()
+    container.labels = {"postern.managed": "true"}  # legacy: no instance label
+    container.status = "running"
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = container
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        result = runner.invoke(app, ["connection", "disable", conn_id])
+
+    assert result.exit_code == 0
+    assert f"ss-{path_token}" in result.output
+    assert "docker rm -f" in result.output
+
+
+def test_connection_disable_does_not_warn_for_own_instance_container(cli_env):
+    """A container already labelled for THIS instance is swept normally by
+    the reconciler on its next pass -- no separate CLI warning needed."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+
+    container = MagicMock()
+    container.labels = {"postern.managed": "true", "postern.instance": "postern-test"}
+    container.status = "running"
+    mock_client = MagicMock()
+    mock_client.containers.get.return_value = container
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        result = runner.invoke(app, ["connection", "disable", conn_id])
+
+    assert result.exit_code == 0
+    assert "docker rm -f" not in result.output
+
+
+def test_connection_disable_does_not_warn_when_no_container_exists(cli_env):
+    import docker.errors
+
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+
+    mock_client = MagicMock()
+    mock_client.containers.get.side_effect = docker.errors.NotFound("no such container")
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        result = runner.invoke(app, ["connection", "disable", conn_id])
+
+    assert result.exit_code == 0
+    assert "docker rm -f" not in result.output
+
+
+def test_connection_disable_reports_when_container_lookup_fails(cli_env):
+    """A Docker-side failure (docker-proxy unreachable, an APIError, ...)
+    other than a clean NotFound must not be silently discarded -- the
+    disable itself already succeeded, so this stays advisory (exit 0), but
+    the operator needs SOME signal that the safety check itself couldn't
+    run, distinct from "checked, and nothing to worry about"."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+
+    with patch("docker.DockerClient.from_env", side_effect=RuntimeError("docker-proxy unreachable")):
+        result = runner.invoke(app, ["connection", "disable", conn_id])
+
+    assert result.exit_code == 0
+    assert "NOTE: could not check" in result.output
+
+
+def _connection_path_token(db_path, conn_id):
+    import sqlite3
+    with sqlite3.connect(db_path) as raw:
+        row = raw.execute("SELECT path_token FROM connections WHERE id=?", (conn_id, )).fetchone()
+    return row[0] if row else None

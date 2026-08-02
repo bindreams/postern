@@ -94,6 +94,20 @@ def container_exists(name: str) -> bool:
     return name in result.stdout.split()
 
 
+def container_running(name: str) -> bool:
+    """Stronger than container_exists: a container that was stopped (even if
+    not yet removed) does NOT count as surviving. `_remove_container`
+    swallows stop/remove failures, so a container can be present-but-exited
+    after a partially-failed removal attempt -- `container_exists` alone
+    would miss that."""
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Running}}", name],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
 def wait_for_container(name: str, *, timeout: float = 15.0, present: bool = True) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

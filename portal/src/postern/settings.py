@@ -29,6 +29,17 @@ class Settings(BaseSettings):
     reconcile_interval_seconds: int = 60
     shadowsocks_image: str = "local/shadowsocks-server"
     shadowsocks_network: str = "shadowsocks"
+    # Auto-populated by compose.yaml (COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}) --
+    # NOT operator-facing. See reconciler.resolve_instance_id.
+    compose_project_name: str = ""
+    # Operator override for the per-deployment instance id (see
+    # reconciler.resolve_instance_id). Empty (default) uses compose_project_name
+    # above. Set explicitly only if that value could collide (e.g. two checkouts on
+    # one host whose directory basenames sanitize to the same default compose
+    # project name). Must be unique per Postern deployment sharing a Docker daemon --
+    # do not copy a .env containing it when cloning this stack; the reconciler logs
+    # both values at INFO at startup if this doesn't match compose_project_name.
+    instance_id: str = ""
 
     # Domain ===========================================================================================================
     domain: str = "postern.example.com"

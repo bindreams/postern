@@ -11,7 +11,12 @@ from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 
 from postern import db, identity
-from postern.reconciler import cleanup_all_containers, reconciliation_loop
+from postern.reconciler import (
+    cleanup_all_containers,
+    reconciliation_loop,
+    request_reconcile_shutdown,
+    wait_for_inflight_reconcile,
+)
 from postern.routes import brand_icon, dashboard, login
 from postern.settings import Settings
 
@@ -68,12 +73,16 @@ class PosternApp(FastAPI):
                 yield
             finally:
                 # Shutdown ---------------------------------------------------------------------------------------------
+                request_reconcile_shutdown()
                 reconciler_task.cancel()
                 try:
                     await reconciler_task
                 except asyncio.CancelledError:
                     pass
-                await cleanup_all_containers()
+                except Exception:
+                    logger.exception("Reconciler task raised unexpectedly during shutdown cancellation")
+                await wait_for_inflight_reconcile()
+                await cleanup_all_containers(settings)
                 # GeoIPReaders may have never been assigned if startup failed
                 # before that point (e.g. db.get_connection raised). Tolerate
                 # the absence so shutdown doesn't swallow the real cause behind

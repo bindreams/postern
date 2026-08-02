@@ -44,6 +44,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
       SECRET_KEY: test-e2e-edge-do-not-use-in-production
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

@@ -25,6 +25,7 @@ from ._helpers import (
     compose,
     compose_exec,
     container_exists,
+    container_running,
     query_db,
     trigger_reconcile,
     postern_cli,
@@ -417,24 +418,76 @@ def test_portal_image_is_distroless(e2e_stack):
 
 
 # Reconciler invariants ================================================================================================
-def test_reconciler_removes_orphan(e2e_stack):
-    """A container with the postern.managed=true label but no DB row must be
-    removed on the next reconcile pass."""
-    orphan = "ss-orphan0000000000000000"
-    subprocess.run(
-        [
-            "docker", "run", "-d", "--name", orphan, "--label", "postern.managed=true", "--network", "e2e-shadowsocks",
-            "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"
-        ],
-        check=True,
+def test_created_container_carries_correct_instance_label(fresh_user, fresh_connection):
+    email = "instancelabel@postern.test"
+    fresh_user("Instance Label", email)
+    _, token = fresh_connection(email, "label-check")
+    name = f"ss-{token}"
+
+    result = subprocess.run(
+        ["docker", "inspect", "--format", "{{index .Config.Labels \"postern.instance\"}}", name],
         capture_output=True,
+        text=True,
+        check=True,
     )
+    assert result.stdout.strip() == PROJECT
+
+
+def test_reconciler_removes_orphan(e2e_stack):
+    """A container with the postern.managed=true label AND this instance's
+    own postern.instance label, but no DB row, must be removed on the next
+    reconcile pass. A managed container carrying a DIFFERENT instance label
+    (simulating another Postern deployment sharing this Docker daemon) AND
+    one predating the instance label entirely (the exact shape of every
+    pre-upgrade container) must both survive the same pass untouched and
+    still RUNNING."""
+
+    def _run_labelled(name: str, labels: list[str]) -> None:
+        # Idempotent: these are fixed names shared across test runs, and this
+        # test's whole point is that the reconciler must NOT remove foreign/
+        # legacy ones -- so a leftover from a prior killed run (CI timeout,
+        # Ctrl-C) must be reclaimed here rather than poisoning every run after
+        # it with a permanent `docker run --name` conflict.
+        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+        cmd = ["docker", "run", "-d", "--init", "--name", name]
+        for label in labels:
+            cmd += ["--label", label]
+        cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
+        subprocess.run(cmd, check=True, capture_output=True)
+
+    orphan = "ss-orphan0000000000000000"
+    foreign = "ss-foreign000000000000000"
+    legacy = "ss-legacyunlabelled000000"
+    sentinel = "ss-sentinel00000000000000"
+
     try:
+        _run_labelled(orphan, ["postern.managed=true", f"postern.instance={PROJECT}"])
+        _run_labelled(foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"])
+        _run_labelled(legacy, ["postern.managed=true"])  # no instance label: pre-upgrade shape
         trigger_reconcile()
         wait_for_container(orphan, present=False, timeout=15)
+
+        # `wait_for_container` only proves the ORPHAN's removal call
+        # returned. Whether the SAME pass also removed `foreign`/`legacy`
+        # (the regression this test exists to catch) is a separate,
+        # unordered `_remove_container` call within that pass and could
+        # still be in flight (each removal's `container.stop` allows up
+        # to 10s). `trigger_reconcile()` is fire-and-forget (it just
+        # touches the trigger file), so it gives no such barrier on its
+        # own. A second, correctly-labelled sentinel does: the reconcile
+        # loop only checks for a new trigger AFTER the in-flight pass
+        # fully returns, so once THIS trigger's pass has removed the
+        # sentinel, the FIRST pass (which decided foreign/legacy's fate)
+        # is unquestionably finished.
+        _run_labelled(sentinel, ["postern.managed=true", f"postern.instance={PROJECT}"])
+        trigger_reconcile()
+        wait_for_container(sentinel, present=False, timeout=15)
+
+        assert container_running(foreign)
+        assert container_running(legacy)
     finally:
-        # Defensive cleanup if the test failed before reconcile removed it.
-        subprocess.run(["docker", "rm", "-f", orphan], check=False, capture_output=True)
+        for name in (orphan, foreign, legacy, sentinel):
+            subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
 
 
 def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
@@ -496,36 +549,73 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
 
 
 def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
-    """The portal's lifespan calls cleanup_all_containers on shutdown.
-    After a graceful stop, no ss-* containers should remain."""
+    """The portal's lifespan calls cleanup_all_containers on shutdown,
+    scoped to this instance. After a graceful stop, no ss-* containers
+    belonging to THIS instance remain -- but a foreign-instance container
+    and a legacy (pre-upgrade, unlabelled) one must both survive untouched
+    and still running.
+
+    `docker compose stop` blocks until the portal process has fully exited,
+    and the ASGI lifespan's shutdown sequence (request_reconcile_shutdown()
+    -> cancel the reconciler task -> await wait_for_inflight_reconcile() ->
+    cleanup_all_containers()) genuinely finishes before that exit --
+    wait_for_inflight_reconcile() specifically exists so a background pass
+    that's mid-flight when shutdown starts can't race the sweep (see
+    reconciler.py)."""
     email = "shutdown@postern.test"
     fresh_user("Shutdown", email)
     _, token = fresh_connection(email, "shutdown-test")
     name = f"ss-{token}"
     assert container_exists(name)
 
-    subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
+    foreign = "ss-foreignshutdown00000000"
+    legacy = "ss-legacyshutdown000000000"
     try:
-        wait_for_container(name, present=False, timeout=30)
+        for fixture_name, labels in (
+            (foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"]),
+            (legacy, ["postern.managed=true"]),
+        ):
+            # Idempotent, same reasoning as test_reconciler_removes_orphan's
+            # _run_labelled: reclaim a leftover from a killed prior run instead
+            # of letting it poison every run after it.
+            subprocess.run(["docker", "rm", "-f", fixture_name], check=False, capture_output=True)
+            cmd = ["docker", "run", "-d", "--init", "--name", fixture_name]
+            for label in labels:
+                cmd += ["--label", label]
+            cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
+            subprocess.run(cmd, check=True, capture_output=True)
 
-        # Belt and suspenders: confirm no managed containers anywhere
-        result = subprocess.run(
-            ["docker", "ps", "-a", "--filter", "label=postern.managed=true", "--format", "{{.Names}}"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assert result.stdout.strip() == ""
-    finally:
-        # Restart portal so the rest of the suite can use the stack.
-        subprocess.run(compose("start", "portal"), check=True, capture_output=True)
-        # Wait for portal healthcheck before yielding back.
-        for _ in range(30):
-            health = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Health.Status}}", f"{PROJECT}-portal-1"],
+        subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
+        try:
+            wait_for_container(name, present=False, timeout=30)
+
+            # Belt and suspenders: confirm no THIS-instance managed containers remain anywhere.
+            result = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "-a",
+                    "--filter",
+                    "label=postern.managed=true",
+                    "--filter",
+                    f"label=postern.instance={PROJECT}",
+                    "--format",
+                    "{{.Names}}",
+                ],
                 capture_output=True,
                 text=True,
+                check=True,
             )
-            if health.stdout.strip() == "healthy":
-                break
-            time.sleep(1)
+            assert result.stdout.strip() == ""
+
+            assert container_running(foreign)
+            assert container_running(legacy)
+        finally:
+            # Restart portal so the rest of the suite can use the stack. `up --wait`
+            # blocks on the service's own healthcheck and fails non-zero if it never
+            # goes healthy, instead of a hand-rolled sleep-and-poll with a silent
+            # fall-through.
+            subprocess.run(compose("up", "-d", "--wait", "portal"), check=True, capture_output=True)
+    finally:
+        subprocess.run(["docker", "rm", "-f", foreign], check=False, capture_output=True)
+        subprocess.run(["docker", "rm", "-f", legacy], check=False, capture_output=True)

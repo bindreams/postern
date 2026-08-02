@@ -47,11 +47,13 @@ One-time-password and browser-session lifetimes.
 
 The reconciler syncs database state to per-connection Shadowsocks containers.
 
-| Variable                     | Default                    | Description                                                                                                   |
-| ---------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `RECONCILE_INTERVAL_SECONDS` | `60`                       | How often the reconciler syncs DB state to containers.                                                        |
-| `SHADOWSOCKS_IMAGE`          | `local/shadowsocks-server` | Image the reconciler spawns per connection. Compose does not build it — build it yourself before first start. |
-| `SHADOWSOCKS_NETWORK`        | `shadowsocks`              | Docker bridge network the `ss-*` containers join; nginx attaches to the same one.                             |
+| Variable                     | Default                    | Description                                                                                                                                                                                                                                                                         |
+| ---------------------------- | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RECONCILE_INTERVAL_SECONDS` | `60`                       | How often the reconciler syncs DB state to containers.                                                                                                                                                                                                                              |
+| `SHADOWSOCKS_IMAGE`          | `local/shadowsocks-server` | Image the reconciler spawns per connection. Compose does not build it — build it yourself before first start.                                                                                                                                                                       |
+| `SHADOWSOCKS_NETWORK`        | `shadowsocks`              | Docker bridge network the `ss-*` containers join; nginx attaches to the same one.                                                                                                                                                                                                   |
+| `COMPOSE_PROJECT_NAME`       | `""`                       | Auto-populated by `compose.yaml` from Docker Compose's own project-name interpolation. Not operator-facing -- identifies which deployment created a given `ss-*` container so it never sweeps another deployment's containers (see [architecture](../development/architecture.md)). |
+| `INSTANCE_ID`                | `""`                       | Overrides the above for the rare case it collides across two deployments sharing a host. Must be unique per Postern deployment sharing a Docker daemon.                                                                                                                             |
 
 ## Built-in MTA
 

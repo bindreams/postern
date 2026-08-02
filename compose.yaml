@@ -57,6 +57,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
     volumes:
       - postern-data:/data
       # rw so `postern mta show-dns` can read state.json + selector pubkeys, AND
@@ -89,6 +90,7 @@ services:
       retries: 3
     init: true
     restart: unless-stopped
+    stop_grace_period: 30s  # gives wait_for_inflight_reconcile + cleanup_all_containers room to run
 
   mta:
     build:

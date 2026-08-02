@@ -20,6 +20,7 @@ import httpx
 import pytest
 
 from ._helpers import (
+    E2E_SHADOWSOCKS_IMAGE,
     PROJECT,
     compose,
     compose_exec,
@@ -437,7 +438,7 @@ def test_reconciler_removes_orphan(e2e_stack):
 
 
 def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
-    """When local/shadowsocks-server image ID changes, the reconciler must
+    """When the shadowsocks image ID changes, the reconciler must
     recreate every managed container so the new bits propagate."""
     email = "imgupgrade@postern.test"
     fresh_user("Image Upgrade", email)
@@ -445,18 +446,32 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
 
     name = f"ss-{token}"
     inspect_before = subprocess.run(
-        ["docker", "inspect", "--format", "{{.Image}}", name],
+        # One snapshot, two facts: a second `docker inspect` could straddle a
+        # reconcile and mix an ID from one container generation with a name
+        # from the next.
+        ["docker", "inspect", "--format", "{{.Image}} {{.Config.Image}}", name],
         capture_output=True,
         text=True,
         check=True,
     )
-    image_before = inspect_before.stdout.strip()
+    image_before, spawned_from = inspect_before.stdout.split()
 
-    # Bump the image with a no-op label change so the digest changes
-    bump_dockerfile = ("FROM local/shadowsocks-server\n"
+    # Prove the reconciler actually spawned from the e2e tag. In CI a dropped
+    # SHADOWSOCKS_IMAGE fails loudly (the production image does not exist on
+    # the runner), but on a dev box or the staging host both images exist and
+    # the suite would go green while silently driving the production tag.
+    assert spawned_from == E2E_SHADOWSOCKS_IMAGE, (
+        f"reconciler spawned {name} from {spawned_from!r}, expected {E2E_SHADOWSOCKS_IMAGE!r}; "
+        "the portal service's SHADOWSOCKS_IMAGE env is missing or wrong"
+    )
+
+    # Bump the image with a no-op label change so the digest changes. This
+    # build is a live tag overwrite on whatever host runs the suite, and it
+    # is never restored.
+    bump_dockerfile = (f"FROM {E2E_SHADOWSOCKS_IMAGE}\n"
                        "LABEL postern.test.bump=1\n")
     subprocess.run(
-        ["docker", "build", "-t", "local/shadowsocks-server", "-"],
+        ["docker", "build", "-t", E2E_SHADOWSOCKS_IMAGE, "-"],
         input=bump_dockerfile,
         text=True,
         check=True,

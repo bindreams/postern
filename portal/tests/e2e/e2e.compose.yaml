@@ -25,7 +25,7 @@ services:
     build:
       context: ../../..
       dockerfile: portal/Dockerfile
-    image: local/postern-portal
+    image: local/postern-portal-test
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -44,6 +44,14 @@ services:
       # lookup against the isolated CI network.
       ECH_DOH_URL: ""
       SHADOWSOCKS_NETWORK: e2e-shadowsocks
+      # Settings.shadowsocks_image defaults to the production tag. Set it here
+      # so the reconciler creates new ss-* containers from the e2e image
+      # instead -- test_image_upgrade_recreates_container (test_tunnel.py)
+      # asserts the spawned container's .Config.Image. This does NOT by
+      # itself scope container ownership across stacks: the orphan sweep and
+      # cleanup_all_containers() (reconciler.py) key only on the
+      # postern.managed label, not on image (see issue #197).
+      SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:
       - postern-e2e-data:/data
@@ -63,7 +71,7 @@ services:
 
   nginx:
     build: ../../../nginx
-    image: local/nginx
+    image: local/nginx-test
     environment:
       # The entrypoint requires DOMAIN to render templates from
       # /etc/nginx/templates/. The e2e nginx.conf below is bind-mounted
@@ -159,7 +167,7 @@ services:
     build:
       context: ../../..
       dockerfile: portal/tests/e2e/ssclient.Dockerfile
-    image: local/postern-ssclient
+    image: local/postern-ssclient-test
     networks: [e2e-tunnel-entry]
     init: true
     volumes:

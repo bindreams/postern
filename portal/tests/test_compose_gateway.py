@@ -12,19 +12,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import yaml
+from ._compose import load_compose
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-class _ComposeLoader(yaml.SafeLoader):
-    """SafeLoader that tolerates Docker Compose's `!reset` merge tag. Only
-    compose.gateway.yaml uses it (on `ports`, which this test never inspects);
-    plain yaml.safe_load raises on the unknown tag. Subclassed so the constructor
-    stays local -- it does not mutate the shared yaml.SafeLoader."""
-
-
-_ComposeLoader.add_constructor("!reset", lambda loader, node: None)
 
 
 def _nginx_public_snis() -> set[str]:
@@ -45,7 +35,7 @@ def _router_hostsni_set() -> set[str]:
     HostSNI(`b`)`, never `HostSNI(`a`, `b`)` (a Traefik parse error that silently
     drops the whole router). Matching each matcher individually enforces that form:
     the comma variant yields zero matches and fails the caller."""
-    compose = yaml.load((REPO_ROOT / "compose.gateway.yaml").read_text(), Loader=_ComposeLoader)
+    compose = load_compose(REPO_ROOT / "compose.gateway.yaml")
     rule = compose["services"]["nginx"]["labels"]["traefik.tcp.routers.postern.rule"]
     snis = set(re.findall(r"HostSNI\(`([^`]+)`\)", rule))
     assert snis, f"router must use one-value HostSNI(`x`) matchers (OR-combined with ||); got {rule!r}"

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from . import _helpers
-from ._helpers import TESTS_E2E_DIR, run
+from ._helpers import E2E_NGINX_IMAGE, TESTS_E2E_DIR, run
 
 PROJECT_EDGE = "postern-e2e-edge"
 COMPOSE_FILES_EDGE: tuple[Path, ...] = (TESTS_E2E_DIR / "e2e-edge.compose.yaml", )
@@ -60,7 +60,7 @@ def _wait_nginx_healthy(*, timeout: float = 30.0) -> None:
 def seed_edge_ranges(*, ranges_conf: str = "set_real_ip_from 0.0.0.0/0;\n") -> None:
     """Write a Cloudflare-ranges conf into the postern-edge volume and restart nginx.
 
-    Uses an ephemeral one-off container (local/nginx, UID 0 so it can write to
+    Uses an ephemeral one-off container (E2E_NGINX_IMAGE, UID 0 so it can write to
     the root-owned volume) with an atomic rename (mv) so the inotifyd watcher
     inside nginx also sees IN_MOVED_TO.  After writing, RESTART the nginx
     container -- not just ``nginx -s reload`` -- so the old worker (old
@@ -90,7 +90,7 @@ def seed_edge_ranges(*, ranges_conf: str = "set_real_ip_from 0.0.0.0/0;\n") -> N
             "sh",
             "--volume",
             f"{EDGE_VOLUME_NAME}:/edge",
-            "local/nginx",
+            E2E_NGINX_IMAGE,
             "-c",
             "cat > /edge/.cloudflare-ranges.conf.tmp && "
             "mv /edge/.cloudflare-ranges.conf.tmp /edge/cloudflare-ranges.conf",
@@ -117,7 +117,7 @@ def remove_edge_ranges() -> None:
         "sh",
         "--volume",
         f"{EDGE_VOLUME_NAME}:/edge",
-        "local/nginx",
+        E2E_NGINX_IMAGE,
         "-c",
         "rm -f /edge/cloudflare-ranges.conf",
     ])

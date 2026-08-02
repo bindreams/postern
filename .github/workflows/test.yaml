@@ -78,7 +78,7 @@ jobs:
         with:
           context: .
           file: shadowsocks/Dockerfile
-          tags: local/shadowsocks-server
+          tags: local/shadowsocks-server-test
           load: true
           cache-from: type=gha,scope=shadowsocks
           cache-to: type=gha,mode=max,scope=shadowsocks
@@ -303,7 +303,7 @@ jobs:
         with:
           context: .
           file: provisioner/Dockerfile
-          tags: local/postern-provisioner
+          tags: local/postern-provisioner-test
           load: true
           cache-from: type=gha,scope=e2e
           cache-to: type=gha,mode=max,scope=e2e

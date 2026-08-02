@@ -24,6 +24,14 @@ COMPOSE_FILE = TESTS_E2E_DIR / "e2e.compose.yaml"
 COMPOSE_FILES: tuple[Path, ...] = (COMPOSE_FILE, )
 PROJECT = "postern-e2e"
 
+# E2e image names ======================================================================================================
+# Spelled out in full, not composed from a suffix constant: test_docs.py pins
+# the shadowsocks literal from this file into docs/development/testing.md
+# (see CLAUDE.md for the local/*-test convention).
+E2E_SHADOWSOCKS_IMAGE = "local/shadowsocks-server-test"
+E2E_NGINX_IMAGE = "local/nginx-test"
+E2E_PROVISIONER_IMAGE = "local/postern-provisioner-test"
+
 PORTAL_BASE_URL = "https://postern.test:8443"
 MAILPIT_BASE_URL = "http://localhost:8025"
 

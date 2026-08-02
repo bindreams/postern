@@ -38,7 +38,7 @@ services:
     build:
       context: ../../..
       dockerfile: portal/Dockerfile
-    image: local/postern-portal
+    image: local/postern-portal-test
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -52,6 +52,16 @@ services:
       SMTP_FROM: noreply@postern.test
       DOMAIN: postern.test
       SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
+      # See e2e.compose.yaml's portal.environment for why SHADOWSOCKS_IMAGE
+      # must be set. The edge suite never creates a connection, so its DB has
+      # no desired containers -- if the e2e shadowsocks image happens to
+      # exist on this host (e.g. the base suite already built it), reconcile
+      # does NOT return early and the orphan sweep removes every
+      # postern.managed=true container host-wide, base stack included (see
+      # issue #197: ownership isn't scoped per stack). Pointing this at the
+      # e2e tag at least keeps that sweep from ALSO recreating containers
+      # from the wrong image; it does not make the sweep itself safe.
+      SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:
       - postern-e2e-edge-data:/data
@@ -71,7 +81,7 @@ services:
 
   nginx:
     build: ../../../nginx
-    image: local/nginx
+    image: local/nginx-test
     container_name: postern-e2e-edge-nginx
     environment:
       DOMAIN: postern.test

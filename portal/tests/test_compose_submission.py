@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
+from ._compose import load_compose
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -21,7 +21,7 @@ SUBMIT_ALIAS = "mta-submit"
 
 
 def _load_compose(relpath: str) -> dict:
-    return yaml.safe_load((REPO_ROOT / relpath).read_text())
+    return load_compose(REPO_ROOT / relpath)
 
 
 def _mta_submit_aliases(compose: dict) -> list[str]:

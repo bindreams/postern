@@ -137,14 +137,16 @@ def git_revision(repo: Path) -> str:
 # forces a fallback to raw-JSON templating, which then blows up on any image
 # whose config has no Labels map at all. `.State.Health` is a nil pointer when
 # no HEALTHCHECK is defined; `{{if .State.Health}}` guards it the same way.
-_CONTAINER_FMT = ('{{.Name}}\t'
-                  '{{with index .Config.Labels "com.docker.compose.service"}}{{.}}{{end}}\t'
-                  '{{.State.Status}}\t'
-                  '{{.State.ExitCode}}\t'
-                  '{{.HostConfig.RestartPolicy.Name}}\t'
-                  '{{.Image}}\t'
-                  '{{with index .Config.Labels "org.opencontainers.image.revision"}}{{.}}{{end}}\t'
-                  '{{if .State.Health}}{{.State.Health.Status}}{{end}}')
+_CONTAINER_FMT = (
+    '{{.Name}}\t'
+    '{{with index .Config.Labels "com.docker.compose.service"}}{{.}}{{end}}\t'
+    '{{.State.Status}}\t'
+    '{{.State.ExitCode}}\t'
+    '{{.HostConfig.RestartPolicy.Name}}\t'
+    '{{.Image}}\t'
+    '{{with index .Config.Labels "org.opencontainers.image.revision"}}{{.}}{{end}}\t'
+    '{{if .State.Health}}{{.State.Health.Status}}{{end}}'
+)
 _IMAGE_FMT = ('{{.ID}}\t'
               '{{with index .Config.Labels "org.opencontainers.image.revision"}}{{.}}{{end}}')
 
@@ -265,7 +267,8 @@ def _parse_containers(stdout: str) -> tuple[ContainerState, ...]:
                 image_id=image_id,
                 revision=revision,
                 health=health,
-            ))
+            )
+        )
     return tuple(states)
 
 
@@ -312,8 +315,10 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
     # that gates every service off, would otherwise exit 0 having checked
     # nothing -- the same vacuous-pass failure the docs gates guard against.
     if not config.get("services"):
-        raise CollectError("compose resolved zero services -- wrong --project-dir, or every service is "
-                           "gated off by COMPOSE_PROFILES")
+        raise CollectError(
+            "compose resolved zero services -- wrong --project-dir, or every service is "
+            "gated off by COMPOSE_PROFILES"
+        )
     if not config.get("name"):
         raise CollectError("compose resolved no project name")
     missing_image = sorted(n for n, s in config["services"].items() if not s.get("image"))
@@ -323,7 +328,8 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
     ss_image = resolve_ss_image(config, ss_image_flag)
     services = tuple(
         ServiceSpec(name=name, image=spec.get("image", ""), first_party="build" in spec)
-        for name, spec in sorted(config["services"].items()))
+        for name, spec in sorted(config["services"].items())
+    )
 
     project = config["name"]
     # `docker ps` on the project label rather than `docker compose ps`: a
@@ -374,8 +380,10 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
 # statements, not a one-line prefix.
 _EXPORT = 'export GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"'
 _UP = f"{_EXPORT} && docker compose up -d --build"
-_SS_BUILD = (f"{_EXPORT} && docker build -f shadowsocks/Dockerfile "
-             '--build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .')
+_SS_BUILD = (
+    f"{_EXPORT} && docker build -f shadowsocks/Dockerfile "
+    '--build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .'
+)
 _RECONCILE = "docker compose exec portal postern reconcile"
 
 
@@ -397,14 +405,18 @@ def _check_identity(label: str, container: ContainerState, service: ServiceSpec,
         # Third-party images carry the UPSTREAM project's revision label
         # (docker-socket-proxy ships one), so the first-party diagnosis below
         # would read that SHA and blame a postern rebuild for a plain pull.
-        return Check(label, "fail", f"{moved}: the tag moved (a pull or an upstream rebuild)",
-                     f"docker compose up -d {container.service}".strip())
+        return Check(
+            label, "fail", f"{moved}: the tag moved (a pull or an upstream rebuild)",
+            f"docker compose up -d {container.service}".strip()
+        )
 
     tag_revision = obs.tag_revisions.get(ref, "")
     if not tag_revision:
-        detail = (f"{moved}: the tag was rebuilt without provenance -- something other than a "
-                  "postern deploy moved it, e.g. the e2e suite, which builds into the same "
-                  "global tags (issue #194)")
+        detail = (
+            f"{moved}: the tag was rebuilt without provenance -- something other than a "
+            "postern deploy moved it, e.g. the e2e suite, which builds into the same "
+            "global tags (issue #194)"
+        )
     elif tag_revision == container.revision:
         detail = f"{moved}: same revision, so the tag was rebuilt rather than advanced"
     else:
@@ -422,7 +434,7 @@ def evaluate(
     """Compare desired state against observed state. Pure."""
     checks: list[Check] = []
 
-    # Checkout -------------------------------------------------------------------------------------------------------
+    # Checkout ---------------------------------------------------------------------------------------------------------
     if not expected_revision.endswith("-dirty"):
         checks.append(Check("checkout: clean", "ok", _short(expected_revision)))
     elif allow_dirty:
@@ -430,10 +442,11 @@ def evaluate(
     else:
         checks.append(
             Check(
-                "checkout: clean", "fail",
-                "the checkout has uncommitted or untracked files, so `-dirty` matching "
+                "checkout: clean", "fail", "the checkout has uncommitted or untracked files, so `-dirty` matching "
                 "proves nothing: two different dirty trees produce the same string",
-                "commit or stash, rebuild, and re-run; or pass --allow-dirty to acknowledge"))
+                "commit or stash, rebuild, and re-run; or pass --allow-dirty to acknowledge"
+            )
+        )
 
     by_service: dict[str, list[ContainerState]] = {}
     for container in obs.containers:
@@ -452,9 +465,12 @@ def evaluate(
             # Never pick one arbitrarily: which container "is" the service
             # would then depend on docker's return order.
             checks.append(
-                Check(running_label, "fail",
-                      f"{len(found)} containers claim this service ({', '.join(c.name for c in found)})",
-                      "docker compose up -d --remove-orphans, or remove the stale container"))
+                Check(
+                    running_label, "fail",
+                    f"{len(found)} containers claim this service ({', '.join(c.name for c in found)})",
+                    "docker compose up -d --remove-orphans, or remove the stale container"
+                )
+            )
             continue
         container = found[0]
         if container.completed_one_shot:
@@ -466,8 +482,11 @@ def evaluate(
             # to know whether it is ALSO stale. The image rows below read the
             # container's recorded image and work regardless of its state.
             checks.append(
-                Check(running_label, "fail",
-                      f"container {container.name} is {container.state} (exit {container.exit_code})", _UP))
+                Check(
+                    running_label, "fail",
+                    f"container {container.name} is {container.state} (exit {container.exit_code})", _UP
+                )
+            )
         else:
             checks.append(Check(running_label, "ok", container.name))
 
@@ -478,12 +497,17 @@ def evaluate(
             checks.append(Check(revision_label, "skip", "third-party image, no postern revision"))
         elif not container.revision:
             checks.append(
-                Check(revision_label, "fail", "image carries no revision label: it was built without GIT_REVISION",
-                      _UP))
+                Check(
+                    revision_label, "fail", "image carries no revision label: it was built without GIT_REVISION", _UP
+                )
+            )
         elif container.revision != expected_revision:
             checks.append(
-                Check(revision_label, "fail",
-                      f"running {_short(container.revision)}, checkout is {_short(expected_revision)}", _UP))
+                Check(
+                    revision_label, "fail",
+                    f"running {_short(container.revision)}, checkout is {_short(expected_revision)}", _UP
+                )
+            )
         else:
             checks.append(Check(revision_label, "ok", _short(container.revision)))
 
@@ -495,12 +519,12 @@ def evaluate(
             checks.append(Check(health_label, "skip", "no healthcheck configured"))
         elif container.health == "unhealthy":
             checks.append(
-                Check(health_label, "fail", "container reports unhealthy",
-                      f"docker compose logs {container.service}"))
+                Check(health_label, "fail", "container reports unhealthy", f"docker compose logs {container.service}")
+            )
         else:
             checks.append(Check(health_label, "ok", container.health))
 
-    # Orphans ------------------------------------------------------------------------------------------------------
+    # Orphans ----------------------------------------------------------------------------------------------------------
     for container in obs.containers:
         if container.service and container.service not in declared:
             # Two causes: the service was deleted from compose.yaml, or it was
@@ -509,12 +533,15 @@ def evaluate(
             # case depends on the compose version, so the hint names the
             # unambiguous fallback too.
             checks.append(
-                Check(f"orphan container {container.name}", "fail",
-                      f"service {container.service} is not declared in this compose project "
-                      "(deleted, or gated off by COMPOSE_PROFILES)",
-                      f"docker compose up -d --remove-orphans, or docker rm -f {container.name}"))
+                Check(
+                    f"orphan container {container.name}", "fail",
+                    f"service {container.service} is not declared in this compose project "
+                    "(deleted, or gated off by COMPOSE_PROFILES)",
+                    f"docker compose up -d --remove-orphans, or docker rm -f {container.name}"
+                )
+            )
 
-    # Tunnel image -------------------------------------------------------------------------------------------------
+    # Tunnel image -----------------------------------------------------------------------------------------------------
     # Compose neither builds this image nor owns these containers; the
     # reconciler does. The image check has no race; the per-container checks do.
     ss_revision = obs.tag_revisions.get(obs.ss_image, "")
@@ -523,20 +550,26 @@ def evaluate(
         checks.append(Check(ss_label, "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD))
     elif not ss_revision:
         checks.append(
-            Check(ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION", _SS_BUILD))
+            Check(ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION", _SS_BUILD)
+        )
     elif ss_revision != expected_revision:
         checks.append(
-            Check(ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}",
-                  _SS_BUILD))
+            Check(
+                ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}", _SS_BUILD
+            )
+        )
     else:
         checks.append(Check(ss_label, "ok", _short(ss_revision)))
 
-    # Tunnel containers ----------------------------------------------------------------------------------------------
+    # Tunnel containers ------------------------------------------------------------------------------------------------
     if not tunnels:
         checks.append(
-            Check("tunnels: image identity", "skip",
-                  "not checked; the reconciler recreates tunnels asynchronously after a "
-                  "portal restart. Run `postern reconcile`, then re-run with --tunnels"))
+            Check(
+                "tunnels: image identity", "skip",
+                "not checked; the reconciler recreates tunnels asynchronously after a "
+                "portal restart. Run `postern reconcile`, then re-run with --tunnels"
+            )
+        )
     elif not obs.ss_containers:
         checks.append(Check("tunnels: image identity", "skip", "no tunnel containers"))
     else:
@@ -551,8 +584,11 @@ def evaluate(
                 checks.append(Check(label, "ok", f"on {ss_tag_id[:19]}"))
             else:
                 checks.append(
-                    Check(label, "fail", f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}",
-                          _RECONCILE))
+                    Check(
+                        label, "fail", f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}",
+                        _RECONCILE
+                    )
+                )
 
     return Report(project=obs.project, revision=expected_revision, checks=checks)
 
@@ -602,21 +638,39 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "as GIT_REVISION before building so both halves agree.",
     )
     parser.add_argument("--json", dest="output_json", action="store_true", help="Emit structured JSON")
-    parser.add_argument("--project-dir", type=Path, default=REPO_ROOT,
-                        help="Compose project directory, holding compose.yaml and .env (default: this checkout)")
-    parser.add_argument("--repo", type=Path, default=REPO_ROOT,
-                        help="Git checkout the images must have been built from (default: this checkout)")
-    parser.add_argument("--expected-revision", default="",
-                        help="Revision to require (default: computed from git in --repo)")
-    parser.add_argument("--shadowsocks-image", default="",
-                        help="Tunnel image ref (default: the portal's resolved SHADOWSOCKS_IMAGE, then "
-                        f"{DEFAULT_SS_IMAGE})")
-    parser.add_argument("--allow-dirty", action="store_true",
-                        help="Acknowledge that the checkout is dirty and the match proves nothing")
-    parser.add_argument("--tunnels", action="store_true",
-                        help="Also check every ss-* container belonging to this deployment. Run "
-                        "`postern reconcile` first: the reconciler recreates tunnels asynchronously "
-                        "after a portal restart.")
+    parser.add_argument(
+        "--project-dir",
+        type=Path,
+        default=REPO_ROOT,
+        help="Compose project directory, holding compose.yaml and .env (default: this checkout)"
+    )
+    parser.add_argument(
+        "--repo",
+        type=Path,
+        default=REPO_ROOT,
+        help="Git checkout the images must have been built from (default: this checkout)"
+    )
+    parser.add_argument(
+        "--expected-revision", default="", help="Revision to require (default: computed from git in --repo)"
+    )
+    parser.add_argument(
+        "--shadowsocks-image",
+        default="",
+        help="Tunnel image ref (default: the portal's resolved SHADOWSOCKS_IMAGE, then "
+        f"{DEFAULT_SS_IMAGE})"
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Acknowledge that the checkout is dirty and the match proves nothing"
+    )
+    parser.add_argument(
+        "--tunnels",
+        action="store_true",
+        help="Also check every ss-* container belonging to this deployment. Run "
+        "`postern reconcile` first: the reconciler recreates tunnels asynchronously "
+        "after a portal restart."
+    )
     return parser.parse_args(list(argv))
 
 
@@ -646,8 +700,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = Report(
             project="",
             revision=expected,
-            checks=[Check("compose: readable", "fail", str(exc),
-                          "run from the deployment's project directory, or pass --project-dir")],
+            checks=[
+                Check(
+                    "compose: readable", "fail", str(exc),
+                    "run from the deployment's project directory, or pass --project-dir"
+                )
+            ],
         )
         print(render_json(report) if args.output_json else render_text(report), end="")
         return 2

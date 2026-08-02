@@ -88,18 +88,24 @@ def test_exit_code_zero_when_nothing_failed():
 
 
 def test_exit_code_one_on_any_failure():
-    report = vd.Report(project="postern", revision="abc",
-                       checks=[vd.Check("a", "ok"), vd.Check("b", "fail", fix="do it")])
+    report = vd.Report(
+        project="postern", revision="abc", checks=[vd.Check("a", "ok"),
+                                                   vd.Check("b", "fail", fix="do it")]
+    )
     assert report.exit_code == 1
     assert [c.label for c in report.failures] == ["b"]
 
 
 # Rendering ------------------------------------------------------------------------------------------------------------
 def test_render_text_shows_project_revision_markers_and_fixes():
-    report = vd.Report(project="postern", revision="abc123", checks=[
-        vd.Check("portal", "ok", detail="on abc123"),
-        vd.Check("nginx", "fail", detail="stale", fix="docker compose up -d --build"),
-    ])
+    report = vd.Report(
+        project="postern",
+        revision="abc123",
+        checks=[
+            vd.Check("portal", "ok", detail="on abc123"),
+            vd.Check("nginx", "fail", detail="stale", fix="docker compose up -d --build"),
+        ]
+    )
     out = vd.render_text(report)
     assert "postern" in out and "abc123" in out
     assert "[OK]" in out and "[FAIL]" in out
@@ -116,15 +122,13 @@ def test_render_text_columns_align():
     """Includes the longest label the tool actually emits, so _LABEL_W cannot
     silently become too narrow."""
     longest = f"tunnel ss-{'0' * 24}: image identity"
-    report = vd.Report(project="p", revision="r",
-                       checks=[vd.Check("a", "ok", "d1"), vd.Check(longest, "ok", "d2")])
+    report = vd.Report(project="p", revision="r", checks=[vd.Check("a", "ok", "d1"), vd.Check(longest, "ok", "d2")])
     rows = [ln for ln in vd.render_text(report).splitlines() if ln.startswith("[OK]")]
     assert rows[0].index("d1") == rows[1].index("d2")
 
 
 def test_render_json_shape():
-    report = vd.Report(project="postern", revision="abc123",
-                       checks=[vd.Check("portal", "fail", detail="d", fix="f")])
+    report = vd.Report(project="postern", revision="abc123", checks=[vd.Check("portal", "fail", detail="d", fix="f")])
     payload = json.loads(vd.render_json(report))
     assert payload["exit_code"] == 1
     assert payload["project"] == "postern"
@@ -143,9 +147,11 @@ _CONFIG_JSON = """
 }}
 """
 
-_CONTAINERS_OUT = (f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n"
-                   f"/postern-nginx\tnginx\trunning\t0\tunless-stopped\tsha256:bbb\t{HEAD}\t\n"
-                   f"/postern-docker-proxy\tdocker-proxy\trunning\t0\tunless-stopped\tsha256:ccc\t\thealthy\n")
+_CONTAINERS_OUT = (
+    f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n"
+    f"/postern-nginx\tnginx\trunning\t0\tunless-stopped\tsha256:bbb\t{HEAD}\t\n"
+    f"/postern-docker-proxy\tdocker-proxy\trunning\t0\tunless-stopped\tsha256:ccc\t\thealthy\n"
+)
 
 _TUNNELS_OUT = f"/ss-abc\t\trunning\t0\tunless-stopped\tsha256:ddd\t{HEAD}\t\n"
 
@@ -166,24 +172,41 @@ class FakeRunner:
     from the outside, which would be silently order-dependent.
     """
 
-    def __init__(self, *, tunnels=False, image_overrides=None, project_names=None,
-                 containers_out=None, tunnels_out=None, config_out=None):
+    def __init__(
+        self,
+        *,
+        tunnels=False,
+        image_overrides=None,
+        project_names=None,
+        containers_out=None,
+        tunnels_out=None,
+        config_out=None
+    ):
         self.image_overrides = image_overrides or {}
         self.calls: list[tuple[list[str], object]] = []
-        project_names = ("postern-portal\npostern-nginx\npostern-docker-proxy\n"
-                         if project_names is None else project_names)
+        project_names = (
+            "postern-portal\npostern-nginx\npostern-docker-proxy\n" if project_names is None else project_names
+        )
         containers_out = _CONTAINERS_OUT if containers_out is None else containers_out
         self.rules = [
-            (lambda a: a[:3] == ["docker", "compose", "config"] and "--format" in a,
-             _ok(_CONFIG_JSON) if config_out is None else config_out),
+            (
+                lambda a: a[:3] == ["docker", "compose", "config"] and "--format" in a,
+                _ok(_CONFIG_JSON) if config_out is None else config_out
+            ),
             (lambda a: a[:2] == ["docker", "ps"] and any("compose.project" in x for x in a), _ok(project_names)),
-            (lambda a: a[:2] == ["docker", "ps"] and any("postern.managed" in x for x in a),
-             _ok("ss-abc\n" if tunnels else "")),
-            (lambda a: a[:4] == ["docker", "inspect", "--type", "container"] and any(x.startswith("ss-") for x in a),
-             _ok(_TUNNELS_OUT if tunnels_out is None else tunnels_out)),
-            (lambda a: a[:4] == ["docker", "inspect", "--type", "container"] and not any(
-                x.startswith("ss-") for x in a),
-             containers_out if isinstance(containers_out, vd.Completed) else _ok(containers_out)),
+            (
+                lambda a: a[:2] == ["docker", "ps"] and any("postern.managed" in x
+                                                            for x in a), _ok("ss-abc\n" if tunnels else "")
+            ),
+            (
+                lambda a: a[:4] == ["docker", "inspect", "--type", "container"] and any(x.startswith("ss-") for x in a),
+                _ok(_TUNNELS_OUT if tunnels_out is None else tunnels_out)
+            ),
+            (
+                lambda a: a[:4] == ["docker", "inspect", "--type", "container"
+                                    ] and not any(x.startswith("ss-") for x in a),
+                containers_out if isinstance(containers_out, vd.Completed) else _ok(containers_out)
+            ),
         ]
 
     def __call__(self, argv, cwd=None):
@@ -284,15 +307,12 @@ def test_collect_honors_an_instance_id_override():
             "services": {
                 "portal": {
                     "image": "local/postern-portal",
-                    "build": {
-                        "context": "."
-                    },
-                    "environment": {
-                        "INSTANCE_ID": "custom-id"
-                    },
+                    "build": {"context": "."},
+                    "environment": {"INSTANCE_ID": "custom-id"},
                 },
             },
-        }))
+        })
+    )
     runner = FakeRunner(tunnels=True, config_out=config)
     _collect(runner, tunnels=True)
     ps_call = next(a for a, _ in runner.calls if a[:2] == ["docker", "ps"] and any("postern.managed" in t for t in a))
@@ -318,8 +338,10 @@ def test_collect_handles_zero_containers():
 def test_collect_uses_partial_output_when_a_container_vanished():
     """`docker inspect a missing` exits 1 but still prints `a`. The reconciler
     creates and removes ss-* containers continuously, so this is normal."""
-    partial = vd.Completed(1, f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n",
-                           "No such container: postern-nginx")
+    partial = vd.Completed(
+        1, f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n",
+        "No such container: postern-nginx"
+    )
     obs = _collect(FakeRunner(containers_out=partial))
     assert [c.name for c in obs.containers] == ["postern-portal"]
 
@@ -355,7 +377,7 @@ def test_collect_refuses_an_unnamed_project():
         _collect(runner)
 
 
-# Tunnel-image resolution -----------------------------------------------------------------------------------------------
+# Tunnel-image resolution ----------------------------------------------------------------------------------------------
 def test_resolve_ss_image_prefers_the_flag():
     config = {"services": {"portal": {"environment": {"SHADOWSOCKS_IMAGE": "local/from-compose"}}}}
     assert vd.resolve_ss_image(config, "local/flag") == "local/flag"
@@ -380,7 +402,7 @@ def test_resolve_ss_image_without_a_portal_service():
     assert vd.resolve_ss_image({"services": {}}, "") == "local/shadowsocks-server"
 
 
-# Instance resolution ---------------------------------------------------------------------------------------------------
+# Instance resolution --------------------------------------------------------------------------------------------------
 def test_resolve_instance_id_defaults_to_the_project_name():
     assert vd.resolve_instance_id({"services": {}}, "postern") == "postern"
 
@@ -396,10 +418,17 @@ def test_resolve_instance_id_ignores_a_blank_override():
 
 
 # Evaluation -----------------------------------------------------------------------------------------------------------
-def _cs(service, name, image_id, revision, health="", *, state="running", exit_code=0,
-        restart_policy="unless-stopped"):
-    return vd.ContainerState(service=service, name=name, state=state, exit_code=exit_code,
-                             restart_policy=restart_policy, image_id=image_id, revision=revision, health=health)
+def _cs(service, name, image_id, revision, health="", *, state="running", exit_code=0, restart_policy="unless-stopped"):
+    return vd.ContainerState(
+        service=service,
+        name=name,
+        state=state,
+        exit_code=exit_code,
+        restart_policy=restart_policy,
+        image_id=image_id,
+        revision=revision,
+        health=health
+    )
 
 
 _PROXY_REF = "tecnativa/docker-socket-proxy:v0.4.2"
@@ -419,12 +448,10 @@ def _obs(**overrides):
             _cs("portal", "postern-portal", "sha256:aaa", HEAD, "healthy"),
             _cs("docker-proxy", "postern-docker-proxy", "sha256:ccc", _PROXY_REV, "healthy"),
         ),
-        tag_ids={"local/postern-portal": "sha256:aaa",
-                 _PROXY_REF: "sha256:ccc",
-                 "local/shadowsocks-server": "sha256:ddd"},
-        tag_revisions={"local/postern-portal": HEAD,
-                       _PROXY_REF: _PROXY_REV,
-                       "local/shadowsocks-server": HEAD},
+        tag_ids={
+            "local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": "sha256:ddd"
+        },
+        tag_revisions={"local/postern-portal": HEAD, _PROXY_REF: _PROXY_REV, "local/shadowsocks-server": HEAD},
         ss_image="local/shadowsocks-server",
         ss_containers=(),
     )
@@ -453,8 +480,11 @@ def test_missing_container_fails():
 
 
 def test_exited_container_fails():
-    obs = _obs(containers=_portal_and_proxy(
-        _cs("portal", "postern-portal", "sha256:aaa", HEAD, "", state="exited", exit_code=1)))
+    obs = _obs(
+        containers=_portal_and_proxy(
+            _cs("portal", "postern-portal", "sha256:aaa", HEAD, "", state="exited", exit_code=1)
+        )
+    )
     report = vd.evaluate(obs, HEAD)
     check = _labels(report)["service portal: running"]
     assert check.status == "fail" and "exited" in check.detail
@@ -465,8 +495,11 @@ def test_exited_container_fails():
 def test_completed_one_shot_service_is_not_a_failure():
     """The provisioner exits 0 with restart=no in the default topology (no
     DNS_PROVIDER). A correct install must not red-flag."""
-    obs = _obs(containers=_portal_and_proxy(
-        _cs("portal", "postern-portal", "sha256:aaa", HEAD, "", state="exited", exit_code=0, restart_policy="no")))
+    obs = _obs(
+        containers=_portal_and_proxy(
+            _cs("portal", "postern-portal", "sha256:aaa", HEAD, "", state="exited", exit_code=0, restart_policy="no")
+        )
+    )
     report = vd.evaluate(obs, HEAD)
     running = _labels(report)["service portal: running"]
     assert running.status == "skip" and "ran to completion" in running.detail
@@ -505,18 +538,21 @@ def test_unstamped_image_fails_with_a_provenance_message():
 
 def _moved_tag(tag_revision):
     return _obs(
-        tag_ids={"local/postern-portal": "sha256:zzz", _PROXY_REF: "sha256:ccc",
-                 "local/shadowsocks-server": "sha256:ddd"},
-        tag_revisions={"local/postern-portal": tag_revision, _PROXY_REF: _PROXY_REV,
-                       "local/shadowsocks-server": HEAD},
+        tag_ids={
+            "local/postern-portal": "sha256:zzz", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": "sha256:ddd"
+        },
+        tag_revisions={"local/postern-portal": tag_revision, _PROXY_REF: _PROXY_REV, "local/shadowsocks-server": HEAD},
     )
 
 
 def test_third_party_tag_move_is_not_blamed_on_the_e2e_suite():
     """docker-socket-proxy ships its own upstream revision label; running it
     through the first-party diagnosis would misread that SHA."""
-    obs = _obs(tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:new",
-                        "local/shadowsocks-server": "sha256:ddd"})
+    obs = _obs(
+        tag_ids={
+            "local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:new", "local/shadowsocks-server": "sha256:ddd"
+        }
+    )
     check = _labels(vd.evaluate(obs, HEAD))["service docker-proxy: image identity"]
     assert check.status == "fail"
     assert "pull" in check.detail
@@ -543,8 +579,7 @@ def test_unprovenanced_tag_names_the_e2e_case():
 
 
 def test_missing_tag_fails():
-    obs = _obs(tag_ids={"local/postern-portal": "", _PROXY_REF: "sha256:ccc",
-                        "local/shadowsocks-server": "sha256:ddd"})
+    obs = _obs(tag_ids={"local/postern-portal": "", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": "sha256:ddd"})
     check = _labels(vd.evaluate(obs, HEAD))["service portal: image identity"]
     assert check.status == "fail" and "not present locally" in check.detail
 
@@ -586,8 +621,9 @@ def test_orphan_container_fails():
 
 
 def test_stale_shadowsocks_image_fails():
-    obs = _obs(tag_revisions={"local/postern-portal": HEAD, _PROXY_REF: _PROXY_REV,
-                              "local/shadowsocks-server": "0" * 40})
+    obs = _obs(
+        tag_revisions={"local/postern-portal": HEAD, _PROXY_REF: _PROXY_REV, "local/shadowsocks-server": "0" * 40}
+    )
     check = _labels(vd.evaluate(obs, HEAD))["shadowsocks image: revision"]
     assert check.status == "fail" and "shadowsocks/Dockerfile" in check.fix
 
@@ -635,8 +671,11 @@ def test_dirty_checkout_can_be_acknowledged():
 
 # CLI ------------------------------------------------------------------------------------------------------------------
 def test_print_revision_mode_emits_one_line(repo):
-    out = subprocess.run([sys.executable, str(SCRIPT), "--print-revision", "--repo", str(repo)], check=True,
-                         capture_output=True, text=True).stdout
+    out = subprocess.run([sys.executable, str(SCRIPT), "--print-revision", "--repo",
+                          str(repo)],
+                         check=True,
+                         capture_output=True,
+                         text=True).stdout
     assert out.strip() == vd.git_revision(repo)
     assert len(out.strip().splitlines()) == 1
 
@@ -685,6 +724,7 @@ def test_main_honours_an_explicit_expected_revision(monkeypatch, capsys, isolate
 
 
 def test_main_reports_a_collect_failure_as_a_check_not_a_traceback(monkeypatch, capsys, isolated):
+
     def boom(*a, **k):
         raise vd.CollectError("env file .env not found")
 
@@ -703,9 +743,11 @@ def test_main_reports_a_missing_project_dir_as_a_check_not_a_traceback(repo):
     --repo points at the throwaway git fixture, not REPO_ROOT, so a git failure
     cannot make this pass for the wrong reason -- the only thing wrong here is
     --project-dir."""
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--project-dir", "/nonexistent-dir-195", "--repo", str(repo)],
-        capture_output=True, text=True)
+    result = subprocess.run([sys.executable,
+                             str(SCRIPT), "--project-dir", "/nonexistent-dir-195", "--repo",
+                             str(repo)],
+                            capture_output=True,
+                            text=True)
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "/nonexistent-dir-195" in result.stderr
@@ -714,8 +756,10 @@ def test_main_reports_a_missing_project_dir_as_a_check_not_a_traceback(repo):
 def test_main_reports_a_bad_repo_as_usage_error_not_a_traceback(monkeypatch, capsys, tmp_path):
     """#196's deploy entrypoint calls --print-revision first; a stack dump
     there would kill the deploy with no explanation."""
-    result = subprocess.run([sys.executable, str(SCRIPT), "--print-revision", "--repo", str(tmp_path)],
-                            capture_output=True, text=True)
+    result = subprocess.run([sys.executable, str(SCRIPT), "--print-revision", "--repo",
+                             str(tmp_path)],
+                            capture_output=True,
+                            text=True)
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "verify-deploy:" in result.stderr

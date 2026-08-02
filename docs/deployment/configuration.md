@@ -123,10 +123,10 @@ You can remove any leftover `ECH_ENABLED` line from your `.env` — it is now ig
 
 These are read by docker compose during interpolation, not by the portal.
 
-| Variable           | Default        | Description                                                                                                                                                  |
-| ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `COMPOSE_PROFILES` | `with-mta`     | Profiles to activate: `with-mta` (built-in MTA, on by default), `with-cert-renewal`, `with-edge`. Comment out `with-mta` to use a third-party relay instead. |
-| `COMPOSE_FILE`     | `compose.yaml` | Compose file stack. Append overlays as needed, e.g. `compose.yaml:compose.cert.yaml` for cert auto-renewal; `compose.edge.yaml` layers last.                 |
+| Variable           | Default        | Description                                                                                                                                                                                                                                        |
+| ------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMPOSE_PROFILES` | `with-mta`     | Profiles to activate: `with-mta` (built-in MTA, on by default), `with-cert-renewal`, `with-edge`. Comment out `with-mta` to use a third-party relay instead.                                                                                       |
+| `COMPOSE_FILE`     | `compose.yaml` | Compose file stack. Append overlays as needed, e.g. `compose.yaml:compose.cert.yaml` for cert auto-renewal; `compose.edge.yaml` layers last.                                                                                                       |
 | `GIT_REVISION`     | *(unset)*      | Git revision stamped into every first-party image as `org.opencontainers.image.revision`. Set it in the shell before building; `scripts/verify-deploy.py --print-revision` computes it. Unset means unstamped images, which the deploy gate fails. |
 
 ```{note}

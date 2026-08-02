@@ -52,3 +52,7 @@ EXPOSE 25 587
 # runtime image's PATH resolves to.
 ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
+
+# Build provenance. Last in the stage: a new revision invalidates only this layer.
+ARG GIT_REVISION=""
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"

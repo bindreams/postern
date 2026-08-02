@@ -71,3 +71,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 USER opendkim
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
+
+# Build provenance. Last in the stage: a new revision invalidates only this layer.
+ARG GIT_REVISION=""
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"

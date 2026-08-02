@@ -164,3 +164,17 @@ Verifies operator prerequisites and live record state in three sections: **exter
 ```{tip}
 `postern doctor` exits non-zero on any failed check, so it works as a bring-up gate or a CI smoke step.
 ```
+
+### postern version
+
+Prints the package version and the git revision the portal image was built from.
+
+```console
+$ docker compose exec portal postern version
+postern 0.1.0
+revision: 4f1c9a2b...
+```
+
+`revision: unknown` means the image was built without the `GIT_REVISION` build arg — see [updates](index.md). `--json` emits `{"version": ..., "revision": ...}`.
+
+The revision is deliberately **not** exposed on `/healthz`: that endpoint is unauthenticated and internet-reachable, and a git SHA there is both a positive Postern fingerprint and an exact index of which fixes a deployment is missing.

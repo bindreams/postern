@@ -73,6 +73,8 @@ The portal continuously reconciles tunnel containers against the database.
 
 Wakes the reconciler immediately instead of waiting for the next poll, by creating the trigger file it watches. Equivalent to `touch /data/.reconcile-now`, but works in the distroless production image, which ships no shell or busybox.
 
+`--wait` registers a FIFO before touching the trigger file and blocks until the reconciler reports that the pass it triggered has finished, instead of returning as soon as the trigger is written. Exits non-zero if the pass raised, was cancelled (the portal shutting down), or — with `--wait-timeout SECONDS` — did not finish within the bound. `--wait-timeout` defaults to `0`, which waits indefinitely; recreating many tunnel containers can legitimately take a while, and any smaller default would be a guess that eventually fails a healthy deploy. A finished pass is not a *converged* one: `postern reconcile --wait` proves ordering (the pass ran after this call), not that every container ended up correct — that is what `scripts/verify-deploy.py --tunnels` is for. `scripts/deploy.sh` uses `--wait` to make that ordering guarantee.
+
 ## Built-in MTA
 
 Inspect and drive the built-in mail subsystem — see [Email](../deployment/email.md) for setup.

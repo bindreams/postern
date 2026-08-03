@@ -51,6 +51,10 @@ MUST_KEEP_CODE = [
     ("operations/index.md", "GIT_REVISION", "compose.yaml"),
     ("development/architecture.md", "token_hex(12)", "portal/src/postern/cli.py"),
     ("development/architecture.md", "postern.managed", "portal/src/postern/reconciler.py"),
+    ("operations/index.md", "scripts/deploy.sh", "scripts/deploy.sh"),
+    ("getting-started.md", "scripts/deploy.sh", "scripts/deploy.sh"),
+    ("operations/index.md", "--allow-branch", "scripts/deploy.sh"),
+    ("operations/cli.md", "--wait-timeout", "portal/src/postern/cli.py"),
 ]
 
 # Escape hatch for vars legitimately documented in configuration.md that are

@@ -9,16 +9,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-import os
 import threading
-from pathlib import Path
 
 import docker
 import docker.errors
 import docker.types
 from docker.models.containers import Container
 
-from postern import db
+from postern import db, reconcile_wait
 from postern.models import Connection
 from postern.settings import Settings
 from postern.ss_config import server_config_b64
@@ -618,25 +616,53 @@ async def reconcile(database_path: str, settings: Settings) -> None:
 async def reconciliation_loop(database_path: str, settings: Settings) -> None:
     """Main reconciliation loop. Runs until cancelled."""
     _shutdown_requested.clear()
-    trigger_path = Path(os.path.dirname(database_path)) / ".reconcile-now"
+    trigger_path = reconcile_wait.data_dir(database_path) / ".reconcile-now"
 
-    while True:
-        try:
-            await reconcile(database_path, settings)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Reconciliation failed")
+    try:
+        while True:
+            reconcile_wait.sweep_orphan_waiters(database_path)
+            waiters = reconcile_wait.snapshot_waiters(database_path)
+            # Fail-safe default: only the line right after a successful `await
+            # reconcile(...)` proves a pass actually completed. Defaulting to True
+            # and clearing it only in specific except clauses would silently notify
+            # "ok" for any exception type neither clause names (e.g. a bare
+            # BaseException) -- the opposite of what this handshake exists for.
+            passed = False
+            try:
+                await reconcile(database_path, settings)
+                passed = True
+            except asyncio.CancelledError:
+                # Shutdown: app.py cancels this task and then removes every ss-*
+                # container. A waiter told "ok" here would believe its tunnels had
+                # just been reconciled, seconds before they are all deleted.
+                raise
+            except Exception:
+                logger.exception("Reconciliation failed")
+            finally:
+                # Notify even on failure: a deploy blocked on this must get a
+                # verdict, not a hang.
+                reconcile_wait.notify_waiters(waiters, ok=passed)
 
-        # Wait for interval or trigger file
-        for _ in range(settings.reconcile_interval_seconds):
-            if trigger_path.exists():
-                try:
-                    trigger_path.unlink()
-                except OSError:
-                    pass
-                break
-            await asyncio.sleep(1)
+            # Wait for interval or trigger file
+            for _ in range(settings.reconcile_interval_seconds):
+                if trigger_path.exists():
+                    try:
+                        trigger_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                await asyncio.sleep(1)
+    finally:
+        # The loop above only exits via an exception (cancellation, in practice) --
+        # never a plain `return` -- so this runs exactly once, on shutdown. A waiter
+        # that registered after the last snapshot (mid-pass, or during the
+        # interval-wait sleep above) is not in `waiters` and was never notified by
+        # the per-pass `finally`; without this, it stays parked in `select()`
+        # forever whenever this loop does not run again. Re-snapshotting here picks
+        # up exactly that gap. `close_waiter` on the CLI side unlinks a waiter's
+        # FIFO once notified, so a waiter already notified by the loop above and
+        # already closed is simply absent from this snapshot -- no double count.
+        reconcile_wait.notify_waiters(reconcile_wait.snapshot_waiters(database_path), ok=False)
 
 
 async def cleanup_all_containers(settings: Settings) -> None:

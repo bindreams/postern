@@ -47,6 +47,8 @@ docker compose exec portal postern reconcile
 
 Under the hood, `postern reconcile` and every state-mutating CLI command create a `.reconcile-now` trigger file next to the database (`/data/.reconcile-now` in the default deployment); the loop notices it within a second, deletes it, and runs a pass. This is why CLI changes take effect in seconds rather than a minute.
 
+`postern reconcile --wait` additionally registers a FIFO under `.reconcile-waiters/` (next to `.reconcile-now`) before touching the trigger, and blocks until the loop reports that the pass it triggered has finished — instead of returning as soon as the trigger file is written. This is what `scripts/deploy.sh` uses to guarantee a completed pass before it runs `scripts/verify-deploy.py --tunnels`. A finished pass is not the same as a *converged* one: `reconcile()` returns normally even if the tunnel image is missing, and per-container failures are logged and swallowed rather than raised. `--wait-timeout SECONDS` bounds the wait (0, the default, waits indefinitely); see [CLI](cli.md).
+
 ## Logs
 
 - **nginx** writes `access.log` and `error.log` to the host at `nginx/log/` in your checkout (bind mount).
@@ -81,7 +83,45 @@ If the portal cannot determine its own instance id at all (neither variable is s
 
 ```bash
 git pull
+scripts/deploy.sh
+```
 
+`deploy.sh` refuses to run from a dirty worktree or from a checkout that is behind or
+diverged from `origin/main`, stamps the revision it is building into every image
+(`GIT_REVISION`, so a deploy that silently did not happen can be detected
+afterwards), builds `local/shadowsocks-server` from the repo root (compose does not
+build it — the reconciler spawns it at runtime), runs `docker compose up -d --build`,
+blocks on `postern reconcile --wait`, and finally runs `scripts/verify-deploy.py --tunnels` — exiting non-zero if anything is stale.
+
+Escape hatches, all deliberately explicit: `--allow-dirty`, `--allow-behind`,
+`--allow-branch`, `--no-fetch`. An untracked file counts as dirty — both Dockerfiles
+`COPY` whole directories, so a stray file changes what gets built.
+
+The reconcile step waits up to 30 minutes by default (`--wait-timeout SECONDS` to
+change it) — generous for a host with many connections, where recreating every
+tunnel container sequentially legitimately takes a while, but still a real bound: an
+unbounded wait would hang the script forever if the reconciler's background task
+ever died for a reason unrelated to a slow pass. Interrupting `deploy.sh` stops the
+deploy, but the `postern` process inside the portal is left parked in `select()` on
+its own FIFO, waiting harmlessly for the next pass or for its own timeout; it is not
+reliably killed by Ctrl-C on the `docker compose exec` client.
+
+```{warning}
+A deploy restarts the portal, which removes every `ss-*` container; the reconciler
+recreates them seconds later. Every tunnel drops briefly. Path tokens are unchanged,
+so client configs stay valid.
+```
+
+Under `compose.cert.yaml`, nginx and mta wait on the provisioner's healthcheck. A
+provisioner that cannot reach its DNS provider blocks startup rather than degrading,
+and `deploy.sh` will sit in `compose up` until it resolves. `deploy.sh` prints this
+notice up front whenever the provisioner is in the active profile set.
+
+### Deploying by hand
+
+The same sequence, spelled out, for debugging or a host without `deploy.sh`:
+
+```bash
 # Stamp the revision into every image so a deploy that silently did not happen
 # can be detected afterwards. Two statements: `export VAR=$(cmd)` swallows
 # cmd's exit status, so a git failure would go unnoticed.
@@ -95,8 +135,12 @@ docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" 
 # Rebuild and restart the rest of the stack
 docker compose up -d --build
 
+# Block until the post-restart reconcile pass has actually finished, so the tunnel
+# checks below don't race the reconciler's asynchronous container recreation.
+docker compose exec -T portal postern reconcile --wait
+
 # Prove it. Non-zero exit means something did not actually deploy.
-scripts/verify-deploy.py
+scripts/verify-deploy.py --tunnels
 ```
 
 The [shadowsocks image](https://github.com/bindreams/postern/blob/main/shadowsocks/Dockerfile) must be built from the repo root (it copies from `external/`); `docker build ./shadowsocks/` fails. After a rebuild, the reconciler detects the changed image ID and recreates each tunnel container — path tokens are unchanged, so client configs stay valid; each tunnel just drops briefly.
@@ -105,7 +149,7 @@ The [shadowsocks image](https://github.com/bindreams/postern/blob/main/shadowsoc
 
 Skipping `export GIT_REVISION` builds images with no provenance, and the gate fails with `image carries no revision label`. A dirty checkout also fails: `-dirty` is the same string for any two dirty trees, so matching it proves nothing — commit, or pass `--allow-dirty` to acknowledge.
 
-Per-tunnel checks are opt-in (`--tunnels`) because restarting the portal wipes every `ss-*` container and the reconciler recreates them asynchronously; run `postern reconcile` first. The default run still checks that the tunnel *image* was rebuilt.
+Per-tunnel checks are opt-in (`--tunnels`) because restarting the portal wipes every `ss-*` container and the reconciler recreates them asynchronously; run `postern reconcile --wait` first (a plain `postern reconcile` only touches the trigger file and returns immediately, without waiting for the pass it triggered — see [The reconciler](#the-reconciler) above). The default run still checks that the tunnel *image* was rebuilt.
 
 Because the revision is part of the image, every commit now produces a new image ID and `docker compose up -d --build` recreates every service — which restarts the portal and therefore drops every tunnel, even for a commit that changed nothing a user depends on. It also leaves one dangling image per service behind, so run `docker image prune` periodically.
 

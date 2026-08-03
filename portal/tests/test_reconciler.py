@@ -1,12 +1,14 @@
 import asyncio
+import contextlib
 import logging
 import threading
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import docker.errors
 import pytest
 
-from postern import db
+from postern import db, reconcile_wait
 from postern.reconciler import (
     INSTANCE_LABEL,
     MANAGED_LABEL,
@@ -21,6 +23,7 @@ from postern.reconciler import (
     reconcile,
     reconciliation_loop,
 )
+from postern import reconciler
 from postern.models import Connection
 from postern.settings import Settings
 
@@ -1186,3 +1189,157 @@ def test_galoshes_connection_passes_galoshes_in_ss_config():
     call_kwargs = client.containers.run.call_args.kwargs
     cfg = _json.loads(base64.b64decode(call_kwargs["environment"]["SS_CONFIG"]))
     assert cfg["servers"][0]["plugin"] == "galoshes"
+
+
+# Waiter notification from the loop (issue #196) =======================================================================
+def _record_notifications(monkeypatch) -> tuple[list[tuple[list[Path], bool]], asyncio.Event]:
+    """Intercept notify_waiters; return the recorded calls and an Event set on first call."""
+    notified: list[tuple[list[Path], bool]] = []
+    done = asyncio.Event()
+
+    def record(paths, *, ok):
+        notified.append((list(paths), ok))
+        done.set()
+
+    monkeypatch.setattr(reconcile_wait, "notify_waiters", record)
+    return notified, done
+
+
+async def test_loop_reports_a_successful_pass_to_waiters(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "postern.db")
+    waiter = reconcile_wait.register_waiter(db_path)
+    notified, done = _record_notifications(monkeypatch)
+
+    async def fake_reconcile(_db, _settings):
+        pass
+
+    monkeypatch.setattr(reconciler, "reconcile", fake_reconcile)
+    task = asyncio.create_task(reconciliation_loop(db_path, _make_settings()))
+    try:
+        await done.wait()
+        assert notified[0] == ([waiter.path], True)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        reconcile_wait.close_waiter(waiter)
+
+
+async def test_loop_reports_a_raising_pass_as_failed(tmp_path, monkeypatch):
+    db_path = str(tmp_path / "postern.db")
+    waiter = reconcile_wait.register_waiter(db_path)
+    notified, done = _record_notifications(monkeypatch)
+
+    async def boom(_db, _settings):
+        raise RuntimeError("docker is down")
+
+    monkeypatch.setattr(reconciler, "reconcile", boom)
+    task = asyncio.create_task(reconciliation_loop(db_path, _make_settings()))
+    try:
+        await done.wait()
+        assert notified[0] == ([waiter.path], False)
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        reconcile_wait.close_waiter(waiter)
+
+
+async def test_loop_reports_a_cancelled_pass_as_failed(tmp_path, monkeypatch):
+    """Shutdown cancels the loop and then deletes every ss-* container (`app.py`).
+    A waiter told "ok" there would send a deploy on to verification believing its
+    tunnels had just been reconciled, seconds before they are all removed."""
+    db_path = str(tmp_path / "postern.db")
+    waiter = reconcile_wait.register_waiter(db_path)
+    notified, done = _record_notifications(monkeypatch)
+    entered = asyncio.Event()
+
+    async def hang(_db, _settings):
+        entered.set()
+        await asyncio.Event().wait()  # only cancellation ends this
+
+    monkeypatch.setattr(reconciler, "reconcile", hang)
+    task = asyncio.create_task(reconciliation_loop(db_path, _make_settings()))
+    try:
+        await entered.wait()
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        assert done.is_set()
+        assert notified[0] == ([waiter.path], False)
+    finally:
+        reconcile_wait.close_waiter(waiter)
+
+
+async def test_loop_reports_a_non_exception_baseexception_escape_as_failed(tmp_path, monkeypatch):
+    """`passed` must not default to True: anything escaping `await reconcile(...)`
+    other than asyncio.CancelledError or Exception (e.g. a bare BaseException) has
+    to notify ok=False too. A waiter told "ok" here would be told a pass completed
+    when it never did."""
+    db_path = str(tmp_path / "postern.db")
+    waiter = reconcile_wait.register_waiter(db_path)
+    notified, done = _record_notifications(monkeypatch)
+
+    class _WeirdEscape(BaseException):
+        pass
+
+    async def boom(_db, _settings):
+        raise _WeirdEscape("simulated exotic escape")
+
+    monkeypatch.setattr(reconciler, "reconcile", boom)
+    task = asyncio.create_task(reconciliation_loop(db_path, _make_settings()))
+    try:
+        await done.wait()
+        assert notified[0] == ([waiter.path], False)
+    finally:
+        with contextlib.suppress(_WeirdEscape):
+            await task
+        reconcile_wait.close_waiter(waiter)
+
+
+async def test_loop_notifies_a_waiter_registered_during_the_interval_wait_on_shutdown(tmp_path, monkeypatch):
+    """A waiter can register after the current pass's snapshot was already taken --
+    e.g. while the loop is parked in its interval-wait sleep between passes. If
+    shutdown cancels the loop right then, there is no "next pass" to snapshot and
+    notify it: it must still get a verdict here, or `postern reconcile --wait`
+    (unbounded by default) hangs forever."""
+    db_path = str(tmp_path / "postern.db")
+    settings = Settings(
+        secret_key="test-secret",
+        database_path=db_path,
+        reconcile_interval_seconds=3600,
+        compose_project_name=INSTANCE_ID,
+    )
+
+    sleep_entered = asyncio.Event()
+    release_sleep = asyncio.Event()
+
+    async def fake_sleep(_seconds):
+        sleep_entered.set()
+        await release_sleep.wait()
+
+    async def fake_reconcile(_db, _settings):
+        pass
+
+    monkeypatch.setattr(reconciler, "reconcile", fake_reconcile)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    task = asyncio.create_task(reconciliation_loop(db_path, settings))
+    try:
+        # The first pass has completed (no waiters were registered for it) and the
+        # loop is now blocked in the interval-wait's `await asyncio.sleep(1)`.
+        await sleep_entered.wait()
+
+        waiter = reconcile_wait.register_waiter(db_path)
+        try:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            assert reconcile_wait.wait_for_notify(waiter, timeout=0) == "failed"
+        finally:
+            reconcile_wait.close_waiter(waiter)
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import time
 from pathlib import Path
 
 # Resolve key paths once.
@@ -68,8 +67,23 @@ def postern_cli(*args: str) -> subprocess.CompletedProcess:
     return compose_exec("postern", *args)
 
 
+# Generous but real: an unbounded --wait on a background task in another process
+# (the portal's reconciliation_loop) can hang forever with no diagnostic if that
+# task ever dies independently of a slow pass -- the same hazard
+# scripts/deploy.sh's DEFAULT_WAIT_TIMEOUT documents and bounds. A dead reconciler
+# should surface as a failed test with the CLI's own "did not complete a pass"
+# message, not an unattributable CI hang.
+RECONCILE_WAIT_TIMEOUT = "60"
+
+
 def trigger_reconcile() -> None:
-    compose_exec("postern", "reconcile")
+    """Trigger a reconcile pass and block until it has finished.
+
+    --wait registers a FIFO before touching the trigger, so on return the
+    reconciler has completed a pass that started after this call -- container
+    state can be asserted directly instead of polled.
+    """
+    compose_exec("postern", "reconcile", "--wait", "--wait-timeout", RECONCILE_WAIT_TIMEOUT)
 
 
 def query_db(sql: str, *params: str) -> str:
@@ -106,15 +120,6 @@ def container_running(name: str) -> bool:
         text=True,
     )
     return result.returncode == 0 and result.stdout.strip() == "true"
-
-
-def wait_for_container(name: str, *, timeout: float = 15.0, present: bool = True) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if container_exists(name) == present:
-            return
-        time.sleep(0.25)
-    raise AssertionError(f"Container {name} {'still missing' if present else 'still present'} after {timeout}s")
 
 
 # Path-token regex used by the connection fixture

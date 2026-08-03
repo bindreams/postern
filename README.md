@@ -35,9 +35,16 @@ cp example.env .env
 python -c "import secrets; print(secrets.token_hex(32))"   # → SECRET_KEY in .env
 # Set DOMAIN and the email settings in .env (see the docs for the choices).
 
+# Stamp the revision into every image so a deploy that did not happen is detectable.
+GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"
+export GIT_REVISION
+
 # The per-connection tunnel image is spawned at runtime — build it first:
-docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
 docker compose up -d --build
+
+# Prove it. Non-zero exit means something did not actually deploy.
+scripts/verify-deploy.py
 
 # Create the first user and connection:
 docker compose exec portal postern user add "Alice" alice@example.com

@@ -123,13 +123,18 @@ You can remove any leftover `ECH_ENABLED` line from your `.env` — it is now ig
 
 These are read by docker compose during interpolation, not by the portal.
 
-| Variable           | Default        | Description                                                                                                                                                  |
-| ------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `COMPOSE_PROFILES` | `with-mta`     | Profiles to activate: `with-mta` (built-in MTA, on by default), `with-cert-renewal`, `with-edge`. Comment out `with-mta` to use a third-party relay instead. |
-| `COMPOSE_FILE`     | `compose.yaml` | Compose file stack. Append overlays as needed, e.g. `compose.yaml:compose.cert.yaml` for cert auto-renewal; `compose.edge.yaml` layers last.                 |
+| Variable           | Default        | Description                                                                                                                                                                                                                                        |
+| ------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `COMPOSE_PROFILES` | `with-mta`     | Profiles to activate: `with-mta` (built-in MTA, on by default), `with-cert-renewal`, `with-edge`. Comment out `with-mta` to use a third-party relay instead.                                                                                       |
+| `COMPOSE_FILE`     | `compose.yaml` | Compose file stack. Append overlays as needed, e.g. `compose.yaml:compose.cert.yaml` for cert auto-renewal; `compose.edge.yaml` layers last.                                                                                                       |
+| `GIT_REVISION`     | *(unset)*      | Git revision stamped into every first-party image as `org.opencontainers.image.revision`. Set it in the shell before building; `scripts/verify-deploy.py --print-revision` computes it. Unset means unstamped images, which the deploy gate fails. |
 
 ```{note}
 Profiles must be set in `.env` — a CLI-only `docker compose --profile` flag is not visible to the provisioner container.
+```
+
+```{warning}
+Do **not** put `GIT_REVISION` in `.env`. Compose interpolates `.env` first-class, so a value parked there silently pins every future build to that one fixed revision — after the next `git pull`, images keep carrying the old SHA while `scripts/verify-deploy.py` compares against the checkout's new `HEAD`, and the gate fails with a revision mismatch that looks exactly like a deploy that did not take.
 ```
 
 ## Changing the domain

@@ -82,15 +82,38 @@ If the portal cannot determine its own instance id at all (neither variable is s
 ```bash
 git pull
 
+# Stamp the revision into every image so a deploy that silently did not happen
+# can be detected afterwards. Two statements: `export VAR=$(cmd)` swallows
+# cmd's exit status, so a git failure would go unnoticed.
+GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"
+export GIT_REVISION
+
 # Rebuild the per-connection tunnel image. Compose does NOT build this one --
 # the reconciler spawns it at runtime.
-docker build -f shadowsocks/Dockerfile -t local/shadowsocks-server .
+docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
 
 # Rebuild and restart the rest of the stack
 docker compose up -d --build
+
+# Prove it. Non-zero exit means something did not actually deploy.
+scripts/verify-deploy.py
 ```
 
 The [shadowsocks image](https://github.com/bindreams/postern/blob/main/shadowsocks/Dockerfile) must be built from the repo root (it copies from `external/`); `docker build ./shadowsocks/` fails. After a rebuild, the reconciler detects the changed image ID and recreates each tunnel container — path tokens are unchanged, so client configs stay valid; each tunnel just drops briefly.
+
+`scripts/verify-deploy.py` is the gate. For every Compose service it asserts a container exists, is running, is not `unhealthy`, and is on the image its tag currently points at — and, for images this repo builds, carries `org.opencontainers.image.revision` equal to the checkout's `HEAD`. It also reports orphan containers and the tunnel image's revision. It runs on the host and needs nothing but Docker; it deliberately does not go through the portal, because a portal that failed to deploy cannot be trusted to report that it failed to deploy.
+
+Skipping `export GIT_REVISION` builds images with no provenance, and the gate fails with `image carries no revision label`. A dirty checkout also fails: `-dirty` is the same string for any two dirty trees, so matching it proves nothing — commit, or pass `--allow-dirty` to acknowledge.
+
+Per-tunnel checks are opt-in (`--tunnels`) because restarting the portal wipes every `ss-*` container and the reconciler recreates them asynchronously; run `postern reconcile` first. The default run still checks that the tunnel *image* was rebuilt.
+
+Because the revision is part of the image, every commit now produces a new image ID and `docker compose up -d --build` recreates every service — which restarts the portal and therefore drops every tunnel, even for a commit that changed nothing a user depends on. It also leaves one dangling image per service behind, so run `docker image prune` periodically.
+
+Run the gate *after* `docker compose up -d` has returned. It takes several `docker` calls and does not snapshot atomically, so a concurrent `up` produces transient failures.
+
+A service that legitimately runs to completion (the provisioner, when no `DNS_PROVIDER` is set) reports `[SKIP] … ran to completion` rather than failing; its image is still verified.
+
+`docker compose ps` showing `Up` and `/healthz` returning 200 are liveness, not version — neither is deploy evidence.
 
 ## Backup
 

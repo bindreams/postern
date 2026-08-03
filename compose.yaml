@@ -1,6 +1,9 @@
 services:
   nginx:
-    build: ./nginx
+    build:
+      context: ./nginx
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
     image: local/nginx
     container_name: nginx
     environment:
@@ -49,6 +52,8 @@ services:
     build:
       context: .
       dockerfile: portal/Dockerfile
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
     image: local/postern-portal
     container_name: portal
     env_file: .env
@@ -96,6 +101,8 @@ services:
     build:
       context: .
       dockerfile: mta/Dockerfile
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
     image: local/postern-mta
     container_name: mta
     profiles: [with-mta]
@@ -139,6 +146,8 @@ services:
     build:
       context: .
       dockerfile: provisioner/Dockerfile
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
     image: local/postern-provisioner
     container_name: provisioner
     # Multiple profiles -- a service starts when ANY listed profile is active.

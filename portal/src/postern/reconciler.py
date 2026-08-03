@@ -592,7 +592,8 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                 if not _image_exists(client, settings.shadowsocks_image):
                     logger.error(
                         "Image '%s' not found. Build it from the repo root with: "
-                        "docker build -f shadowsocks/Dockerfile -t %s .",
+                        'GIT_REVISION="$(scripts/verify-deploy.py --print-revision)" && export GIT_REVISION && '
+                        'docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t %s .',
                         settings.shadowsocks_image,
                         settings.shadowsocks_image,
                     )

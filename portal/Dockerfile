@@ -30,3 +30,8 @@ COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 USER nonroot
 EXPOSE 8000
 CMD ["uvicorn", "postern.app:PosternApp", "--factory", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "30"]
+
+# Build provenance. Last in the stage: a new revision invalidates only this layer.
+ARG GIT_REVISION=""
+ENV POSTERN_REVISION="${GIT_REVISION}"
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"

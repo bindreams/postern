@@ -847,6 +847,31 @@ def _tlsa_cert_hex(domain: str, certdir: Path = Path("/etc/letsencrypt")) -> str
     return hashlib.sha256(spki_der).hexdigest()
 
 
+@app.command("version")
+def version_cmd(output_json: bool = typer.Option(False, "--json", help="Emit structured JSON")) -> None:
+    """Print the package version and the git revision this image was built from.
+
+    The revision comes from POSTERN_REVISION, set from the GIT_REVISION build
+    arg in portal/Dockerfile. "unknown" means the image was built without it --
+    the deployment has no provenance and `scripts/verify-deploy.py` will fail.
+    """
+    import json
+    import os
+    from importlib import metadata
+
+    revision = os.environ.get("POSTERN_REVISION", "").strip() or "unknown"
+    try:
+        package_version = metadata.version("postern")
+    except metadata.PackageNotFoundError:
+        package_version = "unknown"
+
+    if output_json:
+        typer.echo(json.dumps({"version": package_version, "revision": revision}, indent=2))
+    else:
+        typer.echo(f"postern {package_version}")
+        typer.echo(f"revision: {revision}")
+
+
 @app.command("doctor")
 def doctor_cmd(
     external_only: bool = typer.Option(False, "--external-only", help="Only run external (DS, PTR) checks"),

@@ -92,3 +92,7 @@ COPY external/shadowsocks-rust/LICENSE /usr/share/licenses/shadowsocks-rust/LICE
 # to /tmp (the only nonroot-writable path at runtime) and execs ssserver.
 COPY --chmod=755 shadowsocks/entrypoint.sh /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# Build provenance. Last in the stage: a new revision invalidates only this layer.
+ARG GIT_REVISION=""
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"

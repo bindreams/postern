@@ -29,3 +29,7 @@ COPY --chmod=755 edge.sh /usr/local/bin/edge.sh
 COPY --chmod=755 nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 ENTRYPOINT ["/usr/local/bin/nginx-entrypoint.sh"]
+
+# Build provenance. Last in the stage: a new revision invalidates only this layer.
+ARG GIT_REVISION=""
+LABEL org.opencontainers.image.revision="${GIT_REVISION}"

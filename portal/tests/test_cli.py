@@ -605,3 +605,28 @@ def _connection_path_token(db_path, conn_id):
     with sqlite3.connect(db_path) as raw:
         row = raw.execute("SELECT path_token FROM connections WHERE id=?", (conn_id, )).fetchone()
     return row[0] if row else None
+
+
+# Version ==============================================================================================================
+def test_version_reports_the_baked_revision(monkeypatch):
+    monkeypatch.setenv("POSTERN_REVISION", "a" * 40)
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "a" * 40 in result.output
+
+
+def test_version_reports_unknown_when_unstamped(monkeypatch):
+    monkeypatch.delenv("POSTERN_REVISION", raising=False)
+    result = runner.invoke(app, ["version"])
+    assert result.exit_code == 0
+    assert "unknown" in result.output
+
+
+def test_version_json_shape(monkeypatch):
+    import json
+    monkeypatch.setenv("POSTERN_REVISION", "b" * 40)
+    result = runner.invoke(app, ["version", "--json"])
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["revision"] == "b" * 40
+    assert isinstance(payload["version"], str) and payload["version"]

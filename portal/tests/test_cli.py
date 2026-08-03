@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from postern import reconcile_wait
 from postern.cli import app
 
 runner = CliRunner()
@@ -450,6 +451,139 @@ def test_reconcile_succeeds_when_identity_resolved(cli_env):
     result = runner.invoke(app, ["reconcile"])
     assert result.exit_code == 0
     assert "WARNING" not in result.output
+
+
+# reconcile --wait (issue #196) ========================================================================================
+def test_reconcile_without_wait_only_touches_the_trigger(cli_env):
+    data_dir = Path(cli_env).parent
+    result = runner.invoke(app, ["reconcile"])
+    assert result.exit_code == 0
+    assert (data_dir / ".reconcile-now").exists()
+    assert not (data_dir / reconcile_wait.WAITERS_DIRNAME).exists()
+
+
+def test_reconcile_wait_returns_when_the_loop_notifies(cli_env, monkeypatch):
+    """The CLI registers its FIFO before touching the trigger, so a notify issued
+    against the snapshot at that moment wakes it."""
+    real_register = reconcile_wait.register_waiter
+
+    def register_and_notify(database_path: str):
+        waiter = real_register(database_path)
+        reconcile_wait.notify_waiters(reconcile_wait.snapshot_waiters(database_path), ok=True)
+        return waiter
+
+    monkeypatch.setattr(reconcile_wait, "register_waiter", register_and_notify)
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code == 0, result.output
+    assert (Path(cli_env).parent / ".reconcile-now").exists()
+
+
+def test_reconcile_wait_fails_loudly_on_timeout(cli_env, monkeypatch):
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", lambda waiter, *, timeout: None)
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code != 0
+    assert "did not complete a pass" in (result.stderr or result.output)
+
+
+def test_reconcile_wait_fails_loudly_when_the_pass_failed(cli_env, monkeypatch):
+    """A cancelled pass means the portal is shutting down and is about to delete every
+    ss-* container. Reporting success there would send a deploy on to verification
+    believing the tunnels were just reconciled."""
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", lambda waiter, *, timeout: "failed")
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code != 0
+    assert "did not complete" in (result.stderr or result.output)
+
+
+def test_reconcile_wait_cleans_up_its_fifo(cli_env, monkeypatch):
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", lambda waiter, *, timeout: None)
+    runner.invoke(app, ["reconcile", "--wait"])
+    assert list((Path(cli_env).parent / reconcile_wait.WAITERS_DIRNAME).iterdir()) == []
+
+
+def test_reconcile_wait_reports_an_unusable_waiters_directory(cli_env, monkeypatch):
+
+    def boom(_database_path):
+        raise PermissionError("read-only volume")
+
+    monkeypatch.setattr(reconcile_wait, "register_waiter", boom)
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code != 0
+    assert "Cannot register" in (result.stderr or result.output)
+
+
+def test_reconcile_wait_still_fails_when_identity_unresolved(cli_env, monkeypatch):
+    """--wait must not skip the same identity check the non-waiting path
+    enforces -- a successful pass with unresolved identity did no container
+    work at all."""
+    _unresolve_identity(monkeypatch)
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", lambda waiter, *, timeout: "ok")
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code == 1
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+
+
+def test_reconcile_wait_timeout_zero_means_unbounded(cli_env, monkeypatch):
+    """0.0 is the CLI default and must be translated to timeout=None (wait
+    forever), not passed through as a real zero-second timeout."""
+    seen = {}
+
+    def fake_wait(waiter, *, timeout):
+        seen["timeout"] = timeout
+        return "ok"
+
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", fake_wait)
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code == 0, result.output
+    assert seen["timeout"] is None
+
+
+def test_reconcile_wait_timeout_is_passed_through(cli_env, monkeypatch):
+    seen = {}
+
+    def fake_wait(waiter, *, timeout):
+        seen["timeout"] = timeout
+        return "ok"
+
+    monkeypatch.setattr(reconcile_wait, "wait_for_notify", fake_wait)
+    result = runner.invoke(app, ["reconcile", "--wait", "--wait-timeout", "30"])
+    assert result.exit_code == 0, result.output
+    assert seen["timeout"] == 30.0
+
+
+def test_reconcile_wait_timeout_without_wait_is_rejected(cli_env):
+    """`--wait-timeout` only has an effect inside the --wait branch. Silently
+    falling through to the fire-and-forget path (which returns before any pass
+    runs) would mean an operator who asked for a bound gets the opposite of what
+    they asked for: an immediate return with no wait at all."""
+    result = runner.invoke(app, ["reconcile", "--wait-timeout", "30"])
+    assert result.exit_code != 0
+    assert "--wait-timeout" in (result.stderr or result.output)
+    assert "--wait" in (result.stderr or result.output)
+
+
+def test_reconcile_wait_timeout_zero_without_wait_is_not_an_error(cli_env):
+    """0 is the default and means the same thing with or without --wait (no
+    bound), so it must not be treated as an explicit, discarded value."""
+    result = runner.invoke(app, ["reconcile", "--wait-timeout", "0"])
+    assert result.exit_code == 0, result.output
+
+
+def test_reconcile_wait_reports_a_failed_trigger_touch(cli_env, monkeypatch):
+    """The trigger touch shares a directory (and therefore failure modes -- a
+    read-only volume, a full disk) with register_waiter just above it. Unlike
+    register_waiter's OSError, which is caught with a clean operator-facing
+    message, an unguarded touch here would surface as a raw traceback instead."""
+
+    def boom(_settings):
+        raise OSError("simulated: read-only volume")
+
+    monkeypatch.setattr("postern.cli._trigger_reconcile", boom)
+    result = runner.invoke(app, ["reconcile", "--wait"])
+    assert result.exit_code != 0
+    assert "Cannot" in (result.stderr or result.output)
+    # The FIFO registered just before the failing touch must not leak.
+    assert list((Path(cli_env).parent / reconcile_wait.WAITERS_DIRNAME).iterdir()) == []
 
 
 # Instance identity warnings ===========================================================================================

@@ -29,7 +29,6 @@ from ._helpers import (
     query_db,
     trigger_reconcile,
     postern_cli,
-    wait_for_container,
 )
 
 
@@ -458,35 +457,25 @@ def test_reconciler_removes_orphan(e2e_stack):
     orphan = "ss-orphan0000000000000000"
     foreign = "ss-foreign000000000000000"
     legacy = "ss-legacyunlabelled000000"
-    sentinel = "ss-sentinel00000000000000"
 
     try:
         _run_labelled(orphan, ["postern.managed=true", f"postern.instance={PROJECT}"])
         _run_labelled(foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"])
         _run_labelled(legacy, ["postern.managed=true"])  # no instance label: pre-upgrade shape
-        trigger_reconcile()
-        wait_for_container(orphan, present=False, timeout=15)
 
-        # `wait_for_container` only proves the ORPHAN's removal call
-        # returned. Whether the SAME pass also removed `foreign`/`legacy`
-        # (the regression this test exists to catch) is a separate,
-        # unordered `_remove_container` call within that pass and could
-        # still be in flight (each removal's `container.stop` allows up
-        # to 10s). `trigger_reconcile()` is fire-and-forget (it just
-        # touches the trigger file), so it gives no such barrier on its
-        # own. A second, correctly-labelled sentinel does: the reconcile
-        # loop only checks for a new trigger AFTER the in-flight pass
-        # fully returns, so once THIS trigger's pass has removed the
-        # sentinel, the FIRST pass (which decided foreign/legacy's fate)
-        # is unquestionably finished.
-        _run_labelled(sentinel, ["postern.managed=true", f"postern.instance={PROJECT}"])
+        # `trigger_reconcile()` now blocks on `postern reconcile --wait`, which only
+        # returns once the reconciler's own `reconcile()` -- orphan removal AND the
+        # foreign/legacy scan, all of it -- has fully completed (reconciler.py awaits
+        # the whole pass's future before notifying waiters). A single trigger is
+        # therefore already a barrier past every effect of this pass; no second,
+        # sentinel-based trigger is needed to prove foreign/legacy were decided too.
         trigger_reconcile()
-        wait_for_container(sentinel, present=False, timeout=15)
+        assert not container_exists(orphan), "reconciler did not remove the orphan container"
 
         assert container_running(foreign)
         assert container_running(legacy)
     finally:
-        for name in (orphan, foreign, legacy, sentinel):
+        for name in (orphan, foreign, legacy):
             subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
 
 
@@ -533,19 +522,16 @@ def test_image_upgrade_recreates_container(fresh_user, fresh_connection):
 
     trigger_reconcile()
 
-    # Poll for the container's image to change (recreation drops the container
-    # then creates a new one with the same name).
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        inspect = subprocess.run(
-            ["docker", "inspect", "--format", "{{.Image}}", name],
-            capture_output=True,
-            text=True,
-        )
-        if inspect.returncode == 0 and inspect.stdout.strip() != image_before:
-            return
-        time.sleep(0.5)
-    pytest.fail(f"Container {name} was not recreated after image upgrade")
+    # `trigger_reconcile()` blocks (`postern reconcile --wait`) until the pass that
+    # recreates this container -- drop, then create with the same name -- has fully
+    # completed, so the new image ID is already in place; no poll needed.
+    inspect = subprocess.run(
+        ["docker", "inspect", "--format", "{{.Image}}", name],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert inspect.stdout.strip() != image_before, f"{name} was not recreated after the image changed"
 
 
 def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
@@ -587,7 +573,11 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
 
         subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
         try:
-            wait_for_container(name, present=False, timeout=30)
+            # No poll needed: `docker compose stop` returns only after the portal
+            # process has fully exited, and the lifespan's cleanup_all_containers()
+            # runs before that exit -- so the removal has already happened by the
+            # time `stop` returns.
+            assert not container_exists(name), "portal shutdown left an ss-* container behind"
 
             # Belt and suspenders: confirm no THIS-instance managed containers remain anywhere.
             result = subprocess.run(

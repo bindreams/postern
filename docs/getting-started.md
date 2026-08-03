@@ -74,7 +74,14 @@ This page takes you from an empty server to a verified working tunnel: install t
    scripts/verify-deploy.py
    ```
 
-   The second command is the deploy gate — a non-zero exit means something did not actually deploy. See [updates](operations/index.md#updates).
+   The second command is the deploy gate — a non-zero exit means something did not actually deploy.
+
+   ```{tip}
+   That was the first-run sequence, spelled out step by step. Every deploy *after*
+   this one — including the next one — should use `scripts/deploy.sh` instead: it
+   runs the same build-then-verify sequence as one command, and refuses to run
+   against a dirty or out-of-date checkout. See [updates](operations/index.md#updates).
+   ```
 
 ## Create the first user and connection
 

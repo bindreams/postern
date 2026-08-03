@@ -9,7 +9,7 @@ from pathlib import Path
 
 import typer
 
-from postern import db
+from postern import db, reconcile_wait
 from postern.models import Connection, User
 from postern.settings import Settings
 from postern.ss_config import generate_password
@@ -49,7 +49,7 @@ def _settings() -> Settings:
 
 
 def _trigger_reconcile(settings: Settings) -> Path:
-    trigger = Path(settings.database_path).parent / ".reconcile-now"
+    trigger = reconcile_wait.data_dir(settings.database_path) / ".reconcile-now"
     trigger.touch()
     return trigger
 
@@ -365,17 +365,87 @@ def connection_enable(id: str) -> None:
 
 # Reconcile command ====================================================================================================
 @app.command("reconcile")
-def reconcile() -> None:
+def reconcile(
+    wait: bool = typer.Option(False, "--wait", help="Block until the reconciler finishes a pass."),
+    wait_timeout: float = typer.Option(
+        0.0,
+        "--wait-timeout",
+        min=0.0,
+        help="Fail if the pass has not finished within this many seconds. 0 (default) waits indefinitely.",
+    ),
+) -> None:
     """Wake the reconciler immediately instead of waiting for the next poll.
 
     Creates the trigger file the reconciler watches. Equivalent to `touch
     /data/.reconcile-now`, but works in the distroless production image which
     ships no shell or busybox.
+
+    With --wait, register a FIFO first and block on it until the loop reports the
+    outcome of a pass -- the ordering guarantee a deploy needs before it can assert
+    anything about the ss-* containers (see scripts/deploy.sh). A finished pass is
+    not a converged one (see reconcile_wait.wait_for_notify); proving convergence is
+    scripts/verify-deploy.py's job.
     """
     settings = _settings()
-    trigger = _trigger_reconcile(settings)
-    typer.echo(f"Reconcile triggered: {trigger}")
-    if _warn_if_identity_unresolved(settings):
+
+    # `--wait-timeout` only has an effect inside the --wait branch below. A nonzero
+    # value without --wait would otherwise be silently discarded by the early
+    # return two lines down -- the opposite of what an operator who passed it
+    # asked for. Zero is exempt: it is the default and means "no bound" either way,
+    # so it is not a value that could be silently ignored.
+    if wait_timeout and not wait:
+        typer.echo("--wait-timeout has no effect without --wait", err=True)
+        raise typer.Exit(1)
+
+    if not wait:
+        trigger = _trigger_reconcile(settings)
+        typer.echo(f"Reconcile triggered: {trigger}")
+        if _warn_if_identity_unresolved(settings):
+            raise typer.Exit(code=1)
+        return
+
+    try:
+        waiter = reconcile_wait.register_waiter(settings.database_path)
+    except OSError as exc:
+        typer.echo(
+            f"Cannot register a reconcile waiter in {reconcile_wait.waiters_dir(settings.database_path)}: {exc}",
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+
+    try:
+        try:
+            trigger = _trigger_reconcile(settings)
+        except OSError as exc:
+            # Same directory, same failure modes (read-only volume, full disk) as
+            # register_waiter above -- give it the same clean disposition instead
+            # of letting the exception escape as a raw traceback.
+            typer.echo(f"Cannot touch the reconcile trigger file: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(f"Reconcile triggered: {trigger}; waiting for the pass to finish")
+        outcome = reconcile_wait.wait_for_notify(waiter, timeout=wait_timeout or None)
+    finally:
+        reconcile_wait.close_waiter(waiter)
+
+    identity_unresolved = _warn_if_identity_unresolved(settings)
+
+    if outcome is None:
+        typer.echo(
+            f"Reconciler did not complete a pass within {wait_timeout}s. "
+            "Is the portal running? Check `docker compose logs portal`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if outcome == "failed":
+        typer.echo(
+            "The reconcile pass did not complete -- it raised, or the portal is shutting down. "
+            "Check `docker compose logs portal`.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    typer.echo("Reconcile pass finished")
+    if identity_unresolved:
         raise typer.Exit(code=1)
 
 

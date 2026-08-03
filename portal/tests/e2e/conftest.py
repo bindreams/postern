@@ -41,11 +41,11 @@ from ._helpers import (
     PORTAL_BASE_URL,
     TESTS_E2E_DIR,
     compose,
+    container_exists,
     query_db,
     run,
     trigger_reconcile,
     postern_cli,
-    wait_for_container,
 )
 from ._mta_helpers import compose_mta
 
@@ -381,7 +381,7 @@ def fresh_connection(e2e_stack):
         if not path_token:
             raise AssertionError(f"path_token not in DB for connection {conn_id}")
         trigger_reconcile()
-        wait_for_container(f"ss-{path_token}", timeout=20)
+        assert container_exists(f"ss-{path_token}"), f"reconciler did not create ss-{path_token}"
         # Reconciler-spawned ss-* containers must run with tini at PID 1.
         init_state = subprocess.run(
             ["docker", "inspect", f"ss-{path_token}", "--format", "{{.HostConfig.Init}}"],

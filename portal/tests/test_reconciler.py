@@ -305,6 +305,29 @@ def test_created_container_whose_start_keeps_failing_is_retried_not_recreated():
     client.containers.run.assert_not_called()
 
 
+def test_running_container_with_zero_networks_is_a_proven_mismatch():
+    """Unlike the not-yet-started `created` case above, a RUNNING container
+    with zero resolved network endpoints (e.g. `docker network disconnect
+    -f` against a live container) is a real, provable mismatch -- the
+    `status != "created"` guard must not also exempt this case forever."""
+    conn = _make_connection()
+    settings = _make_settings()
+
+    disconnected = _make_mock_container("ss-abcdef123456789012345678", status="running")
+    disconnected.attrs["NetworkSettings"]["Networks"] = {}  # `docker network disconnect -f` leaves exactly this
+
+    client = MagicMock()
+    client.containers.list.return_value = [disconnected]
+    client.images.get.return_value = MagicMock(id="img1")
+    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+
+    _reconcile_once(client, [conn], settings, INSTANCE_ID)
+
+    disconnected.stop.assert_called()
+    disconnected.remove.assert_called()
+    client.containers.run.assert_called_once()
+
+
 def test_reconcile_once_stops_early_when_shutdown_requested(caplog):
     """The cooperative-abort checkpoint: once _shutdown_requested is set, a
     pass must not start any further container operations -- an in-flight
@@ -437,9 +460,12 @@ def test_container_network_ids_reads_networkid_not_the_dict_key():
 
 def test_container_network_ids_empty_when_missing():
     """A container whose inspect payload carries no NetworkSettings at all
-    (never happens for a real Docker container, but must not crash) counts
-    as attached to no network -- i.e. a mismatch against any resolved
-    target network ID, which is the conservative (recreate) side."""
+    counts as attached to no network. This function itself just reports that
+    truthfully -- the empty-set case is real (a `created`-status container,
+    or one `docker network disconnect`ed while running, both have it) and
+    the CALLER (`_reconcile_once`) is the one that decides what an empty
+    result means: unknown-not-yet-started for `created`, a proven mismatch
+    otherwise. See `_reconcile_once`'s `network_changed` computation."""
     container = MagicMock()
     container.attrs = {}
     assert reconciler._container_network_ids(container) == set()
@@ -571,8 +597,33 @@ def test_recreate_check_skips_network_mismatch_when_target_network_missing(caplo
     old_container.stop.assert_not_called()
     old_container.remove.assert_not_called()
     client.containers.run.assert_not_called()
-    assert "not found" in caplog.text
+    assert "Could not resolve network" in caplog.text
     assert settings.shadowsocks_network in caplog.text
+
+
+def test_recreate_check_skips_network_mismatch_on_a_non_notfound_lookup_failure(caplog):
+    """The network lookup's except must not be narrowed to NotFound alone:
+    an empty SHADOWSOCKS_NETWORK raises docker.errors.NullResource (a
+    ValueError, not an APIError), and a docker-proxy hiccup raises a generic
+    APIError -- both must degrade the same way NotFound does (skip the
+    network-mismatch check this pass), not escape _reconcile_once and abort
+    the image-driven recreate loop over an unrelated network problem."""
+    conn = _make_connection()
+    settings = _make_settings()
+
+    old_container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img", network_id="old-network-id")
+    client = MagicMock()
+    client.containers.list.return_value = [old_container]
+    client.images.get.return_value = MagicMock(id="new_img")  # image-driven recreate IS due
+    client.networks.get.side_effect = docker.errors.APIError("docker-proxy unreachable")
+
+    with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+        _reconcile_once(client, [conn], settings, INSTANCE_ID)  # must not raise
+
+    old_container.stop.assert_called_once()
+    old_container.remove.assert_called_once()
+    client.containers.run.assert_called_once()  # the due image-driven recreate still happens
+    assert "Could not resolve network" in caplog.text
 
 
 def test_image_driven_recreate_still_happens_when_target_network_missing():

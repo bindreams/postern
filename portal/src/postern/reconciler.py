@@ -533,11 +533,10 @@ def _reconcile_once(
 
     # Check for image/network updates ----------------------------------------------------------------------------------
     # Re-fetch again: container.start() above does not update the already-fetched
-    # `managed` containers' .attrs in place, and a container that was `created`
-    # (not yet started) reports an empty NetworkID for its network endpoint until
-    # start() actually runs -- reading the pre-start snapshot here would make
-    # _container_network_ids() see no networks at all and wrongly recreate a
-    # container that was just successfully started.
+    # `managed` containers' .attrs in place, and its network attach isn't visible
+    # until start() runs (see _container_network_ids' docstring) -- reading the
+    # pre-start snapshot here would wrongly recreate a container just successfully
+    # started.
     managed = _list_managed_containers(client, instance_id)
     try:
         current_image = client.images.get(settings.shadowsocks_image)
@@ -549,15 +548,20 @@ def _reconcile_once(
     # discipline as current_image above: recreate REMOVES the existing
     # container before creating its replacement, so proceeding on the strength
     # of settings.shadowsocks_network alone -- unresolved -- risks destroying a
-    # working tunnel and then 404ing on create. On NotFound, network-driven
-    # recreates are skipped this pass (existing containers untouched); image-
-    # driven recreates below are unaffected.
+    # working tunnel and then 404ing on create. Broad except: an empty
+    # SHADOWSOCKS_NETWORK raises docker.errors.NullResource (a ValueError, not
+    # an APIError), and any other lookup failure (docker-proxy hiccup, generic
+    # APIError) must degrade the same way NotFound does -- skip the
+    # network-mismatch check this pass -- rather than escaping _reconcile_once
+    # entirely and aborting the image-driven recreate loop below (and the
+    # legacy-container scan after it) over an unrelated network problem.
     try:
         target_network_id = client.networks.get(settings.shadowsocks_network).id
-    except docker.errors.NotFound:
+    except Exception:
         logger.error(
-            "Network '%s' not found; skipping network-mismatch recreate check this pass",
+            "Could not resolve network '%s'; skipping network-mismatch recreate check this pass",
             settings.shadowsocks_network,
+            exc_info=True,
         )
         target_network_id = None
 
@@ -574,19 +578,21 @@ def _reconcile_once(
         image_changed = attrs.get("Image") != current_image.id
         # Recreate on a stale network too, not just a stale image -- without
         # this check, a survivor of a failed wipe would stay on the OLD
-        # network forever. `bool(container_network_ids)` guards a container
-        # that has never successfully started (real Docker reports an EMPTY
-        # NetworkID for a `created` container's endpoint until start()
-        # actually runs -- verified against a live daemon): with no
-        # resolved endpoint at all, "attached to nothing" is unknown, not a
-        # proven mismatch, and the restart loop above already owns retrying
-        # its start() every pass. Without this guard a container whose
-        # start() keeps failing would additionally be torn down and
-        # recreated every pass, replacing a benign start-retry with
-        # destructive churn.
+        # network forever. The `status != "created"` guard is deliberately
+        # narrower than "has any resolved endpoint": it exempts ONLY a
+        # container that has never successfully started (see
+        # _container_network_ids' docstring for why that state has a real,
+        # empty NetworkID) -- the restart loop above already owns retrying
+        # its start() every pass, and without this guard a start() that
+        # keeps failing would additionally get torn down and recreated every
+        # pass. A RUNNING (or exited) container with zero resolved endpoints
+        # is a different, real case -- e.g. `docker network disconnect`
+        # against a live container -- and must still count as a proven
+        # mismatch and self-heal, not be silently exempted forever alongside
+        # the not-yet-started case.
         container_network_ids = _container_network_ids(container)
         network_changed = (
-            target_network_id is not None and bool(container_network_ids)
+            target_network_id is not None and (container_network_ids or container.status != "created")
             and target_network_id not in container_network_ids
         )
         if not image_changed and not network_changed:

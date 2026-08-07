@@ -556,6 +556,27 @@ def test_container_network_ids_empty_when_missing():
     assert reconciler._container_network_ids(container) == set()
 
 
+def test_recreate_reasons_skips_image_axis_when_current_image_is_none():
+    """Direct unit test of `_recreate_reasons` with `current_image=None` --
+    the image axis must never contribute a reason, even for a container
+    whose recorded image would otherwise clearly mismatch. `_reconcile_once`
+    never calls it this way in practice (it bails before the loop when
+    either axis is unresolved), but the function's own contract is meant to
+    hold regardless of caller."""
+    container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img")
+    reasons = reconciler._recreate_reasons(container, current_image=None, target_network=_mock_network())
+    assert reasons == []
+
+
+def test_recreate_reasons_skips_network_axis_when_target_network_is_none():
+    """Mirror of the test above for `target_network=None` -- the network
+    axis must never contribute a reason even for a container attached to a
+    network ID that would otherwise clearly mismatch."""
+    container = _make_mock_container("ss-abcdef123456789012345678", network_id="some-other-network-id")
+    reasons = reconciler._recreate_reasons(container, current_image=MagicMock(id="img1"), target_network=None)
+    assert reasons == []
+
+
 def test_recreates_container_on_network_change():
     """A container whose NetworkID no longer matches the resolved target --
     covers both a plain SHADOWSOCKS_NETWORK change AND the network having

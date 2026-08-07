@@ -85,7 +85,13 @@ Changing the value on a running deployment recreates the portal (`docker compose
 ```bash
 docker compose up -d
 docker compose exec -T portal postern reconcile --wait   # returns when a full pass has finished
-docker network inspect <new-name>                        # every ss-* container should be listed
+# `docker network inspect <new-name>`'s `Containers` map only reflects LIVE
+# sandbox endpoints -- a container that's `exited` or wedged in `created`
+# (its start() keeps failing) is correctly attached to the new network but
+# absent from that list, and the restart loop -- not this rename -- owns
+# retrying it. Check configured attachment instead:
+docker ps -a --filter label=postern.managed=true --filter label=postern.instance=<id> --format '{{.Names}}' \
+  | xargs -r docker inspect --format '{{.Name}}: {{json .NetworkSettings.Networks}}'
 ```
 ````
 

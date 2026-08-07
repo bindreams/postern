@@ -64,6 +64,7 @@ The database is the source of truth; containers are derived state. [reconciler.p
 - removes orphan containers whose connection is gone or disabled;
 - restarts containers that have exited;
 - recreates containers whose recorded image ID differs from the current `local/shadowsocks-server` — rebuilding the image is enough to roll the fleet;
+- recreates containers no longer attached to the current `SHADOWSOCKS_NETWORK` — the same check as above, so a live network change self-heals without a manual `docker rm -f`;
 - deletes expired sessions and OTPs from the database.
 
 State-mutating CLI commands skip the wait by touching a trigger file, `.reconcile-now`, next to the database; the loop watches for it and runs immediately. Operators can do the same with `postern reconcile`. Existence of the file is the trigger half of the protocol — the consumer deletes it after handling, and because a pass is idempotent, two triggers collapsing into one pass is harmless.
@@ -76,13 +77,22 @@ A name collision at create time (a 409 against an existing `ss-<token>` containe
 
 On portal shutdown, the lifespan asks the in-flight reconcile pass to wind down cooperatively, waits for it to genuinely finish (not just for the cancelled task awaiting it to unwind — the pass runs in a dedicated thread that a bare task-cancel does not stop), and only then wipes every container this instance manages (the same instance-scoped label filter as the orphan sweep). Removal is best-effort: if the docker-proxy is unreachable at that moment, survivors are simply adopted by label on the next pass after restart.
 
-```{note}
-Container-listing isolation (labels) is automatic and zero-config. Network-level isolation is a separate axis and is NOT covered by it: co-located deployments' `ss-*` containers all join the same `shadowsocks` bridge network by default, giving each Docker-DNS visibility and L2 reachability into the other's tunnel endpoints. Tracked as a follow-up in [issue #202](https://github.com/bindreams/postern/issues/202).
-```
+````{note}
+Container-listing isolation (labels) is automatic and zero-config. Network-level isolation is a separate axis and is **not** implied by it: co-located deployments' `ss-*` containers all join the same `shadowsocks` bridge network by default, giving each Docker-DNS visibility and L2 reachability into the other's tunnel endpoints. Opt in by giving each deployment a distinct `SHADOWSOCKS_NETWORK` — `compose.yaml` names the Docker network from that variable and passes the identical expression to the portal, so both sides always agree.
+
+Changing the value on a running deployment recreates the portal (`docker compose up -d` sees its own environment change), and the reconciler's next pass recreates every `ss-*` container not yet attached to the new network — the same recreate check that already covers an image-ID change, so no manual step is needed even if the shutdown wipe is skipped or fails (docker-proxy unreachable, or instance identity unresolvable). Every tunnel is down from the moment nginx is recreated onto the new network until that pass completes, so block on it rather than guessing:
+
+```bash
+docker compose up -d
+docker compose exec -T portal postern reconcile --wait   # returns when a full pass has finished
+docker network inspect <new-name>                        # every ss-* container should be listed
+````
+
+````
 
 ```{note}
 A portal restart interrupts all tunnels for a few seconds until the next reconciliation pass recreates them. Code and tests must not assume `ss-*` containers persist across portal restarts — or that they were lost, either.
-```
+````
 
 Tunnel containers run with logging disabled (`LogConfig(type="none")`): deliberately logless.
 

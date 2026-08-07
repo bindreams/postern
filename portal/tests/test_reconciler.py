@@ -384,9 +384,7 @@ def test_recreates_container_on_image_and_network_change():
     conn = _make_connection()
     settings = _make_settings()
 
-    old_container = _make_mock_container(
-        "ss-abcdef123456789012345678", image_id="old_img", network="old-network"
-    )
+    old_container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img", network="old-network")
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")

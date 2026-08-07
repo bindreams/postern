@@ -52,7 +52,7 @@ def test_e2e_edge_portal_forwards_compose_project_name():
     assert env.get("COMPOSE_PROJECT_NAME") == COMPOSE_PROJECT_NAME_EXPR
 
 
-# shadowsocks network name sync =======================================================================================
+# shadowsocks network name sync ========================================================================================
 SHADOWSOCKS_NETWORK_EXPR = "${SHADOWSOCKS_NETWORK:-shadowsocks}"
 
 
@@ -84,7 +84,9 @@ def test_production_nginx_joins_the_shadowsocks_network():
     assert "shadowsocks" in compose["services"]["nginx"]["networks"]
 
 
-@pytest.mark.parametrize("compose_relpath", ["portal/tests/e2e/e2e.compose.yaml", "portal/tests/e2e/e2e-edge.compose.yaml"])
+@pytest.mark.parametrize(
+    "compose_relpath", ["portal/tests/e2e/e2e.compose.yaml", "portal/tests/e2e/e2e-edge.compose.yaml"]
+)
 def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
     """Each e2e stack hardcodes two independent literals -- the portal's env var
     and the network's `name:` -- rather than interpolating, keeping a name that

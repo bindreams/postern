@@ -1,16 +1,25 @@
-"""Every first-party file must actually reach the prek hook that lints its language.
+"""Every first-party shell script must actually reach prek's shellcheck hook.
 
 prek reports a hook whose matcher lost some of its files as `Passed`, not as a
 failure, and prints no per-hook file count -- so narrowing `prek.toml`'s matcher
-config can drop files out of the lint gate without anything going red. The CI
+config can drop scripts out of the lint gate without anything going red. The CI
 job's own `(no files to check)` grep only fires when a hook matches *nothing*.
-Shell scripts get the most scrutiny (a dedicated exclusion check, plus a live
-per-file shellcheck run in scripts/ci-lint-selftest.sh), since that is this
-issue's subject; every other linted language gets the same `exclude` check.
 
-The expected sets are derived from `identify`, the library whose tags
-(`shell`, `python`, `markdown`, ...) the hooks' `types`/`types_or` selectors
-name, rather than from a pinned list or a hand-rolled suffix heuristic.
+Coverage for every OTHER linted language is checked differently, in
+scripts/ci-lint-run.sh, by diffing the tracked tree against
+`prek run --dry-run --all-files`'s own file lists rather than reimplementing
+prek's matcher rules here: a hand-enumerated language-tag set previously
+missed every hook with no explicit `types` restriction (editorconfig-checker,
+mixed-line-ending, the two shebang hooks -- which between them match nearly
+every tracked file), and shelling out to prek from every offline `pytest` run
+would also slow down the fast unit suite for a check that belongs in the lint
+job that already pays for a live prek invocation. Shell gets its own
+Python-side check here, and a live per-file reachability check in
+scripts/ci-lint-selftest.sh, because that is this issue's subject.
+
+The expected set is derived from `identify`, the library whose `shell` tag the
+shellcheck hook's `types: [shell]` selector names, rather than from a pinned
+list or a hand-rolled suffix/shebang heuristic.
 
 One assumption: `prek` matches `exclude` with Rust's `regex` crate and this
 compares with Python's `re`. Today's patterns are simple enough to be
@@ -65,15 +74,6 @@ EXPECTED_HOOKS = frozenset({
     "mdformat (myst)",
 })
 
-# Every language tag a local, first-party hook selects on: `shell` for
-# shellcheck, `python` for ty and yapf, `markdown` for the mdformat hooks, and
-# the rest for format-section-comments' `types_or`. The top-level `exclude`
-# is the most global narrowing key of all -- it silently drops a matching
-# file from every hook whose language tag it carries, not just shell scripts.
-LINTED_LANGUAGE_TAGS = frozenset({
-    "shell", "python", "rust", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile", "markdown"
-})
-
 
 def _config() -> dict:
     return tomllib.loads(PREK_CONFIG.read_text(encoding="utf-8"))
@@ -119,21 +119,9 @@ def _first_party_shell_scripts() -> list[str]:
     return [path for path in _tracked_files() if (tags := _tags_for_first_party_file(path)) and "shell" in tags]
 
 
-def _first_party_linted_files() -> list[str]:
-    """Tracked, non-vendored files identify tags with a language some local hook lints."""
-    return [
-        path for path in _tracked_files() if (tags := _tags_for_first_party_file(path)) and LINTED_LANGUAGE_TAGS & tags
-    ]
-
-
 def test_first_party_shell_scripts_exist_to_be_linted():
     """Guard against the coverage test below passing vacuously."""
     assert _first_party_shell_scripts()
-
-
-def test_first_party_linted_files_exist_to_be_linted():
-    """Guard against the coverage test below passing vacuously."""
-    assert _first_party_linted_files()
 
 
 def test_no_first_party_shell_script_is_excluded_from_the_lint_gate():
@@ -142,15 +130,6 @@ def test_no_first_party_shell_script_is_excluded_from_the_lint_gate():
     dropped = [path for path in _first_party_shell_scripts() if exclude and re.search(exclude, path)]
 
     assert not dropped, (f"prek.toml's `exclude` drops these first-party shell scripts out of the lint gate: {dropped}")
-
-
-def test_no_first_party_linted_file_is_excluded_from_the_lint_gate():
-    """The shell-only check above can't see `exclude` dropping, say, python or markdown files instead."""
-    config = _config()
-    exclude = config.get("exclude", "")
-    dropped = [path for path in _first_party_linted_files() if exclude and re.search(exclude, path)]
-
-    assert not dropped, (f"prek.toml's `exclude` drops these first-party linted files out of the lint gate: {dropped}")
 
 
 def test_prek_has_exactly_the_expected_hooks():

@@ -84,12 +84,12 @@ grep -q '_ty_gate_fixture' "$SCRATCH_DIR/ty-fixture.log" || { echo "ty never saw
 # reports a hook matching no files as `Skipped` with this exact phrase and
 # exit 0 -- that nothing above has exercised. Prove it against real prek
 # output, the same way the two fixtures above prove the `Failed|Passed`
-# format. README.md is never shell, so shellcheck matches nothing -- but
-# confirm it actually exists first: prek reports the identical
-# `(no files to check)Skipped` line and exit 0 for a *missing* path too
-# (with an extra, unchecked warning line), so an unasserted input would let
-# this fixture silently start proving the wrong thing.
-test -f README.md || { echo "zero-match fixture input (README.md) is gone -- pick another always-present non-shell file"; exit 1; }
+# format. README.md is never shell, so shellcheck matches nothing -- but prek
+# reports the identical `(no files to check)Skipped` line and exit 0 for a
+# *missing* path too, distinguished only by an extra warning line, so this
+# fixture asserts that warning is absent from the captured output rather than
+# pre-checking README.md's existence (which a later, separate command could
+# race).
 set +e
 uv run --project portal --group dev prek run shellcheck \
   --files README.md >"$SCRATCH_DIR/zero-match-fixture.log" 2>&1
@@ -99,6 +99,8 @@ echo "--- zero-match fixture ---"
 cat "$SCRATCH_DIR/zero-match-fixture.log"
 test "$zm_status" -eq 0 ||
   { echo "prek exited nonzero on a hook matching no files -- the zero-match assumption is already wrong"; exit 1; }
+! grep -q 'does not exist and will be ignored' "$SCRATCH_DIR/zero-match-fixture.log" ||
+  { echo "prek treated README.md as a missing path -- pick another always-present non-shell fixture file"; exit 1; }
 grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/zero-match-fixture.log" ||
   { echo "prek's zero-match output no longer matches the grep in ci-lint-run.sh -- update it"; exit 1; }
 
@@ -106,16 +108,18 @@ grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/zero-match-
 # is pinned by prek.toml's `rev =`, not written there, so it is invisible to
 # portal/tests/test_ci_lint_job.py, which only ever reads prek.toml's own
 # text. Ask prek directly whether it still reaches every real first-party
-# shell script instead of inferring from static config. NUL-delimited on both
-# ends -- git ls-files -z (this oracle's own source, in
-# portal/tests/test_ci_lint_job.py) is NUL-safe specifically so a tracked
-# filename containing a literal newline round-trips intact; joining on '\n'
-# here would silently reintroduce that exact class of corruption.
+# shell script instead of inferring from static config. NUL-TERMINATED
+# (trailing NUL after every path, not just between paths) on both ends --
+# `git ls-files -z` (this oracle's own source, in
+# portal/tests/test_ci_lint_job.py) is NUL-safe both so a tracked filename
+# containing a literal newline round-trips intact AND so `while read -d ''`
+# on the far end doesn't silently drop the last entry, which a plain
+# '\0'.join(...) (a separator, not a terminator) did.
 uv run --project portal --group dev python -c "
 import sys
 sys.path.insert(0, 'portal/tests')
 from test_ci_lint_job import _first_party_shell_scripts
-sys.stdout.write('\0'.join(_first_party_shell_scripts()))
+sys.stdout.write(''.join(path + '\0' for path in _first_party_shell_scripts()))
 " >"$SCRATCH_DIR/shell-scripts.nul"
 test -s "$SCRATCH_DIR/shell-scripts.nul" || { echo "no first-party shell scripts found -- the oracle broke"; exit 1; }
 while IFS= read -r -d '' path; do

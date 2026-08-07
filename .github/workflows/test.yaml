@@ -13,8 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # prek is a portal dev dependency (pinned by portal/uv.lock, like ty and
-      # yapf), and its own `ty` hook shells out to `uv run` again.
+      # prek's own `ty` hook shells out to `uv run` again, so setup-uv is needed here too.
       - uses: astral-sh/setup-uv@v8.3.2
         with:
           enable-cache: true
@@ -39,6 +38,9 @@ jobs:
         run: |
           cat > .prek-gate-fixture.sh <<'FIXTURE'
           #!/usr/bin/env bash
+          set -e
+          f() { false; }
+          if f; then echo yes; fi
           export REV=$(git rev-parse HEAD)
           echo $REV
           FIXTURE
@@ -75,6 +77,11 @@ jobs:
             || { echo "shellcheck passed a known-bad script -- the shell gate is dead"; exit 1; }
           grep -q SC2155 shellcheck-fixture.log || { echo "no SC2155 finding -- the shell gate is dead"; exit 1; }
           grep -q SC2086 shellcheck-fixture.log || { echo "no SC2086 finding -- the shell gate is dead"; exit 1; }
+          # SC2310 only fires with the optional check-set-e-suppressed enabled
+          # (prek.toml's `args` on this hook) -- proves that arg still reaches
+          # shellcheck, not just that the hook runs at all.
+          grep -q SC2310 shellcheck-fixture.log \
+            || { echo "no SC2310 finding -- check-set-e-suppressed is not reaching shellcheck"; exit 1; }
 
           grep -qE '^ty check\.+(Failed|Passed)' ty-fixture.log \
             || { echo "prek never ran the ty hook -- install failure?"; exit 1; }
@@ -85,9 +92,9 @@ jobs:
 
           rm -f shellcheck-fixture.log ty-fixture.log
 
-      # The real run, plus guard 2. `--color=always` is deliberately omitted:
-      # ANSI escapes in the status lines would break the greps below, and GitHub
-      # renders the plain output fine.
+      # The real run. `--color=always` is deliberately omitted: ANSI escapes in
+      # the status lines would break the greps below, and GitHub renders the
+      # plain output fine.
       #
       # The zero-match grep catches a matcher that selects NOTHING and nothing
       # more -- a hook that merely lost some of its files still prints `Passed`.
@@ -104,10 +111,10 @@ jobs:
             || { echo "prek ran no hooks at all -- install/clone failure, not a lint result"; exit 1; }
 
           # Both greps are line-anchored to a hook status line. `--show-diff-on-failure`
-          # puts every rewritten file's diff into this same log, and this change puts the
-          # literal "(no files to check)" into CLAUDE.md and test_ci_lint_job.py -- an
-          # unanchored search would fire on mdformat's or yapf's own diff and report
-          # "the gate is dead" for a routine formatting failure.
+          # puts every rewritten file's diff into this same log, and the phrase
+          # "(no files to check)" also happens to appear (as prose) in CLAUDE.md and
+          # test_ci_lint_job.py -- an unanchored search would fire on mdformat's or
+          # yapf's own diff and report "the gate is dead" for a routine formatting failure.
           if grep -qE '^[A-Za-z].*\(no files to check\)Skipped$' prek.log; then
             echo "a hook matched no files -- its half of the gate is dead:"
             grep -E '^[A-Za-z].*\(no files to check\)Skipped$' prek.log

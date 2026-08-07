@@ -43,13 +43,17 @@ def _tracked_files() -> list[str]:
 def _first_party_shell_scripts() -> list[str]:
     """Tracked, non-vendored files identify tags as shell.
 
-    A read error is left to propagate: git guarantees tracked files are
-    readable, so an unreadable one is a broken checkout, not a non-shell file.
-    Swallowing it would drop the path from the set this module exists to defend.
+    A path git has indexed but that is missing from the working tree (staged
+    deletion, sparse checkout) is skipped rather than passed to `identify`,
+    which raises on a missing file. Any other read error is left to propagate:
+    git guarantees a present, tracked file is readable, so an unreadable one is
+    a broken checkout, not a non-shell file. Swallowing that would drop the
+    path from the set this module exists to defend.
     """
     return [
         path for path in _tracked_files()
-        if not path.startswith(VENDORED) and "shell" in tags_from_path(REPO_ROOT / path)
+        if not path.startswith(VENDORED) and (REPO_ROOT /
+                                              path).exists() and "shell" in tags_from_path(REPO_ROOT / path)
     ]
 
 
@@ -83,15 +87,21 @@ def test_no_hook_narrows_its_own_file_set_unexpectedly():
     two mdformat hooks split `docs/` from everything else because MyST and GFM
     need separate plugin environments. `shellcheck` is deliberately absent -- it
     must keep matching every shell file in the tree.
+
+    Keyed on `name` (falling back to `id`), not `id` alone: prek.toml's two
+    mdformat hooks share `id = "mdformat"` and are told apart only by the
+    `name` on the second one, so an `id`-only key would let either hook's
+    narrowing key stand in for the other's -- e.g. an `exclude` newly added to
+    the myst hook would pass unnoticed under the entry meant for the gfm hook.
     """
     allowed = {
-        ("format-section-comments", "types_or"),
-        ("ty", "types"),
+        ("format section comments", "types_or"),
+        ("ty check", "types"),
         ("editorconfig-checker", "exclude_types"),
         ("mdformat", "exclude"),
-        ("mdformat", "files"),
+        ("mdformat (myst)", "files"),
     }
-    narrowing = {(hook.get("id"), key)
+    narrowing = {(hook.get("name", hook.get("id")), key)
                  for repo in _config()["repos"]
                  for hook in repo.get("hooks", [])
                  for key in hook if key in NARROWING_KEYS}

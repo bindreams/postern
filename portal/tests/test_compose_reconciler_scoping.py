@@ -58,9 +58,7 @@ SHADOWSOCKS_NETWORK_EXPR = "${SHADOWSOCKS_NETWORK:-shadowsocks}"
 
 def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expression():
     """Network name and portal env must interpolate the identical expression --
-    `env_file: .env` alone can't guarantee that, since Compose interpolates
-    `${VAR}` from the shell/--env-file, a lookup separate from a service's
-    `env_file:`."""
+    see the module docstring for why `env_file:` alone can't guarantee that."""
     compose = _load_compose("compose.yaml")
 
     net_name = compose["networks"]["shadowsocks"]["name"]

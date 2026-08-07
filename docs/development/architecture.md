@@ -86,13 +86,12 @@ Changing the value on a running deployment recreates the portal (`docker compose
 docker compose up -d
 docker compose exec -T portal postern reconcile --wait   # returns when a full pass has finished
 docker network inspect <new-name>                        # every ss-* container should be listed
-````
-
+```
 ````
 
 ```{note}
 A portal restart interrupts all tunnels for a few seconds until the next reconciliation pass recreates them. Code and tests must not assume `ss-*` containers persist across portal restarts — or that they were lost, either.
-````
+```
 
 Tunnel containers run with logging disabled (`LogConfig(type="none")`): deliberately logless.
 

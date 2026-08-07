@@ -152,20 +152,26 @@ def _container_name(conn: Connection) -> str:
     return f"ss-{conn.path_token}"
 
 
-def _container_networks(container: Container) -> set[str]:
-    """Names of the Docker networks `container` is currently attached to,
-    read from the same `.attrs` inspect payload the image-change check
-    already has -- no extra Docker API call. docker-py's
-    `containers.run(network=<name>)` keys `NetworkSettings.Networks` by the
-    network NAME passed at create time, matching `settings.shadowsocks_network`
-    on the happy path (and, post-#202, exactly what compose.yaml names the
-    real Docker network). Missing/empty NetworkSettings never happens for a
-    real Docker inspect but is treated as "attached to nothing" -- the
-    conservative side, since the caller's use is "recreate if not attached
-    to the desired network."
+def _container_network_ids(container: Container) -> set[str]:
+    """IDs of the Docker networks `container` is currently attached to, read
+    from the same `.attrs` inspect payload the image-change check already
+    has -- no extra Docker API call.
+
+    Deliberately IDs, not the `NetworkSettings.Networks` dict KEYS (which
+    docker-py's `containers.run(network=<name>)` sets to the network's
+    canonical name regardless of what was passed at create time -- a value
+    that happens to be a network ID or ID prefix would then never match its
+    own canonical name, and the container would be recreated every pass,
+    forever). A network deleted and recreated under the same name also gets
+    a new ID, so comparing IDs (not names) is also what makes a stale
+    survivor from that case get recreated instead of silently kept. Missing/
+    empty NetworkSettings never happens for a real Docker inspect but is
+    treated as "attached to nothing" -- the conservative side, since the
+    caller's use is "recreate if not attached to the desired network."
     """
     attrs = container.attrs or {}
-    return set(((attrs.get("NetworkSettings") or {}).get("Networks")) or {})
+    networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
+    return {info["NetworkID"] for info in networks.values() if info and info.get("NetworkID")}
 
 
 def _get_docker_client() -> docker.DockerClient:
@@ -521,12 +527,35 @@ def _reconcile_once(
             except Exception:
                 logger.exception("Failed to start container %s", name)
 
-    # Check for image updates ------------------------------------------------------------------------------------------
+    # Check for image/network updates ----------------------------------------------------------------------------------
+    # Re-fetch again: container.start() above does not update the already-fetched
+    # `managed` containers' .attrs in place, and a container that was `created`
+    # (not yet started) reports an empty NetworkID for its network endpoint until
+    # start() actually runs -- reading the pre-start snapshot here would make
+    # _container_network_ids() see no networks at all and wrongly recreate a
+    # container that was just successfully started.
+    managed = _list_managed_containers(client, instance_id)
     try:
         current_image = client.images.get(settings.shadowsocks_image)
     except docker.errors.ImageNotFound:
         logger.error("Image '%s' disappeared mid-pass; skipping upgrade check", settings.shadowsocks_image)
         return
+
+    # Resolve the desired network's ID once per pass, the same existence-first
+    # discipline as current_image above: recreate REMOVES the existing
+    # container before creating its replacement, so proceeding on the strength
+    # of settings.shadowsocks_network alone -- unresolved -- risks destroying a
+    # working tunnel and then 404ing on create. On NotFound, network-driven
+    # recreates are skipped this pass (existing containers untouched); image-
+    # driven recreates below are unaffected.
+    try:
+        target_network_id = client.networks.get(settings.shadowsocks_network).id
+    except docker.errors.NotFound:
+        logger.error(
+            "Network '%s' not found; skipping network-mismatch recreate check this pass",
+            settings.shadowsocks_network,
+        )
+        target_network_id = None
 
     for name, container in managed.items():
         if _shutdown_requested.is_set():
@@ -539,15 +568,10 @@ def _reconcile_once(
         # and 404s when the old image has been garbage-collected after rebuild).
         attrs = container.attrs or {}
         image_changed = attrs.get("Image") != current_image.id
-        # Recreate on a stale network too, not just a stale image. An operator
-        # changing SHADOWSOCKS_NETWORK on a live deployment relies on this: the
-        # portal's own restart-and-wipe normally handles it, but that wipe is
-        # best-effort (cleanup_all_containers no-ops if the docker-proxy is
-        # unreachable at shutdown, or this instance's identity can't be
-        # resolved) -- without this check, a survivor of a failed wipe would
-        # stay on the OLD network forever, since image-ID mismatch was
-        # previously the only recreate trigger.
-        network_changed = settings.shadowsocks_network not in _container_networks(container)
+        # Recreate on a stale network too, not just a stale image -- without
+        # this check, a survivor of a failed wipe would stay on the OLD
+        # network forever.
+        network_changed = target_network_id is not None and target_network_id not in _container_network_ids(container)
         if not image_changed and not network_changed:
             continue
 

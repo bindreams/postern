@@ -112,8 +112,7 @@ services:
       - postern-edge:/var/lib/postern-edge:ro
     # e2e-shadowsocks-edge: matches the portal's SHADOWSOCKS_NETWORK above so nginx
     # can reach any ss-* container the reconciler creates -- mirrors e2e.compose.yaml's
-    # nginx/e2e-shadowsocks pairing (see #202: an unjoined network here would leave a
-    # future connection in this suite unreachable, the same class of bug this fixes).
+    # nginx/e2e-shadowsocks pairing.
     networks: [default, e2e-shadowsocks-edge]
     depends_on:
       portal:

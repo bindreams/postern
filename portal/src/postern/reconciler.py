@@ -15,6 +15,8 @@ import docker
 import docker.errors
 import docker.types
 from docker.models.containers import Container
+from docker.models.images import Image
+from docker.models.networks import Network
 
 from postern import db, reconcile_wait
 from postern.models import Connection
@@ -178,7 +180,7 @@ def _container_network_ids(container: Container) -> set[str]:
     return {info["NetworkID"] for info in networks.values() if info and info.get("NetworkID")}
 
 
-def _recreate_reasons(container: Container, current_image, target_network, settings: Settings) -> list[str]:
+def _recreate_reasons(container: Container, current_image: Image | None, target_network: Network | None) -> list[str]:
     """The reasons `container` no longer matches desired state and must be
     recreated: its recorded image differs from `current_image`, and/or it
     isn't attached to `target_network`. Returns a LIST, not a bool, so the
@@ -235,14 +237,9 @@ def _recreate_reasons(container: Container, current_image, target_network, setti
 
 def _container_network_names(container: Container) -> set[str]:
     """CONFIGURED network names -- the `NetworkSettings.Networks` dict KEYS,
-    set at container-CREATE time (before start()) and unaffected by whether
-    the referenced network still exists. This is the fallback `_reconcile_once`
-    uses for a `created`-status container, whose `_container_network_ids()`
-    is empty until start() actually runs: a container's OWN inspect payload
-    keeps naming the network it was configured for even after that network
-    is deleted out from under it, so comparing names here is what lets such
-    a container still be recognized as stale instead of being permanently
-    exempted for having no resolved ID yet.
+    set at create time and unaffected by whether the network still exists.
+    Fallback `_recreate_reasons` uses for a `created`-status container; see
+    its comments for why.
     """
     attrs = container.attrs or {}
     networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
@@ -609,22 +606,23 @@ def _reconcile_once(
     # pre-start snapshot here would wrongly recreate a container just successfully
     # started.
     managed = _list_managed_containers(client, instance_id)
-    # Both lookups below are existence-first, on purpose: recreating a
-    # container REMOVES it before creating its replacement, so proceeding on
-    # the strength of an unresolved desired image or network risks
-    # destroying a working container for nothing. Either failing skips only
-    # its OWN axis in _recreate_reasons below (current_image / target_network
-    # left None) -- an unrelated image problem must not also abort the
-    # network-driven recreate check, and vice versa.
+    # Both lookups below are existence-first: a failed lookup leaves its axis
+    # None, so _recreate_reasons (below) skips only that axis rather than
+    # treating an unresolved desired state as a mismatch -- see its docstring.
+    # Broad except on both: docker.errors.ImageNotFound / a docker-proxy
+    # hiccup (generic APIError) / an empty SHADOWSOCKS_NETWORK
+    # (docker.errors.NullResource, a ValueError, not an APIError) must all
+    # degrade the same way -- skip this axis, not abort the whole pass.
     try:
         current_image = client.images.get(settings.shadowsocks_image)
-    except docker.errors.ImageNotFound:
-        logger.error("Image '%s' disappeared mid-pass; skipping upgrade check", settings.shadowsocks_image)
+    except Exception:
+        logger.error(
+            "Could not resolve image '%s'; skipping image-mismatch recreate check this pass",
+            settings.shadowsocks_image,
+            exc_info=True,
+        )
         current_image = None
 
-    # Broad except: an empty SHADOWSOCKS_NETWORK raises docker.errors.NullResource
-    # (a ValueError, not an APIError), and any other lookup failure (docker-proxy
-    # hiccup, generic APIError) must degrade the same way NotFound does.
     try:
         target_network = client.networks.get(settings.shadowsocks_network)
     except Exception:
@@ -642,7 +640,7 @@ def _reconcile_once(
         if name not in desired_names:
             continue
 
-        reasons = _recreate_reasons(container, current_image, target_network, settings)
+        reasons = _recreate_reasons(container, current_image, target_network)
         if not reasons:
             continue
         stale = " and ".join(reasons)

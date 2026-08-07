@@ -91,7 +91,7 @@ def _make_mock_container(name, status="running", image_id="img1", network_id=NET
     resolve to -- so tests that don't care about network membership (most of
     them) don't accidentally trip the network-mismatch recreate check. Pass
     a different value to exercise that check on purpose. The dict KEY
-    (`network_name`) matters too, not just NetworkID: `_reconcile_once`
+    (`network_name`) matters too, not just NetworkID: `_recreate_reasons`
     falls back to comparing it for a `created`-status container with no
     resolved NetworkID yet (see reconciler._container_network_names)."""
     container = MagicMock()
@@ -548,9 +548,9 @@ def test_container_network_ids_empty_when_missing():
     counts as attached to no network. This function itself just reports that
     truthfully -- the empty-set case is real (a `created`-status container,
     or one `docker network disconnect`ed while running, both have it) and
-    the CALLER (`_reconcile_once`) is the one that decides what an empty
+    the CALLER (`_recreate_reasons`) is the one that decides what an empty
     result means: unknown-not-yet-started for `created`, a proven mismatch
-    otherwise. See `_reconcile_once`'s `network_changed` computation."""
+    otherwise. See `_recreate_reasons`'s created-status branch."""
     container = MagicMock()
     container.attrs = {}
     assert reconciler._container_network_ids(container) == set()

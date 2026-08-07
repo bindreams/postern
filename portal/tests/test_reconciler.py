@@ -64,6 +64,24 @@ def _make_connection(*, path_token="abcdef123456789012345678", enabled=True):
 
 
 NETWORK_ID = "net-shadowsocks-id"  # what client.networks.get(...).id resolves to by default (see below)
+NETWORK_NAME = "shadowsocks"  # what client.networks.get(...).name resolves to by default -- matches
+# _make_settings()'s shadowsocks_network AND _make_mock_container()'s network_name default, so the
+# created-status name-fallback path (reconciler._recreate_reasons) agrees with the ID-comparison path
+# for every test that doesn't deliberately mismatch one of the three.
+
+
+def _mock_network(network_id=NETWORK_ID, name=NETWORK_NAME):
+    """A docker-py Network stand-in with working .id and .name attributes.
+
+    `MagicMock(id=..., name=...)` does NOT set a `.name` attribute -- `name`
+    is a reserved constructor kwarg unittest.mock uses for the mock's own
+    debug repr, so `MagicMock(name="x").name` returns an unrelated auto-mock,
+    not "x". Set it as a plain attribute instead.
+    """
+    net = MagicMock()
+    net.id = network_id
+    net.name = name
+    return net
 
 
 def _make_mock_container(name, status="running", image_id="img1", network_id=NETWORK_ID, network_name="shadowsocks"):
@@ -152,7 +170,7 @@ def test_creates_missing_container():
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -171,7 +189,7 @@ def test_creates_missing_container_stamps_instance_label():
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -186,7 +204,7 @@ def test_removes_orphan_container():
     client = MagicMock()
     client.containers.list.return_value = [orphan]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [], settings, INSTANCE_ID)
 
@@ -202,7 +220,7 @@ def test_does_not_touch_existing_healthy_container():
     client = MagicMock()
     client.containers.list.return_value = [existing]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -219,7 +237,7 @@ def test_restarts_exited_container():
     client = MagicMock()
     client.containers.list.return_value = [exited]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -241,7 +259,7 @@ def test_starts_container_stuck_in_created_state():
     client = MagicMock()
     client.containers.list.return_value = [stuck]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -276,7 +294,7 @@ def test_created_container_with_empty_network_id_is_started_not_recreated():
     # POST-start attrs, not `stuck`'s pre-start snapshot.
     client.containers.list.side_effect = [[stuck], [stuck], [started]]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -304,7 +322,7 @@ def test_created_container_whose_start_keeps_failing_is_retried_not_recreated():
     client = MagicMock()
     client.containers.list.return_value = [stuck]  # same stuck container at every re-fetch
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -334,13 +352,42 @@ def test_created_container_whose_configured_network_was_deleted_self_heals():
     client = MagicMock()
     client.containers.list.return_value = [stuck]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)  # the NEW, current target network
+    client.networks.get.return_value = _mock_network()  # the NEW, current target network
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
     stuck.stop.assert_called()
     stuck.remove.assert_called()
     client.containers.run.assert_called_once()
+
+
+def test_created_container_correctly_configured_is_not_recreated_when_shadowsocks_network_is_an_id():
+    """`settings.shadowsocks_network` may legitimately be a network ID --
+    both `client.networks.get()` and `containers.run(network=...)` accept
+    one. The created-status fallback must compare against the RESOLVED
+    canonical name (`target_network.name`), not the raw configured string,
+    or a correctly-configured container would look permanently mismatched
+    (and get destructively recreated every pass) whenever the operator's
+    setting happens to be an ID rather than a name."""
+    conn = _make_connection()
+    settings = _make_settings().model_copy(update={"shadowsocks_network": NETWORK_ID})  # an ID, not a name
+
+    stuck = _make_mock_container("ss-abcdef123456789012345678", status="created", network_name=NETWORK_NAME)
+    stuck.attrs["NetworkSettings"]["Networks"][NETWORK_NAME]["NetworkID"] = ""
+    stuck.start.side_effect = RuntimeError("start keeps failing")
+
+    client = MagicMock()
+    client.containers.list.return_value = [stuck]
+    client.images.get.return_value = MagicMock(id="img1")
+    # Resolves the ID to its canonical name -- what the fallback must compare against.
+    client.networks.get.return_value = _mock_network()
+
+    _reconcile_once(client, [conn], settings, INSTANCE_ID)
+
+    client.networks.get.assert_called_once_with(NETWORK_ID)
+    stuck.stop.assert_not_called()
+    stuck.remove.assert_not_called()
+    client.containers.run.assert_not_called()
 
 
 def test_running_container_with_zero_networks_is_a_proven_mismatch():
@@ -357,7 +404,7 @@ def test_running_container_with_zero_networks_is_a_proven_mismatch():
     client = MagicMock()
     client.containers.list.return_value = [disconnected]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -380,7 +427,7 @@ def test_reconcile_once_stops_early_when_shutdown_requested(caplog):
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     reconciler_module._shutdown_requested.set()
     try:
@@ -444,7 +491,7 @@ def test_reconcile_pass_skips_legacy_scan_when_shutdown_requested():
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     reconciler_module._shutdown_requested.set()
     try:
@@ -467,7 +514,7 @@ def test_recreates_container_on_image_change():
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -528,7 +575,7 @@ def test_recreates_container_on_network_change():
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -555,7 +602,7 @@ def test_recreates_container_on_image_and_network_change():
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -579,7 +626,7 @@ def test_network_upgrade_skips_recreate_when_removal_fails(caplog):
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
@@ -602,7 +649,7 @@ def test_image_and_network_upgrade_skips_recreate_when_removal_fails(caplog):
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
@@ -683,6 +730,25 @@ def test_image_driven_recreate_still_happens_when_target_network_missing():
     client.containers.run.assert_called_once()
 
 
+def test_network_driven_recreate_still_happens_when_image_missing():
+    """The inverse of the test above: an unresolvable image (ImageNotFound)
+    must not also disable the UNRELATED network-mismatch recreate path."""
+    conn = _make_connection()
+    settings = _make_settings()
+
+    old_container = _make_mock_container("ss-abcdef123456789012345678", network_id="old-network-id")
+    client = MagicMock()
+    client.containers.list.return_value = [old_container]
+    client.images.get.side_effect = docker.errors.ImageNotFound("image missing")
+    client.networks.get.return_value = _mock_network()
+
+    _reconcile_once(client, [conn], settings, INSTANCE_ID)
+
+    old_container.stop.assert_called_once()
+    old_container.remove.assert_called_once()
+    client.containers.run.assert_called_once()
+
+
 # Name conflicts on create (pre-fix / legacy / cross-deployment containers) ============================================
 def _conflict_error():
     response = MagicMock(status_code=409)
@@ -713,7 +779,7 @@ def test_create_logs_name_conflict_and_never_touches_a_foreign_squatter(caplog):
     client = MagicMock()
     client.containers.list.return_value = []  # not in the instance-scoped managed set
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
     client.containers.get.return_value = squatter
 
@@ -746,7 +812,7 @@ def test_create_logs_distinctly_when_squatter_is_this_instances_own(caplog):
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
     client.containers.get.return_value = squatter
 
@@ -775,7 +841,7 @@ def test_log_name_conflict_logs_distinctly_when_squatter_lookup_fails(caplog):
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
     client.containers.get.side_effect = RuntimeError("container vanished")
 
@@ -803,7 +869,7 @@ def test_log_name_conflict_resolves_itself_when_squatter_vanishes_before_inspect
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
     client.containers.get.side_effect = docker.errors.NotFound("no such container")
 
@@ -825,7 +891,7 @@ def test_create_logs_generically_on_non_conflict_api_error(caplog):
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _server_error()
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
@@ -846,7 +912,7 @@ def test_create_logs_generically_on_non_api_error(caplog):
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = ConnectionError("docker-proxy unreachable")
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
@@ -870,7 +936,7 @@ def test_image_upgrade_skips_recreate_when_removal_fails(caplog):
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
@@ -894,7 +960,7 @@ def test_image_upgrade_recreates_when_removal_target_already_gone():
     client = MagicMock()
     client.containers.list.return_value = [old_container]
     client.images.get.return_value = MagicMock(id="new_img")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -1115,7 +1181,7 @@ def test_ignores_container_from_different_instance():
     client = MagicMock()
     client.containers.list.side_effect = _filtering_containers_list([foreign])
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, "postern-e2e")
 
@@ -1137,7 +1203,7 @@ def test_ignores_legacy_container_without_instance_label():
     client = MagicMock()
     client.containers.list.side_effect = _filtering_containers_list([legacy])
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [], settings, "postern-e2e")
 
@@ -1203,7 +1269,7 @@ async def test_reconcile_skips_container_ops_when_identity_unknown(tmp_path):
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
          patch("postern.reconciler.db.cleanup_expired", new_callable=AsyncMock) as mock_cleanup:
@@ -1231,7 +1297,7 @@ async def test_reconcile_runs_cleanup_expired_even_if_container_reconcile_raises
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
          patch("postern.reconciler._reconcile_once", side_effect=RuntimeError("boom")), \
@@ -1281,7 +1347,7 @@ async def test_reconcile_logs_resolved_instance_id_once_at_startup(tmp_path, cap
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.list.return_value = []
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
@@ -1303,7 +1369,7 @@ async def test_reconcile_logs_provenance_on_delayed_identity_resolution(tmp_path
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
          caplog.at_level(logging.INFO, logger="postern.reconciler"):
@@ -1344,7 +1410,7 @@ async def test_reconcile_logs_both_values_at_info_when_instance_id_override_diff
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.list.return_value = []
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
@@ -1373,7 +1439,7 @@ async def test_reconcile_does_not_warn_when_instance_id_override_matches_compose
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
     client.containers.list.return_value = []
 
     with patch("postern.reconciler._get_docker_client", return_value=client), \
@@ -1407,7 +1473,7 @@ async def test_wait_for_inflight_reconcile_blocks_until_pass_actually_finishes(t
 
     client = MagicMock()
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     try:
         with patch("postern.reconciler._get_docker_client", return_value=client), \
@@ -1529,7 +1595,7 @@ def test_v2ray_connection_passes_v2ray_plugin_in_ss_config():
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
@@ -1548,7 +1614,7 @@ def test_galoshes_connection_passes_galoshes_in_ss_config():
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+    client.networks.get.return_value = _mock_network()
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 

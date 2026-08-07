@@ -23,7 +23,14 @@ name = "ty check"
 # `[tool.ty.rules]` from the `pyproject.toml` in its CWD, and those rules live
 # in portal/pyproject.toml. With only `--project`, CWD stays at the repo root
 # and the ignore rules are silently dropped.
-entry = "uv run --directory portal --group dev ty check"
+#
+# The trailing `../scripts/ci_lint_lib.py` is deliberate, not the default "the
+# project root": that module lives outside the portal project ty would
+# otherwise scan, and `[tool.ty.environment] extra-paths` in
+# portal/pyproject.toml only makes it *importable* from portal/tests -- it
+# does not add the module itself as a check target, so a bug entirely inside
+# ci_lint_lib.py's own body would pass silently without this explicit path.
+entry = "uv run --directory portal --group dev ty check . ../scripts/ci_lint_lib.py"
 language = "python"
 types = ["python"]
 pass_filenames = false

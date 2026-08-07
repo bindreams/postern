@@ -3,13 +3,12 @@ coverage test (portal/tests/test_ci_lint_job.py).
 
 Lives outside portal/tests/ on purpose. scripts/ci-lint-run.sh and
 scripts/ci-lint-selftest.sh both import from this module at CI runtime; if
-they instead reached into portal/tests/test_ci_lint_job.py's private helpers
-(as an earlier version of this job did), a test-readability rename or
-refactor there could silently break the CI job with nothing in the offline
-`pytest` run catching it -- exactly the class of silent-gap failure this job
-exists to close for prek's own hooks. `portal/tests/test_ci_lint_job.py`
-imports this module the same way the shell scripts do, rather than owning
-its own private copies.
+they instead reached into portal/tests/test_ci_lint_job.py's private helpers,
+a test-readability rename or refactor there could silently break the CI job
+with nothing in the offline `pytest` run catching it -- exactly the class of
+silent-gap failure this job exists to close for prek's own hooks.
+`portal/tests/test_ci_lint_job.py` imports this module the same way the shell
+scripts do, rather than owning its own private copies.
 
 Not part of the `postern` package: it has nothing to do with the runtime
 portal and needs `identify`, a dev-only dependency declared alongside `prek`
@@ -30,8 +29,36 @@ VENDORED = "external/"
 
 
 def tracked_files() -> list[str]:
-    listing = subprocess.run(["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True, check=True)
+    """NUL-terminated (trailing NUL after every path, not just between paths) both so a tracked
+    filename containing a literal newline round-trips intact, and so a caller reading this list
+    line-delimited (any hand-rolled parse of `prek run --dry-run` output, for one) must reject
+    such a path instead of silently mis-splitting it -- see `assert_no_newline_paths`.
+    """
+    try:
+        listing = subprocess.run(["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        # `capture_output=True` buffers git's own stderr onto the exception instead of letting it
+        # reach the caller's terminal/log; the default traceback then shows only the exit code,
+        # discarding git's actual diagnostic (e.g. "fatal: not a git repository") right when it's
+        # needed most -- this function is the ground-truth oracle every guard in this module
+        # depends on.
+        raise RuntimeError(f"git ls-files failed: {exc.stderr.decode(errors='replace')}") from exc
     return [path for path in listing.stdout.decode().split("\0") if path]
+
+
+def assert_no_newline_paths(paths: list[str]) -> None:
+    """Raise if any path contains a literal newline.
+
+    `parse_dry_run_hook_files` parses `prek run --dry-run -vv`'s plain-text
+    output line-by-line (prek's own dry-run output has no NUL-safe mode), so a
+    tracked path containing a literal newline would corrupt that parse --
+    silently mis-splitting into multiple bogus paths rather than failing
+    loudly. Callers that feed `tracked_files()`'s output into that parser
+    should call this first.
+    """
+    newline_paths = [path for path in paths if "\n" in path]
+    if newline_paths:
+        raise ValueError(f"tracked paths containing a literal newline break the dry-run parse: {newline_paths}")
 
 
 def tags_for_first_party_file(path: str) -> frozenset[str] | None:
@@ -69,7 +96,7 @@ def first_party_shell_scripts() -> list[str]:
     return [path for path in tracked_files() if (tags := tags_for_first_party_file(path)) and "shell" in tags]
 
 
-# Per-hook dry-run coverage checks ============================================================================
+# Per-hook dry-run coverage checks =====================================================================================
 
 # Each entry is (dry-run display name, "is this file the hook's language"
 # tag predicate, "is this file in the hook's path scope" predicate). Every
@@ -176,6 +203,10 @@ def find_dry_run_coverage_gaps(
     identify lookups); tests inject a fake mapping instead of requiring real
     files on disk.
     """
+    try:
+        assert_no_newline_paths(tracked)
+    except ValueError as exc:
+        return [str(exc)]
     by_name = parse_dry_run_hook_files(dry_run_log)
     if not by_name:
         return ["prek --dry-run reported no hooks at all -- install/clone failure?"]
@@ -184,8 +215,7 @@ def find_dry_run_coverage_gaps(
 
     covered = {path for files in by_name.values() for path in files}
     uncovered = [
-        path for path in tracked
-        if path not in covered and (tags := tag_lookup(path)) is not None and "text" in tags
+        path for path in tracked if path not in covered and (tags := tag_lookup(path)) is not None and "text" in tags
     ]
     if uncovered:
         problems.append(f"no prek hook would run on these first-party tracked text files: {uncovered}")
@@ -193,8 +223,8 @@ def find_dry_run_coverage_gaps(
     for hook_name, tag_matches, in_scope in PER_HOOK_CHECKS:
         hook_files = set(by_name.get(hook_name, []))
         missing = [
-            path for path in tracked
-            if in_scope(path) and (tags := tag_lookup(path)) is not None and tag_matches(tags) and path not in hook_files
+            path for path in tracked if in_scope(path) and (tags := tag_lookup(path)) is not None and tag_matches(tags)
+            and path not in hook_files
         ]
         if missing:
             problems.append(

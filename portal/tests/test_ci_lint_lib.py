@@ -13,10 +13,15 @@ file list rather than a clear assertion failure.
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+import ci_lint_lib  # noqa: E402
+from ci_lint_lib import assert_no_newline_paths  # noqa: E402
 from ci_lint_lib import find_dry_run_coverage_gaps  # noqa: E402
 from ci_lint_lib import parse_dry_run_hook_files  # noqa: E402
+from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 
 # A trimmed but structurally real transcript covering every entry in
 # `PER_HOOK_CHECKS` plus the two hooks it deliberately excludes: two ordinary
@@ -78,9 +83,17 @@ mdformat (myst).........................................................Dry Run
 - hook id: mdformat
 - duration: 0.00s
 
-  `mdformat (myst)` would be run on 1 files:
+  `mdformat` would be run on 1 files:
   - docs/index.md
 """
+# The `mdformat (myst)` section's "would be run on" line above reads
+# `` `mdformat` would be run on ... `` -- the bare hook id, matching real prek
+# output verbatim (verified against a live `prek run --dry-run --all-files -vv`
+# on this repo) -- NOT `` `mdformat (myst)` ``. Both mdformat entries print the
+# identical bare-id backtick line; only the status line ("mdformat
+# (myst)....Dry Run") carries the distinguishing suffix, which is exactly why
+# `parse_dry_run_hook_files` keys on that line instead. See
+# test_parse_dry_run_hook_files_ignores_the_backtick_line below.
 
 
 def test_parse_dry_run_hook_files_keys_on_display_name_not_hook_id():
@@ -103,6 +116,18 @@ def test_parse_dry_run_hook_files_handles_pass_filenames_false_hook():
 
 def test_parse_dry_run_hook_files_on_empty_log_returns_empty_dict():
     assert parse_dry_run_hook_files("") == {}
+
+
+def test_parse_dry_run_hook_files_ignores_the_backtick_line():
+    """Both mdformat sections' backtick lines say `` `mdformat` `` -- real prek never
+    distinguishes them there. Corrupting that line must not change the parse: it proves
+    the parser is keyed on the status line, matching its own docstring's stated design.
+    """
+    corrupted = SAMPLE_LOG.replace(
+        "  `mdformat` would be run on 1 files:\n  - docs/index.md",
+        "  `something-else-entirely` would be run on 1 files:\n  - docs/index.md",
+    )
+    assert parse_dry_run_hook_files(corrupted)["mdformat (myst)"] == ["docs/index.md"]
 
 
 # Fake tag lookup so these tests need no real files on disk. Keys are the
@@ -147,3 +172,60 @@ def test_find_dry_run_coverage_gaps_on_no_hooks_at_all_reports_install_failure()
     assert find_dry_run_coverage_gaps("", ["a.py"]) == [
         "prek --dry-run reported no hooks at all -- install/clone failure?"
     ]
+
+
+def test_find_dry_run_coverage_gaps_reports_newline_paths_instead_of_raising():
+    problems = find_dry_run_coverage_gaps(SAMPLE_LOG, ["a.py", "b\nc.py"], FAKE_TAGS.get)
+    assert any("newline" in problem for problem in problems)
+
+
+# tags_for_first_party_file ============================================================================================
+
+
+def test_tags_for_first_party_file_returns_tags_for_a_real_file():
+    # This test file itself is guaranteed to exist and be tracked.
+    tags = tags_for_first_party_file("portal/tests/test_ci_lint_lib.py")
+    assert tags is not None
+    assert "python" in tags
+
+
+def test_tags_for_first_party_file_returns_none_for_vendored_path():
+    assert tags_for_first_party_file("external/shadowsocks-rust/anything.rs") is None
+
+
+def test_tags_for_first_party_file_returns_none_for_a_missing_path():
+    assert tags_for_first_party_file("this/path/does/not/exist.py") is None
+
+
+def test_tags_for_first_party_file_propagates_non_missing_lstat_errors(monkeypatch):
+    """A permission error (or any lstat failure other than "missing") must not be
+    silently swallowed into `None` -- that would drop a real, present file out of
+    every coverage check this module backs.
+
+    Simulates identify's real failure mode (`tags_from_path` re-raising an
+    `os.lstat` failure as `ValueError`) so the `except ValueError` disambiguation
+    branch actually runs, then makes the re-stat inside it hit a non-missing error.
+    """
+
+    def _raise_value_error(path):
+        raise ValueError("identify's generic re-raise")
+
+    def _permission_denied(self):
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr(ci_lint_lib, "tags_from_path", _raise_value_error)
+    monkeypatch.setattr(Path, "lstat", _permission_denied)
+    with pytest.raises(PermissionError):
+        tags_for_first_party_file("portal/tests/test_ci_lint_lib.py")
+
+
+# assert_no_newline_paths ==============================================================================================
+
+
+def test_assert_no_newline_paths_accepts_ordinary_paths():
+    assert_no_newline_paths(["a.py", "dir/b.py"])  # must not raise
+
+
+def test_assert_no_newline_paths_rejects_a_literal_newline():
+    with pytest.raises(ValueError, match="newline"):
+        assert_no_newline_paths(["a.py", "weird\nname.py"])

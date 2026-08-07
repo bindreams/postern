@@ -14,8 +14,15 @@ shopt -s inherit_errexit
 # exception: prek matches them by their real, meaningful path (repo root for
 # `--files`, portal/src/postern/ for ty's whole-project scan), so they can't
 # move into the scratch dir.
-SCRATCH_DIR=".tmp/ci-lint"
-mkdir -p "$SCRATCH_DIR"
+#
+# mktemp -d, not a fixed name: this script and scripts/ci-lint-run.sh both
+# scratch under .tmp/ci-lint*, and a fixed shared name means a second
+# concurrent invocation of either script (two terminals during local
+# debugging, or a retried job) deletes the other's in-progress log out from
+# under it via this script's own EXIT trap below -- surfacing as an opaque
+# "No such file or directory" on the log path instead of a lint result.
+mkdir -p .tmp
+SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-selftest-XXXXXX)"
 
 # A hard abort (SIGINT, a CI job cancel, any `exit 1` below) between creating
 # a fixture and its matching `rm` would otherwise leave it on disk -- and a

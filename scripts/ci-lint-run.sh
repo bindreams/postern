@@ -9,8 +9,12 @@ shopt -s inherit_errexit
 
 # .tmp/ is gitignored, so a log left behind by an aborted run can't trip
 # scripts/deploy.sh's dirty-worktree check or get swept into a `git add -A`.
-SCRATCH_DIR=".tmp/ci-lint"
-mkdir -p "$SCRATCH_DIR"
+# mktemp -d, not a fixed name: this script and scripts/ci-lint-selftest.sh
+# both scratch under .tmp/ci-lint*, and a fixed shared name means a second
+# concurrent invocation of either script can read or delete the other's
+# in-progress log.
+mkdir -p .tmp
+SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-run-XXXXXX)"
 LOG="$SCRATCH_DIR/prek.log"
 
 set +e
@@ -53,9 +57,11 @@ set -e
 cat "$DRY_RUN_LOG"
 test "$dry_run_status" -eq 0 || { echo "prek --dry-run failed -- install/clone/config failure?"; exit 1; }
 
-# The parsing/diffing logic itself lives in scripts/ci_lint_lib.py, a tracked
-# module -- not a string literal here -- so it is covered by yapf and
-# unit-tested against canned transcripts in portal/tests/test_ci_lint_lib.py.
+# The parsing/diffing logic itself -- including the newline-safety check on
+# `tracked`, since prek's plain-text dry-run output has no NUL-safe mode --
+# lives in scripts/ci_lint_lib.py, a tracked module, not a string literal
+# here: yapf and ty cover it, and portal/tests/test_ci_lint_lib.py unit-tests
+# it against canned transcripts.
 uv run --project portal --group dev python -c "
 import sys
 
@@ -63,15 +69,6 @@ sys.path.insert(0, 'scripts')
 from ci_lint_lib import find_dry_run_coverage_gaps, tracked_files, VENDORED
 
 tracked = [path for path in tracked_files() if not path.startswith(VENDORED)]
-# A tracked path containing a literal newline would corrupt the newline-delimited
-# parse in ci_lint_lib.parse_dry_run_hook_files (prek's own dry-run output has no
-# NUL-safe mode); flag it explicitly rather than silently mis-parsing it as
-# multiple paths.
-newline_paths = [path for path in tracked if '\n' in path]
-if newline_paths:
-    print(f'tracked paths containing a literal newline break the dry-run parse: {newline_paths}')
-    raise SystemExit(1)
-
 log = open('$DRY_RUN_LOG', encoding='utf-8').read()
 problems = find_dry_run_coverage_gaps(log, tracked)
 if problems:

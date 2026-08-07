@@ -29,10 +29,7 @@ dialect-agnostic; a future pattern using lookaround or Unicode classes could
 behave differently here than in prek.
 
 The tracked-file / identify-tag helpers live in scripts/ci_lint_lib.py, not
-here: scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh both import them
-at CI runtime, and reaching into this test file's own helpers would let a
-test-readability rename silently break the CI job with nothing in the offline
-`pytest` run catching it.
+here -- see that module's docstring for why.
 """
 
 import re

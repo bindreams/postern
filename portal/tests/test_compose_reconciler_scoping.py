@@ -2,10 +2,10 @@
 COMPOSE_PROJECT_NAME forwarding, and SHADOWSOCKS_NETWORK's network-name /
 portal-env sync.
 
-That sync is the canonical rationale for this module: Compose interpolates
-`${VAR}` from the shell (or --env-file), while a service's `env_file:` is a
-separate lookup against ./.env, and the two can disagree. Static YAML checks
-below; `test_compose_config_*` shells out to the real Compose CLI.
+This module exists because Compose interpolates `${VAR}` from the shell (or
+--env-file), while a service's `env_file:` is a separate lookup against
+./.env, and the two can disagree. Static YAML checks below;
+`test_compose_config_*` shells out to the real Compose CLI.
 """
 from __future__ import annotations
 

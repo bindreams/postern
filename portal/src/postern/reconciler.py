@@ -606,18 +606,16 @@ def _reconcile_once(
     # pre-start snapshot here would wrongly recreate a container just successfully
     # started.
     managed = _list_managed_containers(client, instance_id)
-    # Both lookups below are existence-first: a failed lookup leaves its axis
-    # None, so _recreate_reasons (below) skips only that axis rather than
-    # treating an unresolved desired state as a mismatch -- see its docstring.
-    # Broad except on both: docker.errors.ImageNotFound / a docker-proxy
-    # hiccup (generic APIError) / an empty SHADOWSOCKS_NETWORK
+    # Broad except on both lookups: docker.errors.ImageNotFound / a
+    # docker-proxy hiccup (generic APIError) / an empty SHADOWSOCKS_NETWORK
     # (docker.errors.NullResource, a ValueError, not an APIError) must all
-    # degrade the same way -- skip this axis, not abort the whole pass.
+    # degrade the same way -- log and leave the axis None, never raise out
+    # of _reconcile_once.
     try:
         current_image = client.images.get(settings.shadowsocks_image)
     except Exception:
         logger.error(
-            "Could not resolve image '%s'; skipping image-mismatch recreate check this pass",
+            "Could not resolve image '%s'; skipping recreate checks this pass",
             settings.shadowsocks_image,
             exc_info=True,
         )
@@ -627,11 +625,26 @@ def _reconcile_once(
         target_network = client.networks.get(settings.shadowsocks_network)
     except Exception:
         logger.error(
-            "Could not resolve network '%s'; skipping network-mismatch recreate check this pass",
+            "Could not resolve network '%s'; skipping recreate checks this pass",
             settings.shadowsocks_network,
             exc_info=True,
         )
         target_network = None
+
+    if current_image is None or target_network is None:
+        # A replacement is always built from settings.shadowsocks_image +
+        # settings.shadowsocks_network (see _create_container), never from
+        # these resolved objects -- so if EITHER failed to resolve, a
+        # remove-then-create on the strength of the OTHER axis alone risks
+        # destroying a working container and then failing to replace it,
+        # using the exact resource that just failed to resolve. Skip the
+        # whole recreate-and-destroy step for every container this pass
+        # rather than treating the axes as independent past this point; the
+        # next pass retries both lookups fresh. (_recreate_reasons itself
+        # still tolerates either argument being None -- its own unit tests
+        # call it directly with one axis at a time -- but no caller here
+        # ever acts on a reason while either axis is unresolved.)
+        return
 
     for name, container in managed.items():
         if _shutdown_requested.is_set():

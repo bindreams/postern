@@ -289,9 +289,9 @@ def test_created_container_with_empty_network_id_is_started_not_recreated():
 
     client = MagicMock()
     # _reconcile_once lists managed containers three times: before the create
-    # sweep, before the restart loop, and (the fix under test) again before
-    # the image/network recreate check -- the last one must see `started`'s
-    # POST-start attrs, not `stuck`'s pre-start snapshot.
+    # sweep, before the restart loop, and again before the image/network
+    # recreate check -- the last one must see `started`'s POST-start attrs,
+    # not `stuck`'s pre-start snapshot.
     client.containers.list.side_effect = [[stuck], [stuck], [started]]
     client.images.get.return_value = MagicMock(id="img1")
     client.networks.get.return_value = _mock_network()
@@ -663,9 +663,10 @@ def test_recreate_check_skips_network_mismatch_when_target_network_missing(caplo
     all (misconfiguration, or a portal restarted before Compose created the
     new network), recreating on the strength of that string alone would
     remove a WORKING container and then 404 on create -- destroying the
-    tunnel with no way back. Must instead skip the network-mismatch check
-    for the pass (leaving the existing container alone) while still
-    performing an image-driven recreate if one is independently due."""
+    tunnel with no way back. Must instead skip recreate checks for the whole
+    pass (leaving the existing container alone), not just the network axis --
+    see test_recreate_check_skips_entirely_when_target_network_missing_even_if_image_changed
+    for the case where an image mismatch is independently due too."""
     conn = _make_connection()
     settings = _make_settings()
 
@@ -685,35 +686,41 @@ def test_recreate_check_skips_network_mismatch_when_target_network_missing(caplo
     assert settings.shadowsocks_network in caplog.text
 
 
-def test_recreate_check_skips_network_mismatch_on_a_non_notfound_lookup_failure(caplog):
+def test_recreate_check_skips_entirely_on_a_non_notfound_network_lookup_failure(caplog):
     """The network lookup's except must not be narrowed to NotFound alone:
     an empty SHADOWSOCKS_NETWORK raises docker.errors.NullResource (a
     ValueError, not an APIError), and a docker-proxy hiccup raises a generic
-    APIError -- both must degrade the same way NotFound does (skip the
-    network-mismatch check this pass), not escape _reconcile_once and abort
-    the image-driven recreate loop over an unrelated network problem."""
+    APIError -- both must degrade the same way NotFound does. And a due
+    image-driven recreate must NOT proceed on the strength of the image axis
+    alone: _create_container would rebuild the replacement from
+    settings.shadowsocks_network directly, the exact value that just failed
+    to resolve, so removing the old container first could destroy it with no
+    way to replace it."""
     conn = _make_connection()
     settings = _make_settings()
 
     old_container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img", network_id="old-network-id")
     client = MagicMock()
     client.containers.list.return_value = [old_container]
-    client.images.get.return_value = MagicMock(id="new_img")  # image-driven recreate IS due
+    client.images.get.return_value = MagicMock(id="new_img")  # image-driven recreate would be due
     client.networks.get.side_effect = docker.errors.APIError("docker-proxy unreachable")
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)  # must not raise
 
-    old_container.stop.assert_called_once()
-    old_container.remove.assert_called_once()
-    client.containers.run.assert_called_once()  # the due image-driven recreate still happens
+    old_container.stop.assert_not_called()
+    old_container.remove.assert_not_called()
+    client.containers.run.assert_not_called()
     assert "Could not resolve network" in caplog.text
 
 
-def test_image_driven_recreate_still_happens_when_target_network_missing():
-    """The network lookup failing must not also disable the UNRELATED
-    image-change recreate path -- only the network-mismatch trigger is
-    gated on it."""
+def test_recreate_check_skips_entirely_when_target_network_missing_even_if_image_changed():
+    """The inverse framing of the test above, with NotFound instead of a
+    generic APIError: an image mismatch alone must not trigger a
+    remove-then-create when the target network can't be resolved -- the
+    replacement would be built with the same unresolvable
+    settings.shadowsocks_network, and a working container would be destroyed
+    with no way to replace it."""
     conn = _make_connection()
     settings = _make_settings()
 
@@ -725,14 +732,17 @@ def test_image_driven_recreate_still_happens_when_target_network_missing():
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
-    old_container.stop.assert_called_once()
-    old_container.remove.assert_called_once()
-    client.containers.run.assert_called_once()
+    old_container.stop.assert_not_called()
+    old_container.remove.assert_not_called()
+    client.containers.run.assert_not_called()
 
 
-def test_network_driven_recreate_still_happens_when_image_missing():
-    """The inverse of the test above: an unresolvable image (ImageNotFound)
-    must not also disable the UNRELATED network-mismatch recreate path."""
+def test_recreate_check_skips_entirely_when_image_missing_even_if_network_changed():
+    """The mirror of the two tests above: an unresolvable image
+    (ImageNotFound) must not let a due network-mismatch recreate proceed
+    either -- the replacement would be built with the same unresolvable
+    settings.shadowsocks_image, and a working container would be destroyed
+    with no way to replace it."""
     conn = _make_connection()
     settings = _make_settings()
 
@@ -744,9 +754,9 @@ def test_network_driven_recreate_still_happens_when_image_missing():
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
-    old_container.stop.assert_called_once()
-    old_container.remove.assert_called_once()
-    client.containers.run.assert_called_once()
+    old_container.stop.assert_not_called()
+    old_container.remove.assert_not_called()
+    client.containers.run.assert_not_called()
 
 
 # Name conflicts on create (pre-fix / legacy / cross-deployment containers) ============================================

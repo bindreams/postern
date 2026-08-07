@@ -16,7 +16,8 @@ would also slow down the fast unit suite for a check that belongs in the lint
 job that already pays for a live prek invocation. Shell gets its own
 Python-side check here, and a live per-file reachability check in
 scripts/ci-lint-selftest.sh, since shell is the language this gate exists to
-enforce.
+enforce. `test_ci_lint_lib.py` unit-tests the dry-run-log parser itself
+against canned transcripts.
 
 The expected set is derived from `identify`, the library whose `shell` tag the
 shellcheck hook's `types: [shell]` selector names, rather than from a pinned
@@ -26,19 +27,24 @@ One assumption: `prek` matches `exclude` with Rust's `regex` crate and this
 compares with Python's `re`. Today's patterns are simple enough to be
 dialect-agnostic; a future pattern using lookaround or Unicode classes could
 behave differently here than in prek.
+
+The tracked-file / identify-tag helpers live in scripts/ci_lint_lib.py, not
+here: scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh both import them
+at CI runtime, and reaching into this test file's own helpers would let a
+test-readability rename silently break the CI job with nothing in the offline
+`pytest` run catching it.
 """
 
-import os
 import re
-import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
-from identify.identify import tags_from_path
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PREK_CONFIG = REPO_ROOT / "prek.toml"
-VENDORED = "external/"
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from ci_lint_lib import first_party_shell_scripts  # noqa: E402
 
 # Keys on a hook table that narrow which files -- or which runs -- it
 # participates in. Anything else (`name`, `args`, `verbose`, ...) leaves the
@@ -84,51 +90,15 @@ def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
 
 
-def _tracked_files() -> list[str]:
-    listing = subprocess.run(["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True, check=True)
-    return [path for path in listing.stdout.decode().split("\0") if path]
-
-
-def _tags_for_first_party_file(path: str) -> frozenset[str] | None:
-    """identify's tags for a tracked, non-vendored file, or `None` if it should be skipped."""
-    if path.startswith(VENDORED):
-        return None
-    full_path = REPO_ROOT / path
-    try:
-        return frozenset(tags_from_path(full_path))
-    except ValueError:
-        # `identify.tags_from_path` re-raises every `os.lstat` failure -- not
-        # just a missing file -- as this same generic `ValueError`. Re-stat
-        # directly (not `Path.exists()`, which also swallows `PermissionError`
-        # into `False`) to recover the real errno: `FileNotFoundError` is
-        # "indexed but missing from the working tree" -- an ordinary transient
-        # state during a staged deletion or sparse checkout -- and is skipped;
-        # anything else (permission, ELOOP, stale mount, ...) propagates
-        # instead of being silently dropped from the set this module exists
-        # to defend. A residual race between the two stats is accepted: it
-        # can only misclassify a file that changed state during this single
-        # check, not hide a stable unreadable one.
-        try:
-            os.lstat(full_path)
-        except FileNotFoundError:
-            return None
-        raise
-
-
-def _first_party_shell_scripts() -> list[str]:
-    """Tracked, non-vendored files identify tags as shell."""
-    return [path for path in _tracked_files() if (tags := _tags_for_first_party_file(path)) and "shell" in tags]
-
-
 def test_first_party_shell_scripts_exist_to_be_linted():
     """Guard against the coverage test below passing vacuously."""
-    assert _first_party_shell_scripts()
+    assert first_party_shell_scripts()
 
 
 def test_no_first_party_shell_script_is_excluded_from_the_lint_gate():
     config = _config()
     exclude = config.get("exclude", "")
-    dropped = [path for path in _first_party_shell_scripts() if exclude and re.search(exclude, path)]
+    dropped = [path for path in first_party_shell_scripts() if exclude and re.search(exclude, path)]
 
     assert not dropped, (f"prek.toml's `exclude` drops these first-party shell scripts out of the lint gate: {dropped}")
 

@@ -53,87 +53,31 @@ set -e
 cat "$DRY_RUN_LOG"
 test "$dry_run_status" -eq 0 || { echo "prek --dry-run failed -- install/clone/config failure?"; exit 1; }
 
+# The parsing/diffing logic itself lives in scripts/ci_lint_lib.py, a tracked
+# module -- not a string literal here -- so it is covered by yapf and
+# unit-tested against canned transcripts in portal/tests/test_ci_lint_lib.py.
 uv run --project portal --group dev python -c "
-import re
 import sys
 
-sys.path.insert(0, 'portal/tests')
-from test_ci_lint_job import VENDORED, _tags_for_first_party_file, _tracked_files
+sys.path.insert(0, 'scripts')
+from ci_lint_lib import find_dry_run_coverage_gaps, tracked_files, VENDORED
 
-log = open('$DRY_RUN_LOG', encoding='utf-8').read()
-
-# Per-hook file lists, keyed by the display-name status line (e.g.
-# 'mdformat (myst)....Dry Run'), NOT '- hook id: <id>' or the backtick-quoted
-# name in 'would be run on' -- both of those repeat the bare hook id
-# 'mdformat' for both same-id mdformat entries, while only the status line
-# carries the distinguishing '(myst)' suffix. Same reasoning as
-# test_no_hook_narrows_its_own_file_set_unexpectedly's name-first keying.
-sections = re.split(r'(?=^\S.*\.+Dry Run\$)', log, flags=re.MULTILINE)
-by_name: dict[str, list[str]] = {}
-for section in sections:
-    match = re.match(r'(\S.*?)\.+Dry Run\$', section, re.MULTILINE)
-    if not match:
-        continue
-    hook_name = match.group(1)
-    files = re.findall(r'^  - (.+)\$', section, re.MULTILINE)
-    by_name.setdefault(hook_name, []).extend(files)
-
-if not by_name:
-    print('prek --dry-run reported no hooks at all -- install/clone failure?')
-    raise SystemExit(1)
-
-tracked = [path for path in _tracked_files() if not path.startswith(VENDORED)]
+tracked = [path for path in tracked_files() if not path.startswith(VENDORED)]
 # A tracked path containing a literal newline would corrupt the newline-delimited
-# parse above (prek's own dry-run output has no NUL-safe mode); flag it explicitly
-# rather than silently mis-parsing it as multiple paths.
+# parse in ci_lint_lib.parse_dry_run_hook_files (prek's own dry-run output has no
+# NUL-safe mode); flag it explicitly rather than silently mis-parsing it as
+# multiple paths.
 newline_paths = [path for path in tracked if '\n' in path]
 if newline_paths:
-    print(f'tracked paths containing a literal newline break the dry-run parse above: {newline_paths}')
+    print(f'tracked paths containing a literal newline break the dry-run parse: {newline_paths}')
     raise SystemExit(1)
 
-# Union coverage: catches exclude/files/default_stages narrowing, which drops
-# a file from every hook at once, including the file/executable-wide hooks
-# (mixed-line-ending, the two shebang hooks) that dominate the union and make
-# it blind to any single OTHER hook narrowing on its own -- 'text' (not
-# 'binary' not in tags) also excludes symlinks and directory/gitlink entries,
-# which no hook matches and are not a coverage gap.
-covered = {path for files in by_name.values() for path in files}
-uncovered = [
-    path for path in tracked
-    if path not in covered and (tags := _tags_for_first_party_file(path)) is not None and 'text' in tags
-]
-if uncovered:
-    print('no prek hook would run on these first-party tracked text files:')
-    for path in uncovered:
-        print(' ', path)
+log = open('$DRY_RUN_LOG', encoding='utf-8').read()
+problems = find_dry_run_coverage_gaps(log, tracked)
+if problems:
+    for problem in problems:
+        print(problem)
     raise SystemExit(1)
-
-# Per-hook checks for the hooks whose type restriction is entirely upstream
-# (pinned by a shellcheck-py/yapf/mdformat 'rev =', not written in prek.toml)
-# and would otherwise be invisible to both the union check above (dominated
-# by the file/executable-wide hooks) and
-# test_no_hook_narrows_its_own_file_set_unexpectedly (which only sees keys
-# actually present in prek.toml). shellcheck already has its own live
-# per-file reachability loop in scripts/ci-lint-selftest.sh. The
-# file/executable-wide hooks (mixed-line-ending, the two shebang hooks) and
-# the hooks whose narrowing keys ARE all in prek.toml (format-section-comments,
-# ty, editorconfig-checker) are covered by the checks above and don't need a
-# language oracle here.
-per_hook_checks = [
-    ('yapf', lambda tags: 'python' in tags, lambda path: True),
-    ('mdformat', lambda tags: 'markdown' in tags, lambda path: not path.startswith('docs/')),
-    ('mdformat (myst)', lambda tags: 'markdown' in tags, lambda path: path.startswith('docs/')),
-]
-for hook_name, tag_matches, in_scope in per_hook_checks:
-    hook_files = set(by_name.get(hook_name, []))
-    missing = [
-        path for path in tracked
-        if in_scope(path) and (tags := _tags_for_first_party_file(path)) is not None
-        and tag_matches(tags) and path not in hook_files
-    ]
-    if missing:
-        print(f'{hook_name} would not run on these in-scope first-party files -- its upstream matcher narrowed: {missing}')
-        raise SystemExit(1)
 "
 
 exit "$status"

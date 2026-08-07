@@ -60,8 +60,12 @@ cat "$SCRATCH_DIR/ty-fixture.log"
 
 # Assert the hook RAN before judging what it found: a prek install failure or
 # an unreachable hook repo also produces "no SC2155", and reporting that as a
-# dead lint gate would misdiagnose an outage.
-grep -qE '^shellcheck\.+(Failed|Passed)' "$SCRATCH_DIR/shellcheck-fixture.log" ||
+# dead lint gate would misdiagnose an outage. The alternation includes the
+# `(no files to check)Skipped` status prek prints when a hook's matcher
+# selects nothing -- that status contains neither `Failed` nor `Passed`, so a
+# narrower grep here would misreport a narrowed-out fixture as an install
+# failure instead of letting the status-code check below call it what it is.
+grep -qE '^shellcheck\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/shellcheck-fixture.log" ||
   { echo "prek never ran the shellcheck hook -- install/clone failure?"; exit 1; }
 test "$sc_status" -ne 0 ||
   { echo "shellcheck passed a known-bad script -- the shell gate is dead"; exit 1; }
@@ -73,7 +77,7 @@ grep -q SC2086 "$SCRATCH_DIR/shellcheck-fixture.log" || { echo "no SC2086 findin
 grep -q SC2310 "$SCRATCH_DIR/shellcheck-fixture.log" ||
   { echo "no SC2310 finding -- check-set-e-suppressed is not reaching shellcheck"; exit 1; }
 
-grep -qE '^ty check\.+(Failed|Passed)' "$SCRATCH_DIR/ty-fixture.log" ||
+grep -qE '^ty check\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/ty-fixture.log" ||
   { echo "prek never ran the ty hook -- install failure?"; exit 1; }
 test "$ty_status" -ne 0 ||
   { echo "ty passed a known-bad annotation -- the type gate is dead"; exit 1; }
@@ -110,16 +114,15 @@ grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/zero-match-
 # text. Ask prek directly whether it still reaches every real first-party
 # shell script instead of inferring from static config. NUL-TERMINATED
 # (trailing NUL after every path, not just between paths) on both ends --
-# `git ls-files -z` (this oracle's own source, in
-# portal/tests/test_ci_lint_job.py) is NUL-safe both so a tracked filename
-# containing a literal newline round-trips intact AND so `while read -d ''`
-# on the far end doesn't silently drop the last entry (a '\0'.join(...)
-# separator would).
+# `git ls-files -z` (ci_lint_lib.tracked_files, this oracle's own source) is
+# NUL-safe both so a tracked filename containing a literal newline round-trips
+# intact AND so `while read -d ''` on the far end doesn't silently drop the
+# last entry (a '\0'.join(...) separator would).
 uv run --project portal --group dev python -c "
 import sys
-sys.path.insert(0, 'portal/tests')
-from test_ci_lint_job import _first_party_shell_scripts
-sys.stdout.write(''.join(path + '\0' for path in _first_party_shell_scripts()))
+sys.path.insert(0, 'scripts')
+from ci_lint_lib import first_party_shell_scripts
+sys.stdout.write(''.join(path + '\0' for path in first_party_shell_scripts()))
 " >"$SCRATCH_DIR/shell-scripts.nul"
 test -s "$SCRATCH_DIR/shell-scripts.nul" || { echo "no first-party shell scripts found -- the oracle broke"; exit 1; }
 while IFS= read -r -d '' path; do
@@ -127,11 +130,13 @@ while IFS= read -r -d '' path; do
   uv run --project portal --group dev prek run shellcheck --files "$path" >"$SCRATCH_DIR/reach.log" 2>&1
   reach_status=$?
   set -e
-  # Same "assert the hook ran before judging what it found" rule as the two
-  # fixtures above: an infra failure (hook-env install, a network blip
-  # fetching the shellcheck repo) also yields a nonzero status with no
-  # "Skipped" line, and must not be reported as a real finding in $path.
-  grep -qE '^shellcheck\.+(Failed|Passed)' "$SCRATCH_DIR/reach.log" ||
+  # The liveness grep must accept the `(no files to check)Skipped` status
+  # too, not just `Failed|Passed`: that status is exactly what a narrowed-out
+  # $path produces, and it contains neither word. A narrower grep here would
+  # misreport the one failure this loop exists to catch -- shellcheck's own
+  # upstream matcher having dropped $path -- as an unrelated install/clone
+  # failure, and the dedicated diagnostic in the `if` below would never run.
+  grep -qE '^shellcheck\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/reach.log" ||
     { echo "prek never ran the shellcheck hook for $path -- install/clone failure?"; cat "$SCRATCH_DIR/reach.log"; exit 1; }
   if grep -q '(no files to check)Skipped' "$SCRATCH_DIR/reach.log"; then
     echo "shellcheck skipped $path -- its upstream hook manifest narrowed to exclude it:"

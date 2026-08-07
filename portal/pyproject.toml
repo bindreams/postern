@@ -76,3 +76,12 @@ missing-argument = "ignore"
 # `User(**dict(row))` and test fixture dicts. The DB layer validates values; the
 # rule as it fires here is library-typing noise, not a real bug surface.
 invalid-argument-type = "ignore"
+
+[tool.ty.environment]
+# tests/test_ci_lint_job.py and tests/test_ci_lint_lib.py both import
+# scripts/ci_lint_lib.py via a `sys.path.insert(0, "scripts")` at runtime (the
+# same way scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh reach it from
+# a repo-root CWD), which ty cannot follow statically. Without this, ty reports
+# `unresolved-import` on every run, not just when the fixture in
+# ci-lint-selftest.sh is present.
+extra-paths = ["../scripts"]

@@ -16,6 +16,17 @@ shopt -s inherit_errexit
 # local debugging, or a retried job) would see the fixture as a genuine type
 # error in the real run, not just in this script's own fixtures. `mkdir -p`
 # both so a from-scratch checkout has somewhere for the lock file to live.
+#
+# Scope: this lock only serializes THIS script against `ci-lint-run.sh`
+# specifically (the pair that matters in CI, where they run as two steps of
+# the same job). It does NOT serialize against an unrelated concurrent
+# `prek run` / `git commit` (the installed pre-commit hook) / `git add -A` in
+# the same working tree -- those don't take this lock either, so the two
+# fixture files below are gitignored as a second line of defense: a leak from
+# that scenario can't be staged or trip scripts/deploy.sh's dirty-worktree
+# check, even though it can still transiently misdiagnose a concurrent manual
+# `prek run ty` as a real type error. Don't run this script while also
+# running `prek`/`git commit` by hand in the same checkout.
 mkdir -p .tmp
 exec 9>.tmp/ci-lint.lock
 flock -x 9
@@ -25,19 +36,24 @@ flock -x 9
 # check or get swept into a `git add -A`. The two fixture files below are the
 # exception: prek matches them by their real, meaningful path (repo root for
 # `--files`, portal/src/postern/ for ty's whole-project scan), so they can't
-# move into the scratch dir. mktemp'd rather than fixed names, as defense in
-# depth alongside the flock above and for a clearer diagnostic if the lock is
-# ever bypassed (e.g. a future edit that drops it from one of the two scripts).
+# move into the scratch dir -- both patterns are in .gitignore for the same
+# reason as a leftover .tmp/ scratch dir. mktemp'd rather than fixed names, as
+# defense in depth alongside the flock above and for a clearer diagnostic if
+# the lock is ever bypassed (e.g. a future edit that drops it from one of the
+# two scripts).
+#
+# The trap is installed BEFORE any of the three `mktemp` calls, not after: an
+# empty-string path in the trap body is a harmless `rm -rf ""` no-op, but a
+# trap installed only after all three succeed leaves a window where the
+# 2nd/3rd `mktemp` failing (disk full, a permissions issue) aborts under
+# `set -e` with whatever the 1st/2nd already created never cleaned up -- for
+# TY_FIXTURE specifically, that's the same poisoning risk this whole trap
+# exists to prevent.
+SCRATCH_DIR="" FIXTURE_SH="" TY_FIXTURE=""
+trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE"' EXIT
 SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-selftest-XXXXXX)"
 FIXTURE_SH="$(mktemp --suffix=.sh .prek-gate-fixture-XXXXXX)"
 TY_FIXTURE="$(mktemp --suffix=.py portal/src/postern/_ty_gate_fixture_XXXXXX)"
-
-# A hard abort (SIGINT, a CI job cancel, any `exit 1` below) between creating
-# a fixture and its matching `rm` would otherwise leave it on disk -- and a
-# stray ty fixture left in portal/src/postern/ would poison the real prek run
-# in scripts/ci-lint-run.sh and be misread as a genuine type error. The trap
-# covers every exit path in one place instead of relying on in-line ordering.
-trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE"' EXIT
 
 cat >"$FIXTURE_SH" <<'FIXTURE'
 #!/usr/bin/env bash
@@ -64,7 +80,6 @@ uv run --project portal --group dev prek run ty --all-files >"$SCRATCH_DIR/ty-fi
 ty_status=$?
 set -e
 rm "$TY_FIXTURE"
-test ! -e "$TY_FIXTURE" || { echo "ty fixture cleanup failed -- aborting before it poisons the real run"; exit 1; }
 
 echo "--- shellcheck fixture ---"
 cat "$SCRATCH_DIR/shellcheck-fixture.log"
@@ -151,7 +166,13 @@ while IFS= read -r -d '' path; do
   # failure, and the dedicated diagnostic in the `if` below would never run.
   grep -qE '^shellcheck\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/reach.log" ||
     { echo "prek never ran the shellcheck hook for $path -- install/clone failure?"; cat "$SCRATCH_DIR/reach.log"; exit 1; }
-  if grep -q '(no files to check)Skipped' "$SCRATCH_DIR/reach.log"; then
+  # Anchored the same way as the liveness grep above, NOT a bare substring
+  # match: this file (a first-party shell script this very loop lints) prints
+  # the literal phrase "(no files to check)Skipped" in several unescaped
+  # comments and grep patterns, so an unanchored match could fire on the
+  # linter's own quoted-source-line output for a genuine finding here and
+  # misreport a real lint error as an upstream matcher regression.
+  if grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/reach.log"; then
     echo "shellcheck skipped $path -- its upstream hook manifest narrowed to exclude it:"
     cat "$SCRATCH_DIR/reach.log"
     exit 1

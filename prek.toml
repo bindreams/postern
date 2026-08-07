@@ -24,13 +24,17 @@ name = "ty check"
 # in portal/pyproject.toml. With only `--project`, CWD stays at the repo root
 # and the ignore rules are silently dropped.
 #
-# The trailing `../scripts/ci_lint_lib.py` is deliberate, not the default "the
-# project root": that module lives outside the portal project ty would
-# otherwise scan, and `[tool.ty.environment] extra-paths` in
-# portal/pyproject.toml only makes it *importable* from portal/tests -- it
-# does not add the module itself as a check target, so a bug entirely inside
-# ci_lint_lib.py's own body would pass silently without this explicit path.
-entry = "uv run --directory portal --group dev ty check . ../scripts/ci_lint_lib.py"
+# The trailing `../scripts` is deliberate, not the default "the project
+# root": every tracked first-party script under scripts/ (ci_lint_lib.py,
+# format-section-comments.py, verify-deploy.py, ...) lives outside the portal
+# project ty would otherwise scan, and `[tool.ty.environment] extra-paths` in
+# portal/pyproject.toml only makes ci_lint_lib *importable* from portal/tests
+# -- it does not add any of these modules as a check target, so a bug
+# entirely inside one of their own bodies would pass silently without this
+# explicit path. The whole directory, not just ci_lint_lib.py: a single named
+# file would leave every OTHER script in scripts/ unchecked despite the claim
+# (CLAUDE.md) that this is the only place CI type-checks.
+entry = "uv run --directory portal --group dev ty check . ../scripts"
 language = "python"
 types = ["python"]
 pass_filenames = false

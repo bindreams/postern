@@ -105,8 +105,7 @@ def first_party_shell_scripts() -> list[str]:
 # invisible to portal/tests/test_ci_lint_job.py's static reads of prek.toml,
 # and a routine dependency bump could narrow it with nothing else noticing.
 # Predicates are read off each hook's own upstream `.pre-commit-hooks.yaml`
-# `types`/`types_or` (AND semantics for `types`, confirmed against
-# ~/.cache/prek/repos/*/.pre-commit-hooks.yaml at the time of writing).
+# `types`/`types_or` (AND semantics for `types`).
 #
 # `ty check` is deliberately absent: `pass_filenames = false` makes it scan
 # the whole portal project regardless of its `types = ["python"]` restriction,
@@ -116,10 +115,7 @@ def first_party_shell_scripts() -> list[str]:
 # `test_no_hook_narrows_its_own_file_set_unexpectedly` only asserts a
 # narrowing KEY is present and allow-listed, never the key's VALUE, so
 # narrowing an already-allow-listed `types_or`/`exclude_types`/etc. in place
-# (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to
-# it -- confirmed empirically: narrowing `types_or` from its 8-tag list down
-# to `["toml"]` drops this hook from ~129 files to 3 with every other guard
-# in this module and portal/tests/test_ci_lint_job.py still green.
+# (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to it.
 PER_HOOK_CHECKS: list[tuple[str, Callable[[frozenset[str]], bool], Callable[[str], bool]]] = [
     (
         "format section comments",

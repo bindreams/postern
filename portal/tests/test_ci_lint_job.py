@@ -47,24 +47,22 @@ from ci_lint_lib import first_party_shell_scripts  # noqa: E402
 # participates in. Anything else (`name`, `args`, `verbose`, ...) leaves the
 # matcher alone. `stages` belongs here even though it is not a file matcher:
 # a hook confined to a stage that `--all-files` doesn't run at is dropped
-# from the whole-tree run entirely -- confirmed empirically, adding
-# `stages = ["manual"]` to the shellcheck hook makes it vanish from
-# `--all-files` output with exit 0 and no `Skipped` line, so the CI job's
-# zero-match grep never fires either.
+# from the whole-tree run entirely, silently passing both the zero-match
+# grep and this test.
 NARROWING_KEYS = frozenset({"files", "exclude", "types", "types_or", "exclude_types", "stages"})
 
 # Top-level config keys that narrow every hook at once. `default_stages` is
 # `files`'s equally global sibling: setting it to a stage no hook opts out of
 # (e.g. `["manual"]`) drops all but the two hooks that pin their own `stages`
-# upstream -- confirmed empirically, exit 0, no diagnostic.
+# upstream, exiting 0 with no diagnostic.
 TOP_LEVEL_NARROWING_KEYS = frozenset({"files", "default_stages"})
 
 # The complete hook roster, keyed the same way as `test_no_hook_narrows_its_own_file_set_unexpectedly`'s
 # `narrowing` set. Every check above is a subset assertion over keys *present*
-# in prek.toml, so all of them are blind to a hook being deleted outright --
-# confirmed empirically, dropping yapf's `hooks = [...]` entry to `[]` still
-# passes every narrowing check and leaves `--all-files` exiting 0 with no
-# `Skipped` line. Pinning the exact roster here is what catches that.
+# in prek.toml, so all of them are blind to a hook being deleted outright
+# (e.g. dropping yapf's `hooks = [...]` to `[]` passes every narrowing check
+# and exits `--all-files` 0 with no `Skipped` line). Pinning the exact roster
+# here is what catches that.
 EXPECTED_HOOKS = frozenset({
     "format section comments",
     "ty check",

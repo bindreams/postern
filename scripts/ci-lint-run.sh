@@ -7,13 +7,19 @@
 set -uo pipefail
 shopt -s inherit_errexit
 
+# .tmp/ is gitignored, so a log left behind by an aborted run can't trip
+# scripts/deploy.sh's dirty-worktree check or get swept into a `git add -A`.
+SCRATCH_DIR=".tmp/ci-lint"
+mkdir -p "$SCRATCH_DIR"
+LOG="$SCRATCH_DIR/prek.log"
+
 set +e
-uv run --project portal --group dev prek run --all-files --show-diff-on-failure >prek.log 2>&1
+uv run --project portal --group dev prek run --all-files --show-diff-on-failure >"$LOG" 2>&1
 status=$?
 set -e
-cat prek.log
+cat "$LOG"
 
-grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed)' prek.log ||
+grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed)' "$LOG" ||
   { echo "prek ran no hooks at all -- install/clone failure, not a lint result"; exit 1; }
 
 # The grep below is line-anchored to a hook status line. `--show-diff-on-failure`
@@ -25,9 +31,9 @@ grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed)' prek.log ||
 # merely lost some of its files still prints `Passed`. Partial narrowing is
 # portal/tests/test_ci_lint_job.py's job; a narrowed shellcheck manifest is
 # scripts/ci-lint-selftest.sh's.
-if grep -qE '^[A-Za-z].*\(no files to check\)Skipped$' prek.log; then
+if grep -qE '^[A-Za-z].*\(no files to check\)Skipped$' "$LOG"; then
   echo "a hook matched no files -- its half of the gate is dead:"
-  grep -E '^[A-Za-z].*\(no files to check\)Skipped$' prek.log
+  grep -E '^[A-Za-z].*\(no files to check\)Skipped$' "$LOG"
   exit 1
 fi
 

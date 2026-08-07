@@ -63,6 +63,9 @@ services:
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
+      # Kept in sync with networks.shadowsocks.name below -- env_file: alone
+      # can't guarantee that (see that comment).
+      SHADOWSOCKS_NETWORK: ${SHADOWSOCKS_NETWORK:-shadowsocks}
     volumes:
       - postern-data:/data
       # rw so `postern mta show-dns` can read state.json + selector pubkeys, AND
@@ -198,8 +201,13 @@ services:
     restart: unless-stopped
 
 networks:
+  # Interpolates the same SHADOWSOCKS_NETWORK var the portal reads
+  # (settings.shadowsocks_network) so the two names can't drift. Compose's
+  # interpolation source (shell / --env-file) and env_file:'s source (./.env)
+  # are separate lookups that can disagree, which is why the portal's copy is
+  # set there rather than left to env_file. See docs/development/architecture.md.
   shadowsocks:
-    name: shadowsocks
+    name: ${SHADOWSOCKS_NETWORK:-shadowsocks}
     driver: bridge
   mta-submit:
     name: mta-submit

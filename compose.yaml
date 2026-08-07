@@ -1,3 +1,10 @@
+# Single source for the tunnel network name: aliased below into both the
+# portal's own environment: (services.portal) and networks.shadowsocks.name,
+# so the two can't drift apart the way two independently-typed
+# ${SHADOWSOCKS_NETWORK:-shadowsocks} literals could -- env_file: alone can't
+# guarantee that (see docs/development/architecture.md).
+x-shadowsocks-network: &shadowsocks_network ${SHADOWSOCKS_NETWORK:-shadowsocks}
+
 services:
   nginx:
     build:
@@ -63,9 +70,9 @@ services:
     environment:
       DOCKER_HOST: tcp://docker-proxy:2375
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
-      # Kept in sync with networks.shadowsocks.name below -- env_file: alone
-      # can't guarantee that (see that comment).
-      SHADOWSOCKS_NETWORK: ${SHADOWSOCKS_NETWORK:-shadowsocks}
+      # Aliased to the same node as networks.shadowsocks.name below -- see
+      # the x-shadowsocks-network comment at the top of this file.
+      SHADOWSOCKS_NETWORK: *shadowsocks_network
     volumes:
       - postern-data:/data
       # rw so `postern mta show-dns` can read state.json + selector pubkeys, AND
@@ -201,13 +208,10 @@ services:
     restart: unless-stopped
 
 networks:
-  # Interpolates the same SHADOWSOCKS_NETWORK var the portal reads
-  # (settings.shadowsocks_network) so the two names can't drift. Compose's
-  # interpolation source (shell / --env-file) and env_file:'s source (./.env)
-  # are separate lookups that can disagree, which is why the portal's copy is
-  # set there rather than left to env_file. See docs/development/architecture.md.
+  # name: aliased to the same node as services.portal.environment.SHADOWSOCKS_NETWORK
+  # above -- see the x-shadowsocks-network comment at the top of this file.
   shadowsocks:
-    name: ${SHADOWSOCKS_NETWORK:-shadowsocks}
+    name: *shadowsocks_network
     driver: bridge
   mta-submit:
     name: mta-submit

@@ -142,7 +142,7 @@ services:
       # This file renames networks.e2e-shadowsocks.name below to
       # e2e-shadowsocks-mta-real; without restating this, the portal would
       # inherit e2e.compose.yaml's literal "e2e-shadowsocks", a network no
-      # service in this project joins (issue #218).
+      # service in this project joins.
       SHADOWSOCKS_NETWORK: e2e-shadowsocks-mta-real
     volumes:
       - postern-mta-data:/var/lib/opendkim:ro

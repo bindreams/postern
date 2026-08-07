@@ -176,11 +176,11 @@ def test_compose_config_resolves_network_name_and_portal_env_identically(
     assert (net_name, portal_env) == (expected, expected)
 
 
-# e2e overlay merges (issue #218) ======================================================================================
+# e2e overlay merges ===================================================================================================
 # e2e-mta.compose.yaml / e2e-mta-real.compose.yaml each rename
 # networks.e2e-shadowsocks.name relative to the base e2e.compose.yaml they're
 # layered onto -- a single-file YAML parse (the test above) cannot see what
-# THAT merge resolves to, which is exactly how #218 stayed invisible: the
+# THAT merge resolves to, which is exactly how this bug stayed invisible: the
 # portal's SHADOWSOCKS_NETWORK, read from e2e.compose.yaml alone, looked fine
 # in isolation while actually pointing at a network no service in the merged
 # project joins. Real Compose CLI merge is the only way to check this.

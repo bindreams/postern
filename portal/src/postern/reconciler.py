@@ -640,9 +640,7 @@ def _reconcile_once(
         # using the exact resource that just failed to resolve. Skip the
         # whole recreate-and-destroy step for every container this pass
         # rather than treating the axes as independent past this point; the
-        # next pass retries both lookups fresh. (_recreate_reasons itself
-        # still tolerates either argument being None, but no caller here
-        # ever acts on a reason while either axis is unresolved.)
+        # next pass retries both lookups fresh.
         return
 
     for name, container in managed.items():

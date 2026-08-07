@@ -544,13 +544,9 @@ def test_container_network_ids_reads_networkid_not_the_dict_key():
 
 
 def test_container_network_ids_empty_when_missing():
-    """A container whose inspect payload carries no NetworkSettings at all
-    counts as attached to no network. This function itself just reports that
-    truthfully -- the empty-set case is real (a `created`-status container,
-    or one `docker network disconnect`ed while running, both have it) and
-    the CALLER (`_recreate_reasons`) is the one that decides what an empty
-    result means: unknown-not-yet-started for `created`, a proven mismatch
-    otherwise. See `_recreate_reasons`'s created-status branch."""
+    """Missing NetworkSettings counts as attached to no network -- interpreting
+    that emptiness is `_recreate_reasons`' job, not this function's (see its
+    created-status branch)."""
     container = MagicMock()
     container.attrs = {}
     assert reconciler._container_network_ids(container) == set()

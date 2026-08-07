@@ -90,7 +90,24 @@ jobs:
           grep -q 'invalid-assignment' ty-fixture.log || { echo "no invalid-assignment -- the type gate is dead"; exit 1; }
           grep -q '_ty_gate_fixture' ty-fixture.log || { echo "ty never saw the fixture -- the type gate is dead"; exit 1; }
 
-          rm -f shellcheck-fixture.log ty-fixture.log
+          # The next step's zero-match grep rests on an assumption -- that
+          # prek reports a hook matching no files as `Skipped` with this exact
+          # phrase and exit 0 -- that nothing here has exercised yet. Prove it
+          # against real prek output, the same way the two fixtures above
+          # prove the `Failed|Passed` format. README.md always exists and is
+          # never shell, so shellcheck matches nothing.
+          set +e
+          uv run --project portal --group dev prek run shellcheck \
+            --files README.md > zero-match-fixture.log 2>&1
+          zm_status=$?
+          set -e
+          echo "--- zero-match fixture ---"; cat zero-match-fixture.log
+          test "$zm_status" -eq 0 \
+            || { echo "prek exited nonzero on a hook matching no files -- guard 2's zero-match assumption is already wrong"; exit 1; }
+          grep -qE '^shellcheck\.+\(no files to check\)Skipped$' zero-match-fixture.log \
+            || { echo "prek's zero-match output no longer matches guard 2's grep -- update it in the next step"; exit 1; }
+
+          rm -f shellcheck-fixture.log ty-fixture.log zero-match-fixture.log
 
       # The real run. `--color=always` is deliberately omitted: ANSI escapes in
       # the status lines would break the greps below, and GitHub renders the
@@ -111,10 +128,9 @@ jobs:
             || { echo "prek ran no hooks at all -- install/clone failure, not a lint result"; exit 1; }
 
           # Both greps are line-anchored to a hook status line. `--show-diff-on-failure`
-          # puts every rewritten file's diff into this same log, and the phrase
-          # "(no files to check)" also happens to appear (as prose) in CLAUDE.md and
-          # test_ci_lint_job.py -- an unanchored search would fire on mdformat's or
-          # yapf's own diff and report "the gate is dead" for a routine formatting failure.
+          # puts every rewritten file's diff into this same log -- an unanchored search
+          # would fire on mdformat's or yapf's own diff and report "the gate is dead"
+          # for a routine formatting failure.
           if grep -qE '^[A-Za-z].*\(no files to check\)Skipped$' prek.log; then
             echo "a hook matched no files -- its half of the gate is dead:"
             grep -E '^[A-Za-z].*\(no files to check\)Skipped$' prek.log

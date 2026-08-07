@@ -26,9 +26,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PREK_CONFIG = REPO_ROOT / "prek.toml"
 VENDORED = "external/"
 
-# Keys on a hook table that narrow which files it runs against. Anything else
-# (`name`, `args`, `stages`, `verbose`, ...) leaves the matcher alone.
-NARROWING_KEYS = frozenset({"files", "exclude", "types", "types_or", "exclude_types"})
+# Keys on a hook table that narrow which files -- or which runs -- it
+# participates in. Anything else (`name`, `args`, `verbose`, ...) leaves the
+# matcher alone. `stages` belongs here even though it is not a file matcher:
+# a hook confined to a stage that `--all-files` doesn't run at is dropped
+# from the whole-tree run entirely -- confirmed empirically, adding
+# `stages = ["manual"]` to the shellcheck hook makes it vanish from
+# `--all-files` output with exit 0 and no `Skipped` line, so the CI job's
+# zero-match grep never fires either.
+NARROWING_KEYS = frozenset({"files", "exclude", "types", "types_or", "exclude_types", "stages"})
+
+# Top-level config keys that narrow every hook at once. `default_stages` is
+# `files`'s equally global sibling: setting it to a stage no hook opts out of
+# (e.g. `["manual"]`) drops all but the two hooks that pin their own `stages`
+# upstream -- confirmed empirically, exit 0, no diagnostic.
+TOP_LEVEL_NARROWING_KEYS = frozenset({"files", "default_stages"})
 
 
 def _config() -> dict:
@@ -40,21 +52,25 @@ def _tracked_files() -> list[str]:
     return [path for path in listing.stdout.decode().split("\0") if path]
 
 
-def _first_party_shell_scripts() -> list[str]:
-    """Tracked, non-vendored files identify tags as shell.
+def _is_first_party_shell_script(path: str) -> bool:
+    if path.startswith(VENDORED):
+        return False
+    try:
+        tags = tags_from_path(REPO_ROOT / path)
+    except ValueError:
+        # Indexed but missing from the working tree (staged deletion, sparse
+        # checkout) -- an ordinary transient state, not a broken checkout.
+        # Any other error is left to propagate: git guarantees a present,
+        # tracked file is readable, so an unreadable one really is a broken
+        # checkout, and swallowing that would drop the path from the set this
+        # module exists to defend.
+        return False
+    return "shell" in tags
 
-    A path git has indexed but that is missing from the working tree (staged
-    deletion, sparse checkout) is skipped rather than passed to `identify`,
-    which raises on a missing file. Any other read error is left to propagate:
-    git guarantees a present, tracked file is readable, so an unreadable one is
-    a broken checkout, not a non-shell file. Swallowing that would drop the
-    path from the set this module exists to defend.
-    """
-    return [
-        path for path in _tracked_files()
-        if not path.startswith(VENDORED) and (REPO_ROOT /
-                                              path).exists() and "shell" in tags_from_path(REPO_ROOT / path)
-    ]
+
+def _first_party_shell_scripts() -> list[str]:
+    """Tracked, non-vendored files identify tags as shell."""
+    return [path for path in _tracked_files() if _is_first_party_shell_script(path)]
 
 
 def test_first_party_shell_scripts_exist_to_be_linted():
@@ -70,11 +86,12 @@ def test_no_first_party_shell_script_is_excluded_from_the_lint_gate():
     assert not dropped, (f"prek.toml's `exclude` drops these first-party shell scripts out of the lint gate: {dropped}")
 
 
-def test_prek_has_no_top_level_files_include():
-    """A top-level `files` include-regex narrows every hook, invisibly to the check above."""
-    assert "files" not in _config(), (
-        "prek.toml grew a top-level `files` include-regex; it narrows every hook's matcher, so fold it "
-        "into test_no_first_party_shell_script_is_excluded_from_the_lint_gate before adding it"
+def test_prek_has_no_top_level_narrowing_key():
+    """A top-level `files` or `default_stages` narrows every hook at once, invisibly to the checks above."""
+    present = TOP_LEVEL_NARROWING_KEYS & _config().keys()
+    assert not present, (
+        f"prek.toml grew a top-level narrowing key: {sorted(present)}. Each narrows every hook's matcher or "
+        "stage participation at once, so fold its effect into the other checks in this file before adding it"
     )
 
 

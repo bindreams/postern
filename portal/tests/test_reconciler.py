@@ -74,8 +74,7 @@ def _make_mock_container(name, status="running", image_id="img1", network_id=NET
     network-mismatch recreate check. Pass a different value to exercise that
     check on purpose. The dict KEY ("eth0" here) is irrelevant to the check --
     reconciler._container_network_ids reads NetworkID, not the key (see its
-    docstring for why: docker-py keys NetworkSettings.Networks by the
-    network's canonical NAME regardless of what was passed at create time)."""
+    docstring for why)."""
     container = MagicMock()
     container.name = name
     container.status = status
@@ -483,8 +482,7 @@ def test_recreates_container_on_network_change():
     # A non-default value, not "shadowsocks" (_make_settings()'s literal default):
     # asserting call_args against settings.shadowsocks_network below would be
     # tautological otherwise -- indistinguishable from a regression that
-    # hardcoded the literal "shadowsocks" instead of reading the setting,
-    # exactly the class of bug issue #202 fixed at the compose-file level.
+    # hardcoded the literal "shadowsocks" instead of reading the setting.
     settings = _make_settings().model_copy(update={"shadowsocks_network": "custom-shadowsocks-net"})
 
     old_container = _make_mock_container("ss-abcdef123456789012345678", network_id="old-network-id")

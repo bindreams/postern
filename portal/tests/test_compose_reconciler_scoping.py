@@ -104,6 +104,29 @@ def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
 
 
 # Real Compose-CLI resolution ==========================================================================================
+def _run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
+    """Shell out to the real Compose CLI's `config --format json` and return
+    the parsed result. Shared by every `_compose_config*` helper below.
+    """
+    proc = subprocess.run(
+        ["docker", "compose", *compose_args, "config", "--format", "json"],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        # `config` is a local parse and normally returns in well under a second,
+        # but it is still a child process: a hung Docker-context probe or a
+        # credential-helper prompt would otherwise wedge the whole pytest run
+        # with no output. TimeoutExpired propagating (naming this specific
+        # child process) is the failure bound -- kept below pyproject.toml's
+        # global `timeout = 30` per-test bound so it can actually fire first,
+        # instead of a generic pytest-timeout traceback with no subprocess detail.
+        timeout=20,
+    )
+    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
 def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str | None) -> dict:
     """Resolve compose.yaml with the real Compose CLI and return its JSON.
 
@@ -121,23 +144,7 @@ def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str |
     env = {k: v for k, v in os.environ.items() if k != "SHADOWSOCKS_NETWORK"}
     if shell_env is not None:
         env["SHADOWSOCKS_NETWORK"] = shell_env
-    proc = subprocess.run(
-        ["docker", "compose", "-f", "compose.yaml", "config", "--format", "json"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        # `config` is a local parse and normally returns in well under a second,
-        # but it is still a child process: a hung Docker-context probe or a
-        # credential-helper prompt would otherwise wedge the whole pytest run
-        # with no output. TimeoutExpired propagating (naming this specific
-        # child process) is the failure bound -- kept below pyproject.toml's
-        # global `timeout = 30` per-test bound so it can actually fire first,
-        # instead of a generic pytest-timeout traceback with no subprocess detail.
-        timeout=20,
-    )
-    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
-    return json.loads(proc.stdout)
+    return _run_compose_config(["-f", "compose.yaml"], tmp_path, env)
 
 
 @pytest.mark.compose_cli
@@ -167,3 +174,51 @@ def test_compose_config_resolves_network_name_and_portal_env_identically(
     # this assertion's diff.
     portal_env = config["services"]["portal"]["environment"].get("SHADOWSOCKS_NETWORK", "<absent>")
     assert (net_name, portal_env) == (expected, expected)
+
+
+# e2e overlay merges (issue #218) ======================================================================================
+# e2e-mta.compose.yaml / e2e-mta-real.compose.yaml each rename
+# networks.e2e-shadowsocks.name relative to the base e2e.compose.yaml they're
+# layered onto -- a single-file YAML parse (the test above) cannot see what
+# THAT merge resolves to, which is exactly how #218 stayed invisible: the
+# portal's SHADOWSOCKS_NETWORK, read from e2e.compose.yaml alone, looked fine
+# in isolation while actually pointing at a network no service in the merged
+# project joins. Real Compose CLI merge is the only way to check this.
+# `config` never touches the filesystem at this path -- required (`:?`) by
+# e2e.compose.yaml itself (both overlays layer on top of it), but only
+# interpolated, never read.
+_E2E_BASE_ENV = {"POSTERN_E2E_TLS_DIR": "/nonexistent-for-config-resolution-only"}
+_E2E_MTA_REAL_ENV = {
+    **_E2E_BASE_ENV,
+    "MTA_TEST_DOMAIN": "test.example",
+    "MTA_TEST_DNS_PROVIDER": "cloudflare",
+    "MTA_TEST_ADMIN_EMAIL": "admin@test.example",
+}
+
+
+@pytest.mark.compose_cli
+@pytest.mark.parametrize(
+    ("overlay_relpath", "project_name", "extra_env"),
+    [
+        ("portal/tests/e2e/e2e-mta.compose.yaml", "postern-e2e-mta", _E2E_BASE_ENV),
+        ("portal/tests/e2e/e2e-mta-real.compose.yaml", "postern-e2e-mta-real", _E2E_MTA_REAL_ENV),
+    ],
+)
+def test_e2e_mta_overlay_merge_agrees_on_the_shadowsocks_network(overlay_relpath, project_name, extra_env):
+    """Resolve e2e.compose.yaml + the overlay together, the same way
+    conftest.py and .github/workflows/test.yaml invoke them (`-f
+    e2e.compose.yaml -f <overlay>`), and check the SAME invariant as
+    test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network: the portal's
+    resolved SHADOWSOCKS_NETWORK must be a network nginx actually joins in
+    the MERGED project, not just in either file read alone."""
+    env = dict(os.environ, **extra_env)
+    config = _run_compose_config(["-f", "portal/tests/e2e/e2e.compose.yaml", "-f", overlay_relpath, "-p", project_name],
+                                 REPO_ROOT, env)
+    portal_env = config["services"]["portal"]["environment"]["SHADOWSOCKS_NETWORK"]
+    networks = config["networks"] or {}
+    nginx_net_names = {(networks.get(key) or {}).get("name") for key in config["services"]["nginx"]["networks"]}
+    assert portal_env in nginx_net_names, (
+        f"portal's SHADOWSOCKS_NETWORK={portal_env!r} is not a network nginx joins in the merged "
+        f"{overlay_relpath} project (nginx is on {sorted(n for n in nginx_net_names if n)}); nginx could not "
+        "reach any ss-* container"
+    )

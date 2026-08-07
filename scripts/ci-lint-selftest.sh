@@ -113,8 +113,8 @@ grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/zero-match-
 # `git ls-files -z` (this oracle's own source, in
 # portal/tests/test_ci_lint_job.py) is NUL-safe both so a tracked filename
 # containing a literal newline round-trips intact AND so `while read -d ''`
-# on the far end doesn't silently drop the last entry, which a plain
-# '\0'.join(...) (a separator, not a terminator) did.
+# on the far end doesn't silently drop the last entry (a '\0'.join(...)
+# separator would).
 uv run --project portal --group dev python -c "
 import sys
 sys.path.insert(0, 'portal/tests')

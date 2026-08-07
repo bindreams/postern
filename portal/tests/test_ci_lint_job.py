@@ -8,14 +8,15 @@ job's own `(no files to check)` grep only fires when a hook matches *nothing*.
 Coverage for every OTHER linted language is checked differently, in
 scripts/ci-lint-run.sh, by diffing the tracked tree against
 `prek run --dry-run --all-files`'s own file lists rather than reimplementing
-prek's matcher rules here: a hand-enumerated language-tag set previously
-missed every hook with no explicit `types` restriction (editorconfig-checker,
+prek's matcher rules here: a hand-enumerated language-tag set would miss
+hooks with no explicit `types` restriction (editorconfig-checker,
 mixed-line-ending, the two shebang hooks -- which between them match nearly
 every tracked file), and shelling out to prek from every offline `pytest` run
 would also slow down the fast unit suite for a check that belongs in the lint
 job that already pays for a live prek invocation. Shell gets its own
 Python-side check here, and a live per-file reachability check in
-scripts/ci-lint-selftest.sh, because that is this issue's subject.
+scripts/ci-lint-selftest.sh, since shell is the language this gate exists to
+enforce.
 
 The expected set is derived from `identify`, the library whose `shell` tag the
 shellcheck hook's `types: [shell]` selector names, rather than from a pinned

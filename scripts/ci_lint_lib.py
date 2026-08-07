@@ -108,11 +108,25 @@ def first_party_shell_scripts() -> list[str]:
 # `types`/`types_or` (AND semantics for `types`, confirmed against
 # ~/.cache/prek/repos/*/.pre-commit-hooks.yaml at the time of writing).
 #
-# `format-section-comments` and `ty check` are deliberately absent: their
-# entire restriction is the `types_or`/`types` key already written in
-# prek.toml, so `test_no_hook_narrows_its_own_file_set_unexpectedly` already
-# covers them.
+# `ty check` is deliberately absent: `pass_filenames = false` makes it scan
+# the whole portal project regardless of its `types = ["python"]` restriction,
+# so no matcher narrowing can reduce what it actually checks. Every other
+# hook -- INCLUDING `format-section-comments`, despite `types_or` already
+# being a key written in prek.toml -- needs its own entry here:
+# `test_no_hook_narrows_its_own_file_set_unexpectedly` only asserts a
+# narrowing KEY is present and allow-listed, never the key's VALUE, so
+# narrowing an already-allow-listed `types_or`/`exclude_types`/etc. in place
+# (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to
+# it -- confirmed empirically: narrowing `types_or` from its 8-tag list down
+# to `["toml"]` drops this hook from ~129 files to 3 with every other guard
+# in this module and portal/tests/test_ci_lint_job.py still green.
 PER_HOOK_CHECKS: list[tuple[str, Callable[[frozenset[str]], bool], Callable[[str], bool]]] = [
+    (
+        "format section comments",
+        # OR semantics (types_or), matching prek.toml's format-section-comments hook.
+        lambda tags: bool({"rust", "python", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile"} & tags),
+        lambda path: True,
+    ),
     (
         "check that executables have shebangs",
         lambda tags: {"text", "executable"} <= tags,

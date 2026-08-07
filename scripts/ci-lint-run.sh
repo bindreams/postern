@@ -7,14 +7,27 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-# .tmp/ is gitignored, so a log left behind by an aborted run can't trip
-# scripts/deploy.sh's dirty-worktree check or get swept into a `git add -A`.
-# mktemp -d, not a fixed name: this script and scripts/ci-lint-selftest.sh
-# both scratch under .tmp/ci-lint*, and a fixed shared name means a second
-# concurrent invocation of either script can read or delete the other's
-# in-progress log.
+# Exclusive lock, held for this script's entire run, shared with
+# scripts/ci-lint-selftest.sh (same lock file): that script briefly writes a
+# real ty fixture under portal/src/postern/, and ty's `pass_filenames = false`
+# hook scans that whole directory regardless of git tracking -- so, without
+# this lock, a concurrent selftest run (a second terminal during local
+# debugging, or a retried job) could make THIS script's real `prek run
+# --all-files` fail on the other script's fixture, misread as a genuine type
+# error in first-party code.
 mkdir -p .tmp
+exec 9>.tmp/ci-lint.lock
+flock -x 9
+
+# A log left behind by an aborted run can't trip scripts/deploy.sh's
+# dirty-worktree check or get swept into a `git add -A` (.tmp/ is
+# gitignored). mktemp'd rather than a fixed name, as defense in depth
+# alongside the flock above. Removed on exit -- both logs are `cat`-ed to
+# stdout unconditionally below before any exit path, so nothing diagnostic is
+# lost, and a CI runner's workspace is torn down after the job anyway; the
+# trap is for repeated local runs, which would otherwise leak one directory each.
 SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-run-XXXXXX)"
+trap 'rm -rf "$SCRATCH_DIR"' EXIT
 LOG="$SCRATCH_DIR/prek.log"
 
 set +e

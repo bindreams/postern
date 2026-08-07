@@ -82,6 +82,5 @@ invalid-argument-type = "ignore"
 # scripts/ci_lint_lib.py via a `sys.path.insert(0, "scripts")` at runtime (the
 # same way scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh reach it from
 # a repo-root CWD), which ty cannot follow statically. Without this, ty reports
-# `unresolved-import` on every run, not just when the fixture in
-# ci-lint-selftest.sh is present.
+# `unresolved-import` on every run.
 extra-paths = ["../scripts"]

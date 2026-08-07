@@ -8,30 +8,38 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
+# Exclusive lock, held for this script's entire run, shared with
+# scripts/ci-lint-run.sh (same lock file): the ty fixture below briefly
+# exists as a real file under portal/src/postern/, and ty's
+# `pass_filenames = false` hook scans that whole directory regardless of git
+# tracking -- so a concurrent `ci-lint-run.sh` (a second terminal during
+# local debugging, or a retried job) would see the fixture as a genuine type
+# error in the real run, not just in this script's own fixtures. `mkdir -p`
+# both so a from-scratch checkout has somewhere for the lock file to live.
+mkdir -p .tmp
+exec 9>.tmp/ci-lint.lock
+flock -x 9
+
 # Scratch output lives under .tmp/ (gitignored) so a run that aborts before
 # the trap-based cleanup below can't trip scripts/deploy.sh's dirty-worktree
 # check or get swept into a `git add -A`. The two fixture files below are the
 # exception: prek matches them by their real, meaningful path (repo root for
 # `--files`, portal/src/postern/ for ty's whole-project scan), so they can't
-# move into the scratch dir.
-#
-# mktemp -d, not a fixed name: this script and scripts/ci-lint-run.sh both
-# scratch under .tmp/ci-lint*, and a fixed shared name means a second
-# concurrent invocation of either script (two terminals during local
-# debugging, or a retried job) deletes the other's in-progress log out from
-# under it via this script's own EXIT trap below -- surfacing as an opaque
-# "No such file or directory" on the log path instead of a lint result.
-mkdir -p .tmp
+# move into the scratch dir. mktemp'd rather than fixed names, as defense in
+# depth alongside the flock above and for a clearer diagnostic if the lock is
+# ever bypassed (e.g. a future edit that drops it from one of the two scripts).
 SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-selftest-XXXXXX)"
+FIXTURE_SH="$(mktemp --suffix=.sh .prek-gate-fixture-XXXXXX)"
+TY_FIXTURE="$(mktemp --suffix=.py portal/src/postern/_ty_gate_fixture_XXXXXX)"
 
 # A hard abort (SIGINT, a CI job cancel, any `exit 1` below) between creating
 # a fixture and its matching `rm` would otherwise leave it on disk -- and a
 # stray ty fixture left in portal/src/postern/ would poison the real prek run
 # in scripts/ci-lint-run.sh and be misread as a genuine type error. The trap
 # covers every exit path in one place instead of relying on in-line ordering.
-trap 'rm -rf "$SCRATCH_DIR" .prek-gate-fixture.sh portal/src/postern/_ty_gate_fixture.py' EXIT
+trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE"' EXIT
 
-cat >.prek-gate-fixture.sh <<'FIXTURE'
+cat >"$FIXTURE_SH" <<'FIXTURE'
 #!/usr/bin/env bash
 set -e
 f() { false; }
@@ -39,26 +47,24 @@ if f; then echo yes; fi
 export REV=$(git rev-parse HEAD)
 echo $REV
 FIXTURE
-test -s .prek-gate-fixture.sh || { echo "could not write the shell fixture -- setup failure"; exit 1; }
+test -s "$FIXTURE_SH" || { echo "could not write the shell fixture -- setup failure"; exit 1; }
 
 set +e
 uv run --project portal --group dev prek run shellcheck \
-  --files .prek-gate-fixture.sh >"$SCRATCH_DIR/shellcheck-fixture.log" 2>&1
+  --files "$FIXTURE_SH" >"$SCRATCH_DIR/shellcheck-fixture.log" 2>&1
 sc_status=$?
 set -e
-rm .prek-gate-fixture.sh
+rm "$FIXTURE_SH"
 
-printf 'x: int = "not an int"\n' >portal/src/postern/_ty_gate_fixture.py
-test -s portal/src/postern/_ty_gate_fixture.py ||
-  { echo "could not write the ty fixture -- setup failure"; exit 1; }
+printf 'x: int = "not an int"\n' >"$TY_FIXTURE"
+test -s "$TY_FIXTURE" || { echo "could not write the ty fixture -- setup failure"; exit 1; }
 
 set +e
 uv run --project portal --group dev prek run ty --all-files >"$SCRATCH_DIR/ty-fixture.log" 2>&1
 ty_status=$?
 set -e
-rm portal/src/postern/_ty_gate_fixture.py
-test ! -e portal/src/postern/_ty_gate_fixture.py ||
-  { echo "ty fixture cleanup failed -- aborting before it poisons the real run"; exit 1; }
+rm "$TY_FIXTURE"
+test ! -e "$TY_FIXTURE" || { echo "ty fixture cleanup failed -- aborting before it poisons the real run"; exit 1; }
 
 echo "--- shellcheck fixture ---"
 cat "$SCRATCH_DIR/shellcheck-fixture.log"

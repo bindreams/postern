@@ -76,8 +76,8 @@ def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expres
 
 
 def test_production_nginx_joins_the_shadowsocks_network():
-    """The fix is only worth anything if nginx is on the network the portal
-    puts tunnels on -- nginx proxies `http://ss-<token>` by Docker-DNS name."""
+    """nginx proxies `http://ss-<token>` by Docker-DNS name, so it must be
+    on the network the portal creates tunnels on."""
     compose = _load_compose("compose.yaml")
     assert "shadowsocks" in compose["services"]["nginx"]["networks"]
 
@@ -130,8 +130,11 @@ def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str |
         # `config` is a local parse and normally returns in well under a second,
         # but it is still a child process: a hung Docker-context probe or a
         # credential-helper prompt would otherwise wedge the whole pytest run
-        # with no output. TimeoutExpired propagating is the failure bound.
-        timeout=60,
+        # with no output. TimeoutExpired propagating (naming this specific
+        # child process) is the failure bound -- kept below pyproject.toml's
+        # global `timeout = 30` per-test bound so it can actually fire first,
+        # instead of a generic pytest-timeout traceback with no subprocess detail.
+        timeout=20,
     )
     assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
     return json.loads(proc.stdout)

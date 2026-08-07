@@ -279,6 +279,32 @@ def test_created_container_with_empty_network_id_is_started_not_recreated():
     client.containers.run.assert_not_called()  # not swept-and-recreated, just started
 
 
+def test_created_container_whose_start_keeps_failing_is_retried_not_recreated():
+    """When start() itself raises, the container is STILL `created` (real
+    Docker: still an empty NetworkID) on the re-fetch too -- this must
+    remain the pre-existing benign "retry start() next pass" outcome, not
+    escalate into destructive remove+recreate churn every pass just because
+    the empty NetworkID also looks like a network mismatch."""
+    conn = _make_connection()
+    settings = _make_settings()
+
+    stuck = _make_mock_container("ss-abcdef123456789012345678", status="created")
+    stuck.attrs["NetworkSettings"]["Networks"]["eth0"]["NetworkID"] = ""  # real created-state payload
+    stuck.start.side_effect = RuntimeError("start keeps failing")
+
+    client = MagicMock()
+    client.containers.list.return_value = [stuck]  # same stuck container at every re-fetch
+    client.images.get.return_value = MagicMock(id="img1")
+    client.networks.get.return_value = MagicMock(id=NETWORK_ID)
+
+    _reconcile_once(client, [conn], settings, INSTANCE_ID)
+
+    stuck.start.assert_called_once()
+    stuck.stop.assert_not_called()
+    stuck.remove.assert_not_called()
+    client.containers.run.assert_not_called()
+
+
 def test_reconcile_once_stops_early_when_shutdown_requested(caplog):
     """The cooperative-abort checkpoint: once _shutdown_requested is set, a
     pass must not start any further container operations -- an in-flight
@@ -390,7 +416,7 @@ def test_recreates_container_on_image_change():
     _assert_init_passed(client)
 
 
-# Recreate on network mismatch (issue #202: SHADOWSOCKS_NETWORK changed on a live deployment) ==========================
+# Recreate on network mismatch =========================================================================================
 def test_container_network_ids_reads_networkid_not_the_dict_key():
     """Reads the NetworkID value, not the NetworkSettings.Networks dict key --
     docker-py keys that dict by the network's canonical NAME regardless of
@@ -428,7 +454,12 @@ def test_recreates_container_on_network_change():
     wipe is skipped or fails (docker-proxy unreachable, or instance identity
     unresolvable at that moment)."""
     conn = _make_connection()
-    settings = _make_settings()
+    # A non-default value, not "shadowsocks" (_make_settings()'s literal default):
+    # asserting call_args against settings.shadowsocks_network below would be
+    # tautological otherwise -- indistinguishable from a regression that
+    # hardcoded the literal "shadowsocks" instead of reading the setting,
+    # exactly the class of bug issue #202 fixed at the compose-file level.
+    settings = _make_settings().model_copy(update={"shadowsocks_network": "custom-shadowsocks-net"})
 
     old_container = _make_mock_container("ss-abcdef123456789012345678", network_id="old-network-id")
     client = MagicMock()
@@ -442,17 +473,20 @@ def test_recreates_container_on_network_change():
     old_container.remove.assert_called()
     client.containers.run.assert_called_once()
     _assert_init_passed(client)
+    client.networks.get.assert_called_once_with("custom-shadowsocks-net")
     # The replacement must actually land on the NEW network -- an
     # assert_called_once() alone would also pass a regression that recreated
     # the container but kept it on the old network (e.g. omitting `network=`
     # or hardcoding a literal instead of settings.shadowsocks_network).
-    assert client.containers.run.call_args.kwargs["network"] == settings.shadowsocks_network
+    assert client.containers.run.call_args.kwargs["network"] == "custom-shadowsocks-net"
 
 
 def test_recreates_container_on_image_and_network_change():
     """Both stale at once must still recreate exactly once, not twice."""
     conn = _make_connection()
-    settings = _make_settings()
+    # Non-default value -- see test_recreates_container_on_network_change's
+    # comment for why the literal default would make this assertion tautological.
+    settings = _make_settings().model_copy(update={"shadowsocks_network": "custom-shadowsocks-net"})
 
     old_container = _make_mock_container("ss-abcdef123456789012345678", image_id="old_img", network_id="old-network-id")
     client = MagicMock()
@@ -465,7 +499,8 @@ def test_recreates_container_on_image_and_network_change():
     old_container.stop.assert_called_once()
     old_container.remove.assert_called_once()
     client.containers.run.assert_called_once()
-    assert client.containers.run.call_args.kwargs["network"] == settings.shadowsocks_network
+    client.networks.get.assert_called_once_with("custom-shadowsocks-net")
+    assert client.containers.run.call_args.kwargs["network"] == "custom-shadowsocks-net"
 
 
 def test_network_upgrade_skips_recreate_when_removal_fails(caplog):

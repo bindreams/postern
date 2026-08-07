@@ -164,10 +164,14 @@ def _container_network_ids(container: Container) -> set[str]:
     own canonical name, and the container would be recreated every pass,
     forever). A network deleted and recreated under the same name also gets
     a new ID, so comparing IDs (not names) is also what makes a stale
-    survivor from that case get recreated instead of silently kept. Missing/
-    empty NetworkSettings never happens for a real Docker inspect but is
-    treated as "attached to nothing" -- the conservative side, since the
-    caller's use is "recreate if not attached to the desired network."
+    survivor from that case get recreated instead of silently kept.
+
+    A `created`-status container (its `containers.run()` create succeeded
+    but start() has not, or hasn't yet) has a REAL, empty `NetworkID` for
+    its endpoint until start() actually runs -- returning the empty set for
+    that case is correct, but the caller must NOT treat "no IDs at all" the
+    same as "attached to a different network": that container hasn't
+    resolved its endpoint yet, not proven to be on the wrong one.
     """
     attrs = container.attrs or {}
     networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
@@ -570,8 +574,21 @@ def _reconcile_once(
         image_changed = attrs.get("Image") != current_image.id
         # Recreate on a stale network too, not just a stale image -- without
         # this check, a survivor of a failed wipe would stay on the OLD
-        # network forever.
-        network_changed = target_network_id is not None and target_network_id not in _container_network_ids(container)
+        # network forever. `bool(container_network_ids)` guards a container
+        # that has never successfully started (real Docker reports an EMPTY
+        # NetworkID for a `created` container's endpoint until start()
+        # actually runs -- verified against a live daemon): with no
+        # resolved endpoint at all, "attached to nothing" is unknown, not a
+        # proven mismatch, and the restart loop above already owns retrying
+        # its start() every pass. Without this guard a container whose
+        # start() keeps failing would additionally be torn down and
+        # recreated every pass, replacing a benign start-retry with
+        # destructive churn.
+        container_network_ids = _container_network_ids(container)
+        network_changed = (
+            target_network_id is not None and bool(container_network_ids)
+            and target_network_id not in container_network_ids
+        )
         if not image_changed and not network_changed:
             continue
 

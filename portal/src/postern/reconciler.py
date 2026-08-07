@@ -178,6 +178,22 @@ def _container_network_ids(container: Container) -> set[str]:
     return {info["NetworkID"] for info in networks.values() if info and info.get("NetworkID")}
 
 
+def _container_network_names(container: Container) -> set[str]:
+    """CONFIGURED network names -- the `NetworkSettings.Networks` dict KEYS,
+    set at container-CREATE time (before start()) and unaffected by whether
+    the referenced network still exists. This is the fallback `_reconcile_once`
+    uses for a `created`-status container, whose `_container_network_ids()`
+    is empty until start() actually runs: a container's OWN inspect payload
+    keeps naming the network it was configured for even after that network
+    is deleted out from under it, so comparing names here is what lets such
+    a container still be recognized as stale instead of being permanently
+    exempted for having no resolved ID yet.
+    """
+    attrs = container.attrs or {}
+    networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
+    return set(networks)
+
+
 def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
@@ -578,23 +594,32 @@ def _reconcile_once(
         image_changed = attrs.get("Image") != current_image.id
         # Recreate on a stale network too, not just a stale image -- without
         # this check, a survivor of a failed wipe would stay on the OLD
-        # network forever. The `status != "created"` guard is deliberately
-        # narrower than "has any resolved endpoint": it exempts ONLY a
-        # container that has never successfully started (see
-        # _container_network_ids' docstring for why that state has a real,
-        # empty NetworkID) -- the restart loop above already owns retrying
-        # its start() every pass, and without this guard a start() that
-        # keeps failing would additionally get torn down and recreated every
-        # pass. A RUNNING (or exited) container with zero resolved endpoints
-        # is a different, real case -- e.g. `docker network disconnect`
-        # against a live container -- and must still count as a proven
-        # mismatch and self-heal, not be silently exempted forever alongside
-        # the not-yet-started case.
-        container_network_ids = _container_network_ids(container)
-        network_changed = (
-            target_network_id is not None and (container_network_ids or container.status != "created")
-            and target_network_id not in container_network_ids
-        )
+        # network forever.
+        network_changed = False
+        if target_network_id is not None:
+            container_network_ids = _container_network_ids(container)
+            if container_network_ids:
+                # Normal case: compare resolved network IDENTITY (handles a
+                # network deleted and recreated under the same name -- see
+                # _container_network_ids' docstring).
+                network_changed = target_network_id not in container_network_ids
+            elif container.status == "created":
+                # Not yet started: no NetworkID to compare (see
+                # _container_network_ids' docstring for why that's real, not
+                # a bug), so fall back to the CONFIGURED network NAME, which
+                # IS set at create time. A container correctly configured for
+                # the target network whose start() just keeps failing must
+                # not be torn down every pass (the restart loop above already
+                # owns retrying it) -- but one whose configured network no
+                # longer matches, e.g. it was deleted while the container sat
+                # unstarted, is a proven mismatch and must still self-heal
+                # rather than being wedged forever.
+                network_changed = settings.shadowsocks_network not in _container_network_names(container)
+            else:
+                # Running (or exited) with zero resolved endpoints -- e.g.
+                # `docker network disconnect -f` against a live container --
+                # is a real, proven mismatch, not an unresolved one.
+                network_changed = True
         if not image_changed and not network_changed:
             continue
 

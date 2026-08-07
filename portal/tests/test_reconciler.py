@@ -66,21 +66,22 @@ def _make_connection(*, path_token="abcdef123456789012345678", enabled=True):
 NETWORK_ID = "net-shadowsocks-id"  # what client.networks.get(...).id resolves to by default (see below)
 
 
-def _make_mock_container(name, status="running", image_id="img1", network_id=NETWORK_ID):
-    """`network_id` defaults to NETWORK_ID, matching what a `client.networks.get(...)`
-    MagicMock stubbed with `MagicMock(id=NETWORK_ID)` resolves
-    `_make_settings()`'s `shadowsocks_network` to -- so tests that don't care
-    about network membership (most of them) don't accidentally trip the
-    network-mismatch recreate check. Pass a different value to exercise that
-    check on purpose. The dict KEY ("eth0" here) is irrelevant to the check --
-    reconciler._container_network_ids reads NetworkID, not the key (see its
-    docstring for why)."""
+def _make_mock_container(name, status="running", image_id="img1", network_id=NETWORK_ID, network_name="shadowsocks"):
+    """`network_id`/`network_name` default to NETWORK_ID / "shadowsocks",
+    matching what `_make_settings()`'s `shadowsocks_network` ("shadowsocks")
+    and a `client.networks.get(...)` MagicMock stubbed with `MagicMock(id=NETWORK_ID)`
+    resolve to -- so tests that don't care about network membership (most of
+    them) don't accidentally trip the network-mismatch recreate check. Pass
+    a different value to exercise that check on purpose. The dict KEY
+    (`network_name`) matters too, not just NetworkID: `_reconcile_once`
+    falls back to comparing it for a `created`-status container with no
+    resolved NetworkID yet (see reconciler._container_network_names)."""
     container = MagicMock()
     container.name = name
     container.status = status
     container.attrs = {
         "Image": image_id,
-        "NetworkSettings": {"Networks": {"eth0": {"NetworkID": network_id}}},
+        "NetworkSettings": {"Networks": {network_name: {"NetworkID": network_id}}},
     }
     return container
 
@@ -255,12 +256,17 @@ def test_created_container_with_empty_network_id_is_started_not_recreated():
     image/network recreate check must read POST-start container state (this
     test's `started` snapshot), not the pre-start listing that drove the
     restart loop, or a container that was just successfully started would
-    immediately be torn down again as a false network mismatch."""
+    immediately be torn down again as a false network mismatch.
+
+    `stuck`'s snapshot is built to DISAGREE with `started`'s on the
+    recreate verdict (a non-empty but WRONG NetworkID, vs. `started`'s
+    correct one) so this test actually fails if the post-start re-fetch is
+    dropped -- not just "no recreate happened", which an unrelated bug could
+    also produce. The exact re-fetch count is pinned too."""
     conn = _make_connection()
     settings = _make_settings()
 
-    stuck = _make_mock_container("ss-abcdef123456789012345678", status="created")
-    stuck.attrs["NetworkSettings"]["Networks"]["eth0"]["NetworkID"] = ""  # real created-state payload
+    stuck = _make_mock_container("ss-abcdef123456789012345678", status="created", network_id="stale-created-id")
     started = _make_mock_container("ss-abcdef123456789012345678", status="running")
 
     client = MagicMock()
@@ -274,6 +280,7 @@ def test_created_container_with_empty_network_id_is_started_not_recreated():
 
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
+    assert client.containers.list.call_count == 3
     stuck.start.assert_called_once()
     client.containers.run.assert_not_called()  # not swept-and-recreated, just started
 
@@ -283,12 +290,15 @@ def test_created_container_whose_start_keeps_failing_is_retried_not_recreated():
     Docker: still an empty NetworkID) on the re-fetch too -- this must
     remain the pre-existing benign "retry start() next pass" outcome, not
     escalate into destructive remove+recreate churn every pass just because
-    the empty NetworkID also looks like a network mismatch."""
+    the empty NetworkID also looks like a network mismatch. Its CONFIGURED
+    network name (`_make_mock_container`'s default "shadowsocks", matching
+    `_make_settings()`) does agree with the target, which is what makes this
+    case distinct from the "network deleted while created" test below."""
     conn = _make_connection()
     settings = _make_settings()
 
     stuck = _make_mock_container("ss-abcdef123456789012345678", status="created")
-    stuck.attrs["NetworkSettings"]["Networks"]["eth0"]["NetworkID"] = ""  # real created-state payload
+    stuck.attrs["NetworkSettings"]["Networks"]["shadowsocks"]["NetworkID"] = ""  # real created-state payload
     stuck.start.side_effect = RuntimeError("start keeps failing")
 
     client = MagicMock()
@@ -302,6 +312,35 @@ def test_created_container_whose_start_keeps_failing_is_retried_not_recreated():
     stuck.stop.assert_not_called()
     stuck.remove.assert_not_called()
     client.containers.run.assert_not_called()
+
+
+def test_created_container_whose_configured_network_was_deleted_self_heals():
+    """A `created` container's configured network can be deleted out from
+    under it while start() keeps failing (verified end-to-end: `docker
+    network rm` succeeds against a network only a `created` container
+    references, and the container's status/empty NetworkID never change
+    afterward). Its NetworkSettings.Networks dict KEY still names the OLD
+    network, though -- that must be recognized as a proven mismatch (not
+    exempted the way the "correctly configured, start failing" case above
+    is), or the tunnel is wedged forever with no self-heal."""
+    conn = _make_connection()
+    settings = _make_settings()
+
+    stuck = _make_mock_container(
+        "ss-abcdef123456789012345678", status="created", network_id="", network_name="old-deleted-network"
+    )
+    stuck.start.side_effect = RuntimeError("start keeps failing: network old-deleted-network not found")
+
+    client = MagicMock()
+    client.containers.list.return_value = [stuck]
+    client.images.get.return_value = MagicMock(id="img1")
+    client.networks.get.return_value = MagicMock(id=NETWORK_ID)  # the NEW, current target network
+
+    _reconcile_once(client, [conn], settings, INSTANCE_ID)
+
+    stuck.stop.assert_called()
+    stuck.remove.assert_called()
+    client.containers.run.assert_called_once()
 
 
 def test_running_container_with_zero_networks_is_a_proven_mismatch():

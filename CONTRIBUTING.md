@@ -14,7 +14,7 @@ prek install           # git hooks (pre-commit + commit-msg)
 ## Before opening a PR
 
 1. `cd portal && uv run pytest` — all tests pass.
-1. `prek run --all-files` — clean.
+1. `prek run --all-files` — clean. CI runs the same thing in the `Lint (prek)` job.
 1. `external/` unchanged, unless the PR is intentionally pulling a new upstream ref.
 1. Commit subjects are single-line [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
 

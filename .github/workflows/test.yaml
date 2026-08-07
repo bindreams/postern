@@ -7,6 +7,115 @@ on:
   workflow_call:
 
 jobs:
+  lint:
+    name: Lint (prek)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # prek is a portal dev dependency (pinned by portal/uv.lock, like ty and
+      # yapf), and its own `ty` hook shells out to `uv run` again.
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      # uv.lock is in the key because it pins prek itself, and prek owns the
+      # on-disk layout of these environments; prek.toml's `rev =` pins are what
+      # populates them. The two move independently.
+      - name: Cache prek hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ hashFiles('prek.toml', 'portal/uv.lock') }}
+
+      # Isolation from the real run is the `rm` lines, NOT the `--files`
+      # argument. The shellcheck fixture is untracked and `--all-files`
+      # enumerates via `git ls-files`, so that one is doubly safe -- but the ty
+      # hook sets `pass_filenames = false`, so prek passes it no filenames at all
+      # and `ty` scans the whole portal project off the filesystem. A ty fixture
+      # left on disk would poison the real run and be misread as a genuine type
+      # error. Hence plain `rm` plus an explicit gone-check, not `rm -f`.
+      - name: Lint-gate self-test (known-bad fixtures must FAIL)
+        run: |
+          cat > .prek-gate-fixture.sh <<'FIXTURE'
+          #!/usr/bin/env bash
+          export REV=$(git rev-parse HEAD)
+          echo $REV
+          FIXTURE
+          test -s .prek-gate-fixture.sh || { echo "could not write the shell fixture -- setup failure"; exit 1; }
+
+          set +e
+          uv run --project portal --group dev prek run shellcheck \
+            --files .prek-gate-fixture.sh > shellcheck-fixture.log 2>&1
+          sc_status=$?
+          set -e
+          rm .prek-gate-fixture.sh
+
+          printf 'x: int = "not an int"\n' > portal/src/postern/_ty_gate_fixture.py
+          test -s portal/src/postern/_ty_gate_fixture.py \
+            || { echo "could not write the ty fixture -- setup failure"; exit 1; }
+
+          set +e
+          uv run --project portal --group dev prek run ty --all-files > ty-fixture.log 2>&1
+          ty_status=$?
+          set -e
+          rm portal/src/postern/_ty_gate_fixture.py
+          test ! -e portal/src/postern/_ty_gate_fixture.py \
+            || { echo "ty fixture cleanup failed -- aborting before it poisons the real run"; exit 1; }
+
+          echo "--- shellcheck fixture ---"; cat shellcheck-fixture.log
+          echo "--- ty fixture ---";         cat ty-fixture.log
+
+          # Assert the hook RAN before judging what it found: a prek install
+          # failure or an unreachable hook repo also produces "no SC2155", and
+          # reporting that as a dead lint gate would misdiagnose an outage.
+          grep -qE '^shellcheck\.+(Failed|Passed)' shellcheck-fixture.log \
+            || { echo "prek never ran the shellcheck hook -- install/clone failure?"; exit 1; }
+          test "$sc_status" -ne 0 \
+            || { echo "shellcheck passed a known-bad script -- the shell gate is dead"; exit 1; }
+          grep -q SC2155 shellcheck-fixture.log || { echo "no SC2155 finding -- the shell gate is dead"; exit 1; }
+          grep -q SC2086 shellcheck-fixture.log || { echo "no SC2086 finding -- the shell gate is dead"; exit 1; }
+
+          grep -qE '^ty check\.+(Failed|Passed)' ty-fixture.log \
+            || { echo "prek never ran the ty hook -- install failure?"; exit 1; }
+          test "$ty_status" -ne 0 \
+            || { echo "ty passed a known-bad annotation -- the type gate is dead"; exit 1; }
+          grep -q 'invalid-assignment' ty-fixture.log || { echo "no invalid-assignment -- the type gate is dead"; exit 1; }
+          grep -q '_ty_gate_fixture' ty-fixture.log || { echo "ty never saw the fixture -- the type gate is dead"; exit 1; }
+
+          rm -f shellcheck-fixture.log ty-fixture.log
+
+      # The real run, plus guard 2. `--color=always` is deliberately omitted:
+      # ANSI escapes in the status lines would break the greps below, and GitHub
+      # renders the plain output fine.
+      #
+      # The zero-match grep catches a matcher that selects NOTHING and nothing
+      # more -- a hook that merely lost some of its files still prints `Passed`.
+      # Partial narrowing is portal/tests/test_ci_lint_job.py's job.
+      - name: Run every prek hook over the whole tree
+        run: |
+          set +e
+          uv run --project portal --group dev prek run --all-files --show-diff-on-failure > prek.log 2>&1
+          status=$?
+          set -e
+          cat prek.log
+
+          grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed)' prek.log \
+            || { echo "prek ran no hooks at all -- install/clone failure, not a lint result"; exit 1; }
+
+          # Both greps are line-anchored to a hook status line. `--show-diff-on-failure`
+          # puts every rewritten file's diff into this same log, and this change puts the
+          # literal "(no files to check)" into CLAUDE.md and test_ci_lint_job.py -- an
+          # unanchored search would fire on mdformat's or yapf's own diff and report
+          # "the gate is dead" for a routine formatting failure.
+          if grep -qE '^[A-Za-z].*\(no files to check\)Skipped$' prek.log; then
+            echo "a hook matched no files -- its half of the gate is dead:"
+            grep -E '^[A-Za-z].*\(no files to check\)Skipped$' prek.log
+            exit 1
+          fi
+
+          exit "$status"
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest

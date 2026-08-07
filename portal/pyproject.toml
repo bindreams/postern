@@ -34,6 +34,8 @@ dev = [
     "asgi-lifespan>=2.1.0",
     "mmdb-writer>=0.2",
     "pyyaml>=6.0",
+    "prek>=0.4.12",
+    "identify>=2.6",
 ]
 e2e = [
     {include-group = "dev"},

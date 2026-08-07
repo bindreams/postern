@@ -152,6 +152,22 @@ def _container_name(conn: Connection) -> str:
     return f"ss-{conn.path_token}"
 
 
+def _container_networks(container: Container) -> set[str]:
+    """Names of the Docker networks `container` is currently attached to,
+    read from the same `.attrs` inspect payload the image-change check
+    already has -- no extra Docker API call. docker-py's
+    `containers.run(network=<name>)` keys `NetworkSettings.Networks` by the
+    network NAME passed at create time, matching `settings.shadowsocks_network`
+    on the happy path (and, post-#202, exactly what compose.yaml names the
+    real Docker network). Missing/empty NetworkSettings never happens for a
+    real Docker inspect but is treated as "attached to nothing" -- the
+    conservative side, since the caller's use is "recreate if not attached
+    to the desired network."
+    """
+    attrs = container.attrs or {}
+    return set(((attrs.get("NetworkSettings") or {}).get("Networks")) or {})
+
+
 def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
@@ -516,28 +532,52 @@ def _reconcile_once(
         if _shutdown_requested.is_set():
             logger.info("Shutdown requested; stopping reconcile pass early")
             return
+        if name not in desired_names:
+            continue
         # container.attrs["Image"] is the image ID stored on the container at create
         # time. Cheaper than container.image.id (which does an images.get() lookup
         # and 404s when the old image has been garbage-collected after rebuild).
         attrs = container.attrs or {}
-        if name in desired_names and attrs.get("Image") != current_image.id:
+        image_changed = attrs.get("Image") != current_image.id
+        # Recreate on a stale network too, not just a stale image. An operator
+        # changing SHADOWSOCKS_NETWORK on a live deployment relies on this: the
+        # portal's own restart-and-wipe normally handles it, but that wipe is
+        # best-effort (cleanup_all_containers no-ops if the docker-proxy is
+        # unreachable at shutdown, or this instance's identity can't be
+        # resolved) -- without this check, a survivor of a failed wipe would
+        # stay on the OLD network forever, since image-ID mismatch was
+        # previously the only recreate trigger.
+        network_changed = settings.shadowsocks_network not in _container_networks(container)
+        if not image_changed and not network_changed:
+            continue
+
+        if image_changed and network_changed:
+            logger.info("Image and network changed for %s, recreating", name)
+            stale = "image and network"
+        elif image_changed:
             logger.info("Image changed for %s, recreating", name)
-            conn = next(c for c in connections if _container_name(c) == name)
-            if _remove_container(container):
-                _create_container_logged(client, conn, settings, instance_id)
-            else:
-                # Recreating now would just 409 against the container we failed to
-                # remove -- _log_name_conflict would then log "a prior removal
-                # likely failed silently... will retry" every pass forever with no
-                # escalation, while the tunnel keeps serving the OLD image
-                # indefinitely (exactly what image-change detection exists to
-                # prevent). Escalate here instead, once, at the point we actually
-                # know removal failed.
-                logger.error(
-                    "Could not remove %s to recreate it on the new image; it still serves the OLD "
-                    "image and will be retried next pass",
-                    name,
-                )
+            stale = "image"
+        else:
+            logger.info("Network changed for %s, recreating", name)
+            stale = "network"
+
+        conn = next(c for c in connections if _container_name(c) == name)
+        if _remove_container(container):
+            _create_container_logged(client, conn, settings, instance_id)
+        else:
+            # Recreating now would just 409 against the container we failed to
+            # remove -- _log_name_conflict would then log "a prior removal
+            # likely failed silently... will retry" every pass forever with no
+            # escalation, while the tunnel keeps serving the OLD config
+            # indefinitely (exactly what this check exists to prevent). Escalate
+            # here instead, once, at the point we actually know removal failed.
+            logger.error(
+                "Could not remove %s to recreate it on the new %s; it still serves the OLD "
+                "%s and will be retried next pass",
+                name,
+                stale,
+                stale,
+            )
 
 
 def _reconcile_pass(

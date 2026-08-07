@@ -42,9 +42,32 @@ NARROWING_KEYS = frozenset({"files", "exclude", "types", "types_or", "exclude_ty
 # upstream -- confirmed empirically, exit 0, no diagnostic.
 TOP_LEVEL_NARROWING_KEYS = frozenset({"files", "default_stages"})
 
+# The complete hook roster, keyed the same way as `test_no_hook_narrows_its_own_file_set_unexpectedly`'s
+# `narrowing` set. Every check above is a subset assertion over keys *present*
+# in prek.toml, so all of them are blind to a hook being deleted outright --
+# confirmed empirically, dropping yapf's `hooks = [...]` entry to `[]` still
+# passes every narrowing check and leaves `--all-files` exiting 0 with no
+# `Skipped` line. Pinning the exact roster here is what catches that.
+EXPECTED_HOOKS = frozenset({
+    "format section comments",
+    "ty check",
+    "check-executables-have-shebangs",
+    "check-shebang-scripts-are-executable",
+    "mixed-line-ending",
+    "shellcheck",
+    "editorconfig-checker",
+    "yapf",
+    "mdformat",
+    "mdformat (myst)",
+})
+
 
 def _config() -> dict:
     return tomllib.loads(PREK_CONFIG.read_text(encoding="utf-8"))
+
+
+def _hooks() -> list[dict]:
+    return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
 
 
 def _tracked_files() -> list[str]:
@@ -55,17 +78,20 @@ def _tracked_files() -> list[str]:
 def _is_first_party_shell_script(path: str) -> bool:
     if path.startswith(VENDORED):
         return False
+    full_path = REPO_ROOT / path
     try:
-        tags = tags_from_path(REPO_ROOT / path)
-    except ValueError:
+        full_path.lstat()
+    except FileNotFoundError:
         # Indexed but missing from the working tree (staged deletion, sparse
         # checkout) -- an ordinary transient state, not a broken checkout.
-        # Any other error is left to propagate: git guarantees a present,
-        # tracked file is readable, so an unreadable one really is a broken
-        # checkout, and swallowing that would drop the path from the set this
-        # module exists to defend.
         return False
-    return "shell" in tags
+    # Any other lstat failure (permission, ELOOP, stale mount, ...) propagates
+    # here rather than being swallowed: `identify.tags_from_path` re-raises
+    # every stat failure -- not just a missing file -- as the same generic
+    # `ValueError`, so catching that broadly would treat "this tracked file is
+    # unreadable" identically to "this file doesn't exist yet", silently
+    # dropping the path from the set this module exists to defend.
+    return "shell" in tags_from_path(full_path)
 
 
 def _first_party_shell_scripts() -> list[str]:
@@ -84,6 +110,16 @@ def test_no_first_party_shell_script_is_excluded_from_the_lint_gate():
     dropped = [path for path in _first_party_shell_scripts() if exclude and re.search(exclude, path)]
 
     assert not dropped, (f"prek.toml's `exclude` drops these first-party shell scripts out of the lint gate: {dropped}")
+
+
+def test_prek_has_exactly_the_expected_hooks():
+    """Deleting a hook (or a whole [[repos]] block) passes every subset-based check above silently -- pin the roster."""
+    actual = {hook.get("name", hook.get("id")) for hook in _hooks()}
+    assert actual == EXPECTED_HOOKS, (
+        f"prek.toml's hook roster changed: missing {sorted(EXPECTED_HOOKS - actual)}, "
+        f"added {sorted(actual - EXPECTED_HOOKS)}. If a hook was deliberately added or removed, update "
+        "EXPECTED_HOOKS (and, for a removed shellcheck/ty, scripts/ci-lint-selftest.sh's fixtures)"
+    )
 
 
 def test_prek_has_no_top_level_narrowing_key():
@@ -118,10 +154,7 @@ def test_no_hook_narrows_its_own_file_set_unexpectedly():
         ("mdformat", "exclude"),
         ("mdformat (myst)", "files"),
     }
-    narrowing = {(hook.get("name", hook.get("id")), key)
-                 for repo in _config()["repos"]
-                 for hook in repo.get("hooks", [])
-                 for key in hook if key in NARROWING_KEYS}
+    narrowing = {(hook.get("name", hook.get("id")), key) for hook in _hooks() for key in hook if key in NARROWING_KEYS}
 
     assert narrowing <= allowed, (
         f"these hooks narrow their own file matcher: {sorted(narrowing - allowed)}. prek reports a narrowed "

@@ -110,7 +110,10 @@ services:
       # sole writer in production; the test helper replicates that atomic-rename
       # pattern to trigger the inotifyd watcher).
       - postern-edge:/var/lib/postern-edge:ro
-    networks: [default]
+    # e2e-shadowsocks-edge: matches the portal's SHADOWSOCKS_NETWORK above so nginx
+    # can reach any ss-* container the reconciler creates -- mirrors e2e.compose.yaml's
+    # nginx/e2e-shadowsocks pairing.
+    networks: [default, e2e-shadowsocks-edge]
     depends_on:
       portal:
         condition: service_healthy

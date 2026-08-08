@@ -15,6 +15,8 @@ import docker
 import docker.errors
 import docker.types
 from docker.models.containers import Container
+from docker.models.images import Image
+from docker.models.networks import Network
 
 from postern import db, reconcile_wait
 from postern.models import Connection
@@ -150,6 +152,98 @@ async def wait_for_inflight_reconcile() -> None:
 
 def _container_name(conn: Connection) -> str:
     return f"ss-{conn.path_token}"
+
+
+def _container_network_ids(container: Container) -> set[str]:
+    """IDs of the Docker networks `container` is currently attached to, read
+    from the same `.attrs` inspect payload the image-change check already
+    has -- no extra Docker API call.
+
+    Deliberately IDs, not the `NetworkSettings.Networks` dict KEYS (which
+    docker-py's `containers.run(network=<name>)` sets to the network's
+    canonical name regardless of what was passed at create time -- a value
+    that happens to be a network ID or ID prefix would then never match its
+    own canonical name, and the container would be recreated every pass,
+    forever). A network deleted and recreated under the same name also gets
+    a new ID, so comparing IDs (not names) is also what makes a stale
+    survivor from that case get recreated instead of silently kept.
+
+    A `created`-status container (its `containers.run()` create succeeded
+    but start() has not, or hasn't yet) has a REAL, empty `NetworkID` for
+    its endpoint until start() actually runs -- returning the empty set for
+    that case is correct, but the caller must NOT treat "no IDs at all" the
+    same as "attached to a different network": that container hasn't
+    resolved its endpoint yet, not proven to be on the wrong one.
+    """
+    attrs = container.attrs or {}
+    networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
+    return {info["NetworkID"] for info in networks.values() if info and info.get("NetworkID")}
+
+
+def _recreate_reasons(container: Container, current_image: Image | None, target_network: Network | None) -> list[str]:
+    """The reasons `container` no longer matches desired state and must be
+    recreated: its recorded image differs from `current_image`, and/or it
+    isn't attached to `target_network`. Returns a LIST, not a bool, so the
+    caller can report every reason at once and so a third staleness axis
+    (added later) is one more `if` here, not a new branch at each call site.
+
+    `current_image`/`target_network` are `None` when that lookup itself
+    failed this pass (see `_reconcile_once`) -- the corresponding axis is
+    then skipped entirely, never treated as a mismatch: recreating on the
+    strength of an unresolved desired state risks destroying a working
+    container for nothing.
+    """
+    reasons = []
+    attrs = container.attrs or {}
+    # container.attrs["Image"] is the image ID stored on the container at create
+    # time. Cheaper than container.image.id (which does an images.get() lookup
+    # and 404s when the old image has been garbage-collected after rebuild).
+    if current_image is not None and attrs.get("Image") != current_image.id:
+        reasons.append("image")
+
+    if target_network is not None:
+        container_network_ids = _container_network_ids(container)
+        if container_network_ids:
+            # Normal case: compare resolved network IDENTITY (handles a
+            # network deleted and recreated under the same name -- see
+            # _container_network_ids' docstring).
+            if target_network.id not in container_network_ids:
+                reasons.append("network")
+        elif container.status == "created":
+            # Not yet started: no NetworkID to compare (see
+            # _container_network_ids' docstring for why that's real, not a
+            # bug), so fall back to the CONFIGURED network NAME -- Docker's
+            # own canonical name (`target_network.name`), not
+            # `settings.shadowsocks_network` verbatim: that setting may
+            # itself be a network ID, and comparing the raw string here
+            # would reintroduce the exact ID-vs-name mismatch the ID
+            # comparison above exists to avoid. A container correctly
+            # configured for the target network whose start() just keeps
+            # failing must not be torn down every pass (the restart loop
+            # above already owns retrying it) -- but one whose configured
+            # network no longer matches, e.g. it was deleted while the
+            # container sat unstarted, is a proven mismatch and must still
+            # self-heal rather than being wedged forever.
+            if target_network.name not in _container_network_names(container):
+                reasons.append("network")
+        else:
+            # Running (or exited) with zero resolved endpoints -- e.g.
+            # `docker network disconnect -f` against a live container -- is
+            # a real, proven mismatch, not an unresolved one.
+            reasons.append("network")
+
+    return reasons
+
+
+def _container_network_names(container: Container) -> set[str]:
+    """CONFIGURED network names -- the `NetworkSettings.Networks` dict KEYS,
+    set at create time and unaffected by whether the network still exists.
+    Fallback `_recreate_reasons` uses for a `created`-status container; see
+    its comments for why.
+    """
+    attrs = container.attrs or {}
+    networks = ((attrs.get("NetworkSettings") or {}).get("Networks")) or {}
+    return set(networks)
 
 
 def _get_docker_client() -> docker.DockerClient:
@@ -505,39 +599,80 @@ def _reconcile_once(
             except Exception:
                 logger.exception("Failed to start container %s", name)
 
-    # Check for image updates ------------------------------------------------------------------------------------------
+    # Check for image/network updates ----------------------------------------------------------------------------------
+    # Re-fetch again: container.start() above does not update the already-fetched
+    # `managed` containers' .attrs in place, and its network attach isn't visible
+    # until start() runs (see _container_network_ids' docstring) -- reading the
+    # pre-start snapshot here would wrongly recreate a container just successfully
+    # started.
+    managed = _list_managed_containers(client, instance_id)
+    # Broad except on both lookups: docker.errors.ImageNotFound / a
+    # docker-proxy hiccup (generic APIError) / an empty SHADOWSOCKS_NETWORK
+    # (docker.errors.NullResource, a ValueError, not an APIError) must all
+    # degrade the same way -- log and leave the axis None, never raise out
+    # of _reconcile_once.
     try:
         current_image = client.images.get(settings.shadowsocks_image)
-    except docker.errors.ImageNotFound:
-        logger.error("Image '%s' disappeared mid-pass; skipping upgrade check", settings.shadowsocks_image)
+    except Exception:
+        logger.error(
+            "Could not resolve image '%s'; skipping recreate checks this pass",
+            settings.shadowsocks_image,
+            exc_info=True,
+        )
+        current_image = None
+
+    try:
+        target_network = client.networks.get(settings.shadowsocks_network)
+    except Exception:
+        logger.error(
+            "Could not resolve network '%s'; skipping recreate checks this pass",
+            settings.shadowsocks_network,
+            exc_info=True,
+        )
+        target_network = None
+
+    if current_image is None or target_network is None:
+        # A replacement is always built from settings.shadowsocks_image +
+        # settings.shadowsocks_network (see _create_container), never from
+        # these resolved objects -- so if EITHER failed to resolve, a
+        # remove-then-create on the strength of the OTHER axis alone risks
+        # destroying a working container and then failing to replace it,
+        # using the exact resource that just failed to resolve. Skip the
+        # whole recreate-and-destroy step for every container this pass
+        # rather than treating the axes as independent past this point; the
+        # next pass retries both lookups fresh.
         return
 
     for name, container in managed.items():
         if _shutdown_requested.is_set():
             logger.info("Shutdown requested; stopping reconcile pass early")
             return
-        # container.attrs["Image"] is the image ID stored on the container at create
-        # time. Cheaper than container.image.id (which does an images.get() lookup
-        # and 404s when the old image has been garbage-collected after rebuild).
-        attrs = container.attrs or {}
-        if name in desired_names and attrs.get("Image") != current_image.id:
-            logger.info("Image changed for %s, recreating", name)
-            conn = next(c for c in connections if _container_name(c) == name)
-            if _remove_container(container):
-                _create_container_logged(client, conn, settings, instance_id)
-            else:
-                # Recreating now would just 409 against the container we failed to
-                # remove -- _log_name_conflict would then log "a prior removal
-                # likely failed silently... will retry" every pass forever with no
-                # escalation, while the tunnel keeps serving the OLD image
-                # indefinitely (exactly what image-change detection exists to
-                # prevent). Escalate here instead, once, at the point we actually
-                # know removal failed.
-                logger.error(
-                    "Could not remove %s to recreate it on the new image; it still serves the OLD "
-                    "image and will be retried next pass",
-                    name,
-                )
+        if name not in desired_names:
+            continue
+
+        reasons = _recreate_reasons(container, current_image, target_network)
+        if not reasons:
+            continue
+        stale = " and ".join(reasons)
+        logger.info("%s changed for %s, recreating", stale.capitalize(), name)
+
+        conn = next(c for c in connections if _container_name(c) == name)
+        if _remove_container(container):
+            _create_container_logged(client, conn, settings, instance_id)
+        else:
+            # Recreating now would just 409 against the container we failed to
+            # remove -- _log_name_conflict would then log "a prior removal
+            # likely failed silently... will retry" every pass forever with no
+            # escalation, while the tunnel keeps serving the OLD config
+            # indefinitely (exactly what this check exists to prevent). Escalate
+            # here instead, once, at the point we actually know removal failed.
+            logger.error(
+                "Could not remove %s to recreate it on the new %s; it still serves the OLD "
+                "%s and will be retried next pass",
+                name,
+                stale,
+                stale,
+            )
 
 
 def _reconcile_pass(

@@ -139,6 +139,11 @@ services:
       # file's own text and does not assume it is always layered onto the
       # base file. Redundant, not conflicting, when it is.
       SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
+      # This file renames networks.e2e-shadowsocks.name below to
+      # e2e-shadowsocks-mta-real; without restating this, the portal would
+      # inherit e2e.compose.yaml's literal "e2e-shadowsocks", a network no
+      # service in this project joins.
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks-mta-real
     volumes:
       - postern-mta-data:/var/lib/opendkim:ro
     networks: [default, mta-submit]

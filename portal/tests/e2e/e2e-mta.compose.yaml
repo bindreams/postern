@@ -129,6 +129,11 @@ services:
       # file's own text and does not assume it is always layered onto the
       # base file. Redundant, not conflicting, when it is.
       SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
+      # This file renames networks.e2e-shadowsocks.name below to
+      # e2e-shadowsocks-mta; without restating this, the portal would inherit
+      # e2e.compose.yaml's literal "e2e-shadowsocks", a network no service in
+      # this project joins.
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks-mta
     # Mirror production: read-only mount of the DKIM keydir so the test fixtures
     # can read state.json and <selector>.txt via `compose exec portal python -c ...`
     # (the portal is distroless, but `python` is available).

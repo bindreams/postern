@@ -218,6 +218,15 @@ def _check_submission_chain(path: Path, *, exempt: frozenset[Path]) -> str | Non
     net = (load_compose(path).get("networks") or {}).get(SUBMIT_ALIAS)
     cidr = _service_environment(path, "mta").get("MTA_SUBMIT_CIDR")
     subnet = _pinned_subnet_of(net, where=rel)
+
+    # Checked whenever the file declares the network at all, independent of
+    # whether it also pins a subnet/CIDR: a file that re-opens mta-submit only
+    # to (accidentally or otherwise) drop `internal: true` would let any
+    # service on the host relay through mta unauthenticated, and that hazard
+    # doesn't depend on the same file also pinning IPAM.
+    if net is not None and path not in exempt:
+        assert net.get("internal") is True, f"{rel}: {SUBMIT_ALIAS} network must be internal: true"
+
     if subnet is None and cidr is None:
         return None
     if path in exempt:
@@ -232,17 +241,28 @@ def _check_submission_chain(path: Path, *, exempt: frozenset[Path]) -> str | Non
         f"entrypoint.py's default and mynetworks won't match. If this file inherits the env from a "
         f"base file, add it to _PARTIAL_SUBMISSION_OVERLAYS."
     )
-    # subnet is not None (just asserted) only when _pinned_subnet_of found a
-    # config entry on `net`, so `net` itself can't be None here -- spelled
-    # out for ty, which can't see that cross-function invariant.
-    assert net is not None
-    assert net.get("internal") is True, f"{rel}: {SUBMIT_ALIAS} network must be internal: true"
     assert cidr == subnet, (
         f"{rel}: MTA_SUBMIT_CIDR ({cidr!r}) != {SUBMIT_ALIAS} subnet ({subnet!r}). "
         "mynetworks and opendkim TrustedHosts are both rendered from MTA_SUBMIT_CIDR, "
         "so a mismatch silently breaks submission or DKIM signing."
     )
     return rel
+
+
+def test_submission_chain_checks_internal_flag_even_without_a_pinned_subnet(monkeypatch):
+    """A file that re-opens `mta-submit` to (say) accidentally drop `internal:
+    true`, without itself pinning a subnet or MTA_SUBMIT_CIDR, must still fail
+    -- the unauthenticated-relay hazard doesn't depend on the same file also
+    owning the IPAM config. Synthetic: no real compose file does this today."""
+    fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-internal-false-overlay.compose.yaml"
+    fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": False}}}
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "load_compose",
+        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
+    )
+    with pytest.raises(AssertionError, match="must be internal: true"):
+        _check_submission_chain(fake_path, exempt=frozenset())
 
 
 def test_partial_submission_overlay_exemption_skips_files_that_would_otherwise_fail(monkeypatch):
@@ -255,7 +275,9 @@ def test_partial_submission_overlay_exemption_skips_files_that_would_otherwise_f
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-partial-overlay.compose.yaml"
     fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": True, "ipam": {"config": [{"subnet": "10.0.0.0/29"}]}}}}
     monkeypatch.setattr(
-        sys.modules[__name__], "load_compose", lambda path: fake_compose if path == fake_path else load_compose(path)
+        sys.modules[__name__],
+        "load_compose",
+        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
     )
     # Not exempt: the synthetic data really does fail the chain check.
     with pytest.raises(AssertionError, match="pins a mta-submit subnet but sets no MTA_SUBMIT_CIDR"):
@@ -394,16 +416,18 @@ def parse_published_ports(entries: list, *, where: str) -> list[tuple[str | None
     entries; the repo's own compose files exercise only the two supported
     forms.
     """
+    valid_protocols = {"tcp", "udp", "sctp"}
     found = []
     for entry in entries:
         if isinstance(entry, dict):
             published = entry.get("published")
             assert published is not None, f"{where}: long-form ports entry {entry!r} has no `published`; " \
                                           "Docker picks an ephemeral host port -- extend this parser"
-            host_ip, spec, protocol = entry.get("host_ip"), str(published), str(entry.get("protocol") or "tcp")
+            host_ip, spec = entry.get("host_ip"), str(published)
+            protocol = str(entry.get("protocol") or "tcp").lower()
         else:
             spec, sep, proto_suffix = str(entry).partition("/")
-            protocol = proto_suffix if sep else "tcp"
+            protocol = proto_suffix.lower() if sep else "tcp"
             assert "[" not in spec, f"{where}: bracketed IPv6 host IP in {entry!r}; extend this parser"
             parts = spec.split(":")
             assert len(parts) in (2, 3), (
@@ -411,6 +435,13 @@ def parse_published_ports(entries: list, *, where: str) -> list[tuple[str | None
                 "A bare container port publishes on an ephemeral 0.0.0.0 host port -- extend this parser"
             )
             host_ip, spec = (None, parts[0]) if len(parts) == 2 else (parts[0], parts[1])
+        # Case-normalized before this check: Compose itself accepts "TCP" and
+        # normalizes it to "tcp" (verified against `docker compose config`), so
+        # comparing raw case would let e.g. "25/tcp" vs "25/TCP" look disjoint
+        # to callers even though they bind the same kernel port namespace.
+        assert protocol in valid_protocols, (
+            f"{where}: ports entry {entry!r} has protocol {protocol!r}, expected one of {sorted(valid_protocols)}"
+        )
         assert spec.isdigit(), (
             f"{where}: ports entry {entry!r} has host port {spec!r}, not a plain number. "
             "Ranges and empty (ephemeral) host ports both land here -- extend this parser"
@@ -458,6 +489,16 @@ def test_parse_published_ports_accepts_both_supported_forms():
         [(None, 53, "udp")]
 
 
+def test_parse_published_ports_normalizes_protocol_case():
+    """Compose itself accepts an uppercase protocol suffix and normalizes it to
+    lowercase (verified against `docker compose config`); this parser must
+    match, or a same-port entry differing only in protocol case would look
+    disjoint to the collision guard when Compose treats it as the same bind."""
+    assert parse_published_ports(["25:25/TCP"], where="t") == [(None, 25, "tcp")]
+    assert parse_published_ports([{"published": 25, "target": 25, "protocol": "TCP"}], where="t") == \
+        [(None, 25, "tcp")]
+
+
 @pytest.mark.parametrize(
     "entry",
     [
@@ -466,7 +507,9 @@ def test_parse_published_ports_accepts_both_supported_forms():
         "8000-8010:8000-8010",  # range
         "[::1]:25:25",  # bracketed IPv6 host IP
         "0:25",  # ephemeral host port, spelled as 0
+        "25:25/sctpx",  # unrecognized protocol
         {"target": 25},  # long form, no `published`
+        {"published": 25, "target": 25, "protocol": "sctpx"},  # long form, unrecognized protocol
         {"published": 0, "target": 25},  # long form, ephemeral host port spelled as 0
     ]
 )
@@ -531,3 +574,34 @@ def test_is_loopback_accepts_ipv6_and_rejects_bare_and_malformed():
     assert _is_loopback(None) is False
     assert _is_loopback("0.0.0.0") is False
     assert _is_loopback("not-an-ip") is False
+
+
+def _mta_submit_subnet(path: Path) -> str:
+    for key, _, net in _pinned_subnets(path):
+        if key == SUBMIT_ALIAS:
+            return str(net)
+    raise AssertionError(f"{_rel(path)}: no {SUBMIT_ALIAS} subnet pinned")
+
+
+def test_docs_quote_the_current_e2e_mta_submit_subnets_and_port():
+    """CLAUDE.md's co-location bullet and docs/development/testing.md both
+    quote the e2e overlays' subnets and the real-mode host port in prose.
+    Nothing else pins those numbers against the compose files: production's
+    literal has its own test (test_production_mta_submit_subnet_is_the_
+    documented_literal), but that pattern was never extended to the three new
+    values this PR adds, and CLAUDE.md sits outside test_docs.py's
+    MUST_KEEP_CODE scan (DOCS_DIR is docs/ only) regardless of that. Without
+    this, `test_pinned_subnet_inventory_is_complete` would force a future
+    subnet move to update the *test*, but the prose in these two files could
+    still go stale silently."""
+    e2e_mta_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta.compose.yaml")
+    e2e_mta_real_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")
+    real_ports = {(svc, port)
+                  for svc, _, port, _ in _published_host_ports(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")}
+    assert ("mta", 2525) in real_ports, "e2e-mta-real.compose.yaml no longer publishes host port 2525 for mta"
+
+    claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    testing_md = (REPO_ROOT / "docs" / "development" / "testing.md").read_text(encoding="utf-8")
+    for literal in (e2e_mta_subnet, e2e_mta_real_subnet, "127.0.0.1:2525"):
+        assert literal in claude_md, f"CLAUDE.md no longer quotes {literal!r} -- update its co-location bullet"
+        assert literal in testing_md, f"docs/development/testing.md no longer quotes {literal!r}"

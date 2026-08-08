@@ -58,9 +58,15 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
     security_opt: ["no-new-privileges:true"]
-    # Loopback + non-privileged. Nothing here needs inbound SMTP from the
-    # internet -- the suite tests *outbound* delivery, which needs no publish at
-    # all. Container-side stays 25 so main.cf and the healthcheck are unchanged.
+    # Loopback + non-privileged, closing the public-port-25 exposure this
+    # overlay carried before (a test MTA holding a test DKIM key, reachable
+    # from the internet). The suite itself (test_mta_outbound.py) only
+    # exercises outbound delivery and needs no publish at all. Tradeoff:
+    # MTA_VERIFY_DNS still requires this domain's MX to point at mail.<domain>,
+    # but nothing on the host's real public port 25 answers for it anymore --
+    # a bounce/DSN or a sender-callout probe against this domain will fail to
+    # connect. Container-side stays 25 so main.cf and the healthcheck are
+    # unchanged.
     ports:
       - "127.0.0.1:2525:25/tcp"
     volumes:

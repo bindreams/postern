@@ -35,13 +35,20 @@ def _rel(path: Path) -> str:
 
 
 def PRODUCTION_COMPOSE_FILES() -> list[Path]:
-    files = sorted(REPO_ROOT.glob("compose*.yaml"))
+    # Two glob shapes at repo root, same as test_build_revision.py's
+    # test_overlays_declare_no_builds: the existing overlays match `compose*.yaml`,
+    # but CLAUDE.md's general convention for a supplementary file is
+    # `<name>.compose.yaml`, which `compose*.yaml` would NOT match.
+    files = sorted(set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml")))
     assert files, "no production compose files found -- these guards would pass vacuously"
     return files
 
 
 def E2E_COMPOSE_FILES() -> list[Path]:
-    files = sorted(E2E_COMPOSE_DIR.glob("*.compose.yaml"))
+    # rglob, not glob: matches test_e2e_image_isolation.py's e2e_compose_files(),
+    # so both modules agree on what "an e2e compose file" is -- a file matching
+    # one guard's definition but not the other's would be caught by exactly one.
+    files = sorted(E2E_COMPOSE_DIR.rglob("*.compose.yaml"))
     assert files, f"no *.compose.yaml under {E2E_COMPOSE_DIR} -- these guards would pass vacuously"
     return files
 
@@ -298,22 +305,36 @@ def _find_subnet_overlaps(entries: list[_SubnetEntry]) -> list[str]:
     """
     problems = []
     for (pa, ka, na, sa), (pb, kb, nb, sb) in itertools.combinations(entries, 2):
-        if sa.version != sb.version:
-            # A dual-stack network (enable_ipv6: true) legitimately pins one
-            # IPv4 and one IPv6 config entry under the same name -- that is
-            # not two conflicting subnets on one network, and the two
-            # families can never overlap on the wire either way.
-            continue
         shown_a = f"{_rel(pa)} {ka} ({na or '<project-derived>'}) {sa}"
         shown_b = f"{_rel(pb)} {kb} ({nb or '<project-derived>'}) {sb}"
         # An interpolated name (`${VAR:-default}`) is not provably the same
         # runtime network just because two files spell the identical
         # expression -- Compose interpolates per invocation, and a
         # project-specific override could resolve them differently. Treated
-        # as unknown (falls through to the overlap check below) rather than
-        # assumed equal.
+        # as unknown (falls through to the version/overlap checks below)
+        # rather than assumed equal.
         same_explicit_name = na is not None and nb is not None and na == nb and "${" not in na and "${" not in nb
-        if same_explicit_name and _compose_family(pa) == _compose_family(pb):
+
+        if same_explicit_name and _compose_family(pa) != _compose_family(pb):
+            # Same explicit name across the production/e2e boundary: not a
+            # legitimate base/overlay pair, but two different compose
+            # projects attaching to the identical Docker network -- the e2e
+            # container joins production's network directly, bypassing the
+            # whole point of pinning separate subnets. Independent of address
+            # family: checked before the IP-version skip below, since joining
+            # production's network doesn't require the pinned subnets to
+            # match version or value.
+            problems.append(f"{shown_a} and {shown_b} declare the same Docker network name across production/e2e")
+            continue
+
+        if sa.version != sb.version:
+            # A dual-stack network (enable_ipv6: true) legitimately pins one
+            # IPv4 and one IPv6 config entry under the same name -- that is
+            # not two conflicting subnets on one network, and the two
+            # families can never overlap on the wire either way.
+            continue
+
+        if same_explicit_name:
             # One Docker network declared by two files in the same family (a
             # base and its overlay). Not a collision -- but the two must then
             # pin the SAME subnet, or whichever project creates the network
@@ -321,14 +342,7 @@ def _find_subnet_overlaps(entries: list[_SubnetEntry]) -> list[str]:
             if sa != sb:
                 problems.append(f"{shown_a} and {shown_b} are the same Docker network with different subnets")
             continue
-        if same_explicit_name:
-            # Same explicit name across the production/e2e boundary: not a
-            # legitimate base/overlay pair, but two different compose
-            # projects attaching to the identical Docker network -- the e2e
-            # container joins production's network directly, bypassing the
-            # whole point of pinning separate subnets.
-            problems.append(f"{shown_a} and {shown_b} declare the same Docker network name across production/e2e")
-            continue
+
         if sa.overlaps(sb):
             problems.append(f"{shown_a} overlaps {shown_b}")
     return problems
@@ -393,6 +407,23 @@ def test_find_subnet_overlaps_flags_a_shared_name_across_production_and_e2e():
     entries: list[_SubnetEntry] = [
         (prod, "mta-submit", "shared-net", net),
         (e2e, "mta-submit", "shared-net", net),
+    ]
+    problems = _find_subnet_overlaps(entries)
+    assert len(problems) == 1
+    assert "same Docker network name across production/e2e" in problems[0]
+
+
+def test_find_subnet_overlaps_flags_a_shared_name_across_families_even_with_different_ip_versions():
+    """The cross-family same-name violation doesn't depend on the two pinned
+    subnets sharing an address family -- e.g. production pins only IPv4 on a
+    network while an e2e overlay pins only IPv6 on a network of the same
+    name. The IP-version skip (for legitimate dual-stack networks) must not
+    swallow this before the cross-family name check runs."""
+    prod = REPO_ROOT / "compose.yaml"
+    e2e = E2E_COMPOSE_DIR / "e2e-mta.compose.yaml"
+    entries: list[_SubnetEntry] = [
+        (prod, "mta-submit", "shared-net", ipaddress.ip_network("10.99.0.0/29")),
+        (e2e, "mta-submit", "shared-net", ipaddress.ip_network("fd00:dead:beef::/64")),
     ]
     problems = _find_subnet_overlaps(entries)
     assert len(problems) == 1
@@ -629,12 +660,17 @@ def test_docs_quote_the_current_e2e_mta_submit_subnets_and_port():
     still go stale silently."""
     e2e_mta_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta.compose.yaml")
     e2e_mta_real_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")
-    real_ports = {(svc, port)
-                  for svc, _, port, _ in _published_host_ports(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")}
-    assert ("mta", 2525) in real_ports, "e2e-mta-real.compose.yaml no longer publishes host port 2525 for mta"
+    # host_ip is part of the documented literal too, not just the port -- a
+    # hardcoded "127.0.0.1" here would let the overlay's actual publish IP
+    # drift from the docs while this guard stayed green.
+    mta_ports = [(host_ip, port)
+                 for svc, host_ip, port, _ in _published_host_ports(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")
+                 if svc == "mta"]
+    assert mta_ports == [("127.0.0.1", 2525)], f"e2e-mta-real.compose.yaml mta host ports changed: {mta_ports!r}"
+    real_mode_port_literal = f"{mta_ports[0][0]}:{mta_ports[0][1]}"
 
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     testing_md = (REPO_ROOT / "docs" / "development" / "testing.md").read_text(encoding="utf-8")
-    for literal in (e2e_mta_subnet, e2e_mta_real_subnet, "127.0.0.1:2525"):
+    for literal in (e2e_mta_subnet, e2e_mta_real_subnet, real_mode_port_literal):
         assert literal in claude_md, f"CLAUDE.md no longer quotes {literal!r} -- update its co-location bullet"
         assert literal in testing_md, f"docs/development/testing.md no longer quotes {literal!r}"

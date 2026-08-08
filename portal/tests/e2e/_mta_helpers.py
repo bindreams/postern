@@ -17,7 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .._compose import production_mta_submit_subnet  # noqa: F401  (re-exported; see below)
+from .._compose import production_mta_submit_subnet  # noqa: F401
 from . import _helpers
 from ._helpers import TESTS_E2E_DIR, run
 

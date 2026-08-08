@@ -61,10 +61,14 @@ services:
     # Loopback + non-privileged: the suite itself (test_mta_outbound.py) only
     # exercises outbound delivery and needs no publish at all. Tradeoff:
     # MTA_VERIFY_DNS still requires this domain's MX to point at mail.<domain>,
-    # but nothing on the host's real public port 25 answers for it anymore --
-    # a bounce/DSN or a sender-callout probe against this domain will fail to
-    # connect. Container-side stays 25 so main.cf and the healthcheck are
-    # unchanged.
+    # but this container no longer answers there. On a host that ALSO runs
+    # production (the case this overlay's port move exists for), production's
+    # own mta still publishes host 25 and answers instead -- not in
+    # mynetworks for MTA_TEST_DOMAIN, so it permanently rejects with 554
+    # 5.7.1 rather than failing to connect. On a bare VPS with no production
+    # stack, a bounce/DSN or sender-callout probe simply fails to connect.
+    # Either way, this domain no longer receives inbound mail. Container-side
+    # stays 25 so main.cf and the healthcheck are unchanged.
     ports:
       - "127.0.0.1:2525:25/tcp"
     volumes:

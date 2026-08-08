@@ -11,8 +11,7 @@ cannot silently drift back to the bare name. No Docker required.
 
 The `mta-submit` subnet <-> MTA_SUBMIT_CIDR <-> mynetworks agreement, and the
 co-location guards that keep e2e overlays off any host-namespace resource
-production claims, are a separate concern (issue #198) and live in
-test_compose_colocation.py.
+production claims, are a separate concern and live in test_compose_colocation.py.
 """
 from __future__ import annotations
 

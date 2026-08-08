@@ -27,10 +27,11 @@ from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 # `PER_HOOK_CHECKS` plus the two hooks it deliberately excludes: two ordinary
 # hooks, a `pass_filenames = false` hook (ty, no file list at all), and the
 # two same-id mdformat entries told apart only by their display name. Tracked
-# files are a.py/b.py (python), README.md (non-docs markdown), and
-# docs/index.md (docs markdown) -- none carry the `executable` tag, so
-# `check that executables have shebangs` and `Check .editorconfig rules`
-# (which excludes python/markdown) correctly match nothing here.
+# files are a.py/b.py (python), README.md (non-docs markdown), docs/index.md
+# (docs markdown), run.sh (text+executable+shell, so it also exercises `check
+# that executables have shebangs`, whose predicate every OTHER fixture file
+# here fails), and config.yaml (text, not rust/markdown/python, so it also
+# exercises `Check .editorconfig rules`'s predicate).
 SAMPLE_LOG = """\
 format section comments.................................................Dry Run
 - hook id: format-section-comments
@@ -45,27 +46,38 @@ ty check................................................................Dry Run
 check that executables have shebangs....................................Dry Run
 - hook id: check-executables-have-shebangs
 - duration: 0.00s
+
+  `check-executables-have-shebangs` would be run on 1 files:
+  - run.sh
 check that scripts with shebangs are executable.........................Dry Run
 - hook id: check-shebang-scripts-are-executable
 - duration: 0.00s
 
-  `check-shebang-scripts-are-executable` would be run on 4 files:
+  `check-shebang-scripts-are-executable` would be run on 6 files:
   - a.py
   - b.py
   - README.md
   - docs/index.md
+  - run.sh
+  - config.yaml
 mixed line ending.......................................................Dry Run
 - hook id: mixed-line-ending
 - duration: 0.00s
 
-  `mixed-line-ending` would be run on 4 files:
+  `mixed-line-ending` would be run on 6 files:
   - a.py
   - b.py
   - README.md
   - docs/index.md
+  - run.sh
+  - config.yaml
 Check .editorconfig rules...............................................Dry Run
 - hook id: editorconfig-checker
 - duration: 0.00s
+
+  `editorconfig-checker` would be run on 2 files:
+  - run.sh
+  - config.yaml
 yapf....................................................................Dry Run
 - hook id: yapf
 - duration: 0.00s
@@ -118,6 +130,36 @@ def test_parse_dry_run_hook_files_on_empty_log_returns_empty_dict():
     assert parse_dry_run_hook_files("") == {}
 
 
+def test_parse_dry_run_hook_files_raises_on_duplicate_display_name():
+    """prek.toml does not enforce display-name uniqueness (`name =` is optional).
+
+    Two hooks sharing a display name -- e.g. a third `mdformat`-family entry
+    added without a distinguishing `name =` -- must fail loudly instead of
+    silently merging into one `by_name` key, which would validate the union of
+    both hooks' files against `PER_HOOK_CHECKS` instead of each hook's own list.
+    """
+    duplicated_log = SAMPLE_LOG.replace(
+        "mdformat (myst).........................................................Dry Run\n"
+        "- hook id: mdformat\n- duration: 0.00s\n\n  `mdformat` would be run on 1 files:\n  - docs/index.md\n",
+        "mdformat................................................................Dry Run\n"
+        "- hook id: mdformat\n- duration: 0.00s\n\n  `mdformat` would be run on 1 files:\n  - docs/index.md\n",
+    )
+    with pytest.raises(ValueError, match="mdformat"):
+        parse_dry_run_hook_files(duplicated_log)
+
+
+def test_find_dry_run_coverage_gaps_reports_duplicate_display_name_instead_of_raising():
+    duplicated_log = SAMPLE_LOG.replace(
+        "mdformat (myst).........................................................Dry Run\n"
+        "- hook id: mdformat\n- duration: 0.00s\n\n  `mdformat` would be run on 1 files:\n  - docs/index.md\n",
+        "mdformat................................................................Dry Run\n"
+        "- hook id: mdformat\n- duration: 0.00s\n\n  `mdformat` would be run on 1 files:\n  - docs/index.md\n",
+    )
+    problems = find_dry_run_coverage_gaps(duplicated_log, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("mdformat" in problem for problem in problems)
+
+
 def test_parse_dry_run_hook_files_ignores_the_backtick_line():
     """Both mdformat sections' backtick lines say `` `mdformat` `` -- real prek never
     distinguishes them there. Corrupting that line must not change the parse: it proves
@@ -138,19 +180,53 @@ FAKE_TAGS = {
     "README.md": frozenset({"text", "markdown"}),
     "docs/index.md": frozenset({"text", "markdown"}),
     "orphan.md": frozenset({"text", "markdown"}),
+    "run.sh": frozenset({"text", "executable", "shell"}),
+    "config.yaml": frozenset({"text", "yaml"}),
 }
+
+SAMPLE_TRACKED = ["a.py", "b.py", "README.md", "docs/index.md", "run.sh", "config.yaml"]
 
 
 def test_find_dry_run_coverage_gaps_clean_log_reports_nothing():
-    tracked = ["a.py", "b.py", "README.md", "docs/index.md"]
-    assert find_dry_run_coverage_gaps(SAMPLE_LOG, tracked, FAKE_TAGS.get) == []
+    assert find_dry_run_coverage_gaps(SAMPLE_LOG, SAMPLE_TRACKED, FAKE_TAGS.get) == []
 
 
 def test_find_dry_run_coverage_gaps_flags_a_file_no_hook_claims():
-    tracked = ["a.py", "b.py", "README.md", "docs/index.md", "orphan.md"]
+    tracked = [*SAMPLE_TRACKED, "orphan.md"]
     problems = find_dry_run_coverage_gaps(SAMPLE_LOG, tracked, FAKE_TAGS.get)
 
     assert any("orphan.md" in problem for problem in problems)
+
+
+def test_find_dry_run_coverage_gaps_flags_executable_shebang_narrowing():
+    """run.sh is the only fixture matching `check that executables have shebangs`'s
+    {"text", "executable"} predicate -- confirm the check actually fires on it,
+    not just on files no fixture here exercises.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `check-executables-have-shebangs` would be run on 1 files:\n  - run.sh\n",
+        "\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("check that executables have shebangs" in problem and "run.sh" in problem for problem in problems)
+
+
+def test_find_dry_run_coverage_gaps_flags_editorconfig_narrowing():
+    """run.sh and config.yaml are the only fixtures matching `Check .editorconfig
+    rules`'s text-but-not-{rust,markdown,python} predicate -- confirm the check
+    actually fires on them, not just on files no fixture here exercises.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `editorconfig-checker` would be run on 2 files:\n  - run.sh\n  - config.yaml\n",
+        "\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any(
+        "Check .editorconfig rules" in problem and "run.sh" in problem and "config.yaml" in problem
+        for problem in problems
+    )
 
 
 def test_find_dry_run_coverage_gaps_flags_per_hook_narrowing_masked_by_union():

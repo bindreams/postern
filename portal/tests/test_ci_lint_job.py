@@ -6,10 +6,9 @@ config can drop scripts out of the lint gate without anything going red. The CI
 job's own `(no files to check)` grep only fires when a hook matches *nothing*.
 
 Coverage for every OTHER linted language is checked differently, in
-scripts/ci-lint-run.sh, by diffing the tracked tree against
-`prek run --dry-run --all-files`'s own file lists rather than reimplementing
-prek's matcher rules here: a hand-enumerated language-tag set would miss
-hooks with no explicit `types` restriction (editorconfig-checker,
+scripts/ci-lint-run.sh via `ci_lint_lib.find_dry_run_coverage_gaps` (see that
+function's docstring for the mechanism): a hand-enumerated language-tag set
+would miss hooks with no explicit `types` restriction (editorconfig-checker,
 mixed-line-ending, the two shebang hooks -- which between them match nearly
 every tracked file), and shelling out to prek from every offline `pytest` run
 would also slow down the fast unit suite for a check that belongs in the lint
@@ -107,6 +106,28 @@ def _config() -> dict:
 
 def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
+
+
+def test_no_two_hooks_share_a_display_name():
+    """`hook.get("name", hook.get("id"))` is the identity every other test in this
+    file keys on -- `test_prek_has_exactly_the_expected_hooks`'s set comparison,
+    `test_no_hook_narrows_its_own_file_set_unexpectedly`'s `(name, key)` pairs, and
+    `test_every_hook_has_a_dry_run_coverage_check`'s roster diff all silently
+    collapse two hooks sharing a name into one entry (a `set` dedupes, so a
+    duplicate name changes neither side of an equality check). prek.toml does not
+    enforce name uniqueness itself -- `name =` is optional, falling back to `id` --
+    so this is the one guard that makes every other check's `name`-keying safe
+    to rely on; enforce it once here rather than converting every downstream
+    check to a counted/ordered comparison.
+    """
+    names = [hook.get("name", hook.get("id")) for hook in _hooks()]
+    duplicates = {name for name in names if names.count(name) > 1}
+
+    assert not duplicates, (
+        f"these hooks share a display name with another hook: {sorted(duplicates)}. Every hook needs a name "
+        "unique among the whole roster -- prek.toml's two mdformat entries do this via an explicit `name =` "
+        "on the second one; a duplicate silently collapses in every set-keyed check in this file"
+    )
 
 
 def test_first_party_shell_scripts_exist_to_be_linted():

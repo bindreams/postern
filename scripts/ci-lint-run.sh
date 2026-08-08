@@ -8,13 +8,13 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 # Exclusive lock, held for this script's entire run, shared with
-# scripts/ci-lint-selftest.sh (same lock file): that script briefly writes a
-# real ty fixture under portal/src/postern/, and ty's `pass_filenames = false`
-# hook scans that whole directory regardless of git tracking -- so, without
-# this lock, a concurrent selftest run (a second terminal during local
-# debugging, or a retried job) could make THIS script's real `prek run
-# --all-files` fail on the other script's fixture, misread as a genuine type
-# error in first-party code.
+# scripts/ci-lint-selftest.sh (same lock file): that script briefly writes
+# real ty fixtures under portal/src/postern/ and scripts/, and ty's
+# `pass_filenames = false` hook scans both directories regardless of git
+# tracking -- so, without this lock, a concurrent selftest run (a second
+# terminal during local debugging, or a retried job) could make THIS
+# script's real `prek run --all-files` fail on the other script's fixture,
+# misread as a genuine type error in first-party code.
 mkdir -p .tmp
 exec 9>.tmp/ci-lint.lock
 flock -x 9
@@ -59,9 +59,8 @@ fi
 # a first-party file from coverage with none of the above noticing. Ask prek
 # for its own resolved per-hook file lists -- ground truth, immune to the
 # Python-re-vs-Rust-regex dialect gap -- instead of reimplementing its
-# matcher rules. Wrapped in set +e/status capture and cat unconditionally,
-# like the real run above: a dry-run failure (bad config, unreachable hook
-# repo) must not exit silently with nothing to explain it.
+# matcher rules. A dry-run failure (bad config, unreachable hook repo) must
+# not exit silently with nothing to explain it.
 DRY_RUN_LOG="$SCRATCH_DIR/dry-run.log"
 set +e
 uv run --project portal --group dev prek run --dry-run --all-files -vv >"$DRY_RUN_LOG" 2>&1

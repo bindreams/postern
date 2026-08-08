@@ -171,16 +171,32 @@ def parse_dry_run_hook_files(log: str) -> dict[str, list[str]]:
     suffix. A hook with `pass_filenames = false` (`ty check`) contributes an
     empty file list, which is correct: nothing should expect ty to appear in
     a per-file coverage check.
+
+    Raises `ValueError` if two hooks share a display name: prek.toml does not
+    enforce display-name uniqueness (`name =` is optional; the bare `id` is
+    the fallback), and silently merging two hooks' file lists into one key
+    would validate their UNION against `PER_HOOK_CHECKS` instead of each
+    hook's own list -- defeating the one guard built to catch a single hook
+    losing a subset of its files.
     """
     sections = re.split(r"(?=^\S.*\.+Dry Run$)", log, flags=re.MULTILINE)
     by_name: dict[str, list[str]] = {}
+    duplicated: set[str] = set()
     for section in sections:
         match = re.match(r"(\S.*?)\.+Dry Run$", section, re.MULTILINE)
         if not match:
             continue
         hook_name = match.group(1)
         files = re.findall(r"^  - (.+)$", section, re.MULTILINE)
+        if hook_name in by_name:
+            duplicated.add(hook_name)
         by_name.setdefault(hook_name, []).extend(files)
+    if duplicated:
+        raise ValueError(
+            f"prek's dry-run output has more than one hook section named {sorted(duplicated)} -- "
+            "prek.toml has two hooks sharing a display name (same `id`, no distinguishing `name =`), "
+            "which would silently merge their per-hook coverage checks. Give each a unique `name =`."
+        )
     return by_name
 
 
@@ -217,7 +233,10 @@ def find_dry_run_coverage_gaps(
         assert_no_newline_paths(tracked)
     except ValueError as exc:
         return [str(exc)]
-    by_name = parse_dry_run_hook_files(dry_run_log)
+    try:
+        by_name = parse_dry_run_hook_files(dry_run_log)
+    except ValueError as exc:
+        return [str(exc)]
     if not by_name:
         return ["prek --dry-run reported no hooks at all -- install/clone failure?"]
 

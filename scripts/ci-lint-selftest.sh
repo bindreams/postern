@@ -8,14 +8,9 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-# Exclusive lock, held for this script's entire run, shared with
-# scripts/ci-lint-run.sh (same lock file): the ty fixtures below briefly
-# exist as real files under portal/src/postern/ and scripts/, and ty's
-# `pass_filenames = false` hook scans both directories regardless of git
-# tracking -- so a concurrent `ci-lint-run.sh` (a second terminal during
-# local debugging, or a retried job) would see a fixture as a genuine type
-# error in the real run, not just in this script's own fixtures. `mkdir -p`
-# both so a from-scratch checkout has somewhere for the lock file to live.
+# Exclusive lock, shared with scripts/ci-lint-run.sh's own (see that
+# script's header for why the two must serialize). `mkdir -p` both so a
+# from-scratch checkout has somewhere for the lock file to live.
 #
 # Scope: this lock only serializes THIS script against `ci-lint-run.sh`
 # specifically (the pair that matters in CI, where they run as two steps of
@@ -33,14 +28,12 @@ flock -x 9
 
 # Scratch output lives under .tmp/ (gitignored) so a run that aborts before
 # the trap-based cleanup below can't trip scripts/deploy.sh's dirty-worktree
-# check or get swept into a `git add -A`. The three fixture files below are
-# the exception: prek matches them by their real, meaningful path (repo root
-# for `--files`, portal/src/postern/ and scripts/ for ty's project scan), so
-# they can't move into the scratch dir -- all three patterns are in
-# .gitignore for the same reason as a leftover .tmp/ scratch dir. mktemp'd
-# rather than fixed names, as defense in depth alongside the flock above and
-# for a clearer diagnostic if the lock is ever bypassed (e.g. a future edit
-# that drops it from one of the two scripts).
+# check or get swept into a `git add -A`. The three fixture paths below are
+# also gitignored, for the same reason -- see .gitignore's own comment for
+# why they can't just live in .tmp/. mktemp'd rather than fixed names, as
+# defense in depth alongside the flock above and for a clearer diagnostic if
+# the lock is ever bypassed (e.g. a future edit that drops it from one of
+# the two scripts).
 #
 # The trap is installed BEFORE any of the four `mktemp` calls, not after: an
 # empty-string path in the trap body is a harmless `rm -rf ""` no-op, but a

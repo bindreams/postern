@@ -157,13 +157,56 @@ _CONFIG_JSON = """
 }}
 """
 
-_CONTAINERS_OUT = (
-    f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n"
-    f"/postern-nginx\tnginx\trunning\t0\tunless-stopped\tsha256:bbb\t{HEAD}\t\n"
-    f"/postern-docker-proxy\tdocker-proxy\trunning\t0\tunless-stopped\tsha256:ccc\t\thealthy\n"
-)
 
-_TUNNELS_OUT = f"/ss-abc\t\trunning\t0\tunless-stopped\tsha256:ddd\t{HEAD}\t\n"
+def _container_record(
+    name: str,
+    service: str,
+    status: str,
+    exit_code,
+    restart_policy: str,
+    image: str,
+    revision: str = "",
+    health: str = "",
+) -> dict:
+    """One element of `docker inspect`'s native JSON array, shaped like the
+    real payload but trimmed to the keys the parser reads. `exit_code` is
+    typed loosely so callers can pass a non-int to exercise validation.
+    `State.Health` is omitted entirely when `health` is falsy: a container with no HEALTHCHECK has no `Health` key
+    at all (`omitempty`), not `Health: null`."""
+    labels = {}
+    if service:
+        labels["com.docker.compose.service"] = service
+    if revision:
+        labels["org.opencontainers.image.revision"] = revision
+    state = {"Status": status, "ExitCode": exit_code}
+    if health:
+        state["Health"] = {"Status": health}
+    return {
+        "Name": f"/{name}",
+        "Config": {"Labels": labels},
+        "State": state,
+        "HostConfig": {"RestartPolicy": {"Name": restart_policy}},
+        "Image": image,
+    }
+
+
+_CONTAINERS_OUT = json.dumps([
+    _container_record("postern-portal", "portal", "running", 0, "unless-stopped", "sha256:aaa", HEAD, "healthy"),
+    _container_record("postern-nginx", "nginx", "running", 0, "unless-stopped", "sha256:bbb", HEAD),
+    _container_record(
+        "postern-docker-proxy", "docker-proxy", "running", 0, "unless-stopped", "sha256:ccc", "", "healthy"
+    ),
+])
+
+_TUNNELS_OUT = json.dumps([
+    _container_record("ss-abc", "", "running", 0, "unless-stopped", "sha256:ddd", HEAD),
+])
+
+
+def _image_record(image_id: str, revision: str = "") -> dict:
+    """One element of `docker image inspect`'s native JSON array, trimmed to the keys the parser reads."""
+    labels = {"org.opencontainers.image.revision": revision} if revision else {}
+    return {"Id": image_id, "Config": {"Labels": labels}}
 
 
 def _ok(stdout: str) -> "vd.Completed":
@@ -229,7 +272,7 @@ class FakeRunner:
         # Image inspects are keyed on a dynamic ref, so they bypass the rules.
         if argv[:3] == ["docker", "image", "inspect"]:
             ref = argv[3]
-            return self.image_overrides.get(ref, _ok(f"sha256:{ref[-3:]}\t{HEAD}\n"))
+            return self.image_overrides.get(ref, _ok(json.dumps([_image_record(f"sha256:{ref[-3:]}", HEAD)])))
         matches = [out for pred, out in self.rules if pred(argv)]
         assert len(matches) == 1, f"{len(matches)} rules matched {argv}"
         return matches[0]
@@ -281,11 +324,107 @@ def test_collect_records_a_missing_tag_as_empty_rather_than_raising():
 
 
 def test_collect_tolerates_an_unlabelled_image():
-    """Regression for `{{.Id}}`: an image with no Config.Labels must yield an
-    empty revision, not a template error."""
-    obs = _collect(FakeRunner(image_overrides={"local/nginx": _ok("sha256:bbb\t\n")}))
+    """A real unlabelled image has an absent Config.Labels key, not a null one -- must still yield an empty revision."""
+    bad = json.dumps([{"Id": "sha256:bbb", "Config": {}}])
+    obs = _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
     assert obs.tag_ids["local/nginx"] == "sha256:bbb"
     assert obs.tag_revisions["local/nginx"] == ""
+
+
+def test_collect_tolerates_an_image_record_with_no_config_key_at_all():
+    """`_optional_dict`'s contract is "absent or null", not just "null" -- this exercises the top-level `Config` key
+    itself being absent from the record, distinct from test_collect_tolerates_an_unlabelled_image's Config-present
+    but Labels-absent shape."""
+    bad = json.dumps([{"Id": "sha256:bbb"}])
+    obs = _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+    assert obs.tag_ids["local/nginx"] == "sha256:bbb"
+    assert obs.tag_revisions["local/nginx"] == ""
+
+
+def test_collect_tolerates_a_null_labels_image():
+    """Defensive: this host's daemon never produces a null (vs. absent) Config.Labels for images, but the parser must
+    tolerate it too."""
+    bad = json.dumps([{"Id": "sha256:bbb", "Config": {"Labels": None}}])
+    obs = _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+    assert obs.tag_ids["local/nginx"] == "sha256:bbb"
+    assert obs.tag_revisions["local/nginx"] == ""
+
+
+def test_collect_image_inspect_passes_no_format_flag():
+    runner = FakeRunner()
+    _collect(runner)
+    image_call = next(a for a, _ in runner.calls if a[:3] == ["docker", "image", "inspect"])
+    assert "--format" not in image_call
+
+
+# JSON/array structure -------------------------------------------------------------------------------------------------
+def test_collect_raises_on_unparseable_image_json():
+    with pytest.raises(vd.CollectError, match="unparseable JSON"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok("not json at all")}))
+
+
+def test_collect_raises_when_the_image_top_level_value_is_not_an_array():
+    bad = json.dumps({"Id": "sha256:bbb"})
+    with pytest.raises(vd.CollectError, match="not an array"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_docker_image_inspect_reports_no_records():
+    """Distinct from the nonzero-exit "tag not present locally" path (which
+    `collect()` short-circuits before ever calling the image parser): a
+    zero-exit call that somehow reports zero records is a shape this parser
+    doesn't understand, and must not silently reuse the "" sentinel the
+    nonzero-exit case already owns."""
+    with pytest.raises(vd.CollectError, match="reported 0 image records"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok("[]")}))
+
+
+def test_collect_raises_when_docker_image_inspect_reports_multiple_records():
+    bad = json.dumps([{"Id": "sha256:aaa", "Config": {}}, {"Id": "sha256:bbb", "Config": {}}])
+    with pytest.raises(vd.CollectError, match="reported 2 image records"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_image_record_is_not_an_object():
+    bad = json.dumps([1])
+    with pytest.raises(vd.CollectError, match="record is not an object"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_image_record_has_no_id():
+    bad = json.dumps([{"Config": {}}])
+    with pytest.raises(vd.CollectError, match="no usable 'Id'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_image_id_is_the_wrong_type():
+    bad = json.dumps([{"Id": 123, "Config": {}}])
+    with pytest.raises(vd.CollectError, match="no usable 'Id'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_image_id_is_an_empty_string():
+    bad = json.dumps([{"Id": "", "Config": {}}])
+    with pytest.raises(vd.CollectError, match="no usable 'Id'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_images_config_is_the_wrong_type():
+    bad = json.dumps([{"Id": "sha256:bbb", "Config": ["not", "a", "dict"]}])
+    with pytest.raises(vd.CollectError, match="non-object 'Config'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_images_labels_are_the_wrong_type():
+    bad = json.dumps([{"Id": "sha256:bbb", "Config": {"Labels": ["not", "a", "dict"]}}])
+    with pytest.raises(vd.CollectError, match="non-object 'Config.Labels'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_raises_when_the_images_revision_label_is_the_wrong_type():
+    bad = json.dumps([{"Id": "sha256:bbb", "Config": {"Labels": {"org.opencontainers.image.revision": 42}}}])
+    with pytest.raises(vd.CollectError, match="non-string 'org.opencontainers.image.revision'"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
 
 
 def test_collect_skips_tunnels_unless_asked():
@@ -353,8 +492,12 @@ def test_collect_uses_partial_output_when_a_container_vanished():
     """`docker inspect a missing` exits 1 but still prints `a`. The reconciler
     creates and removes ss-* containers continuously, so this is normal."""
     partial = vd.Completed(
-        1, f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n",
-        "No such container: postern-nginx"
+        1,
+        json.dumps([
+            _container_record(
+                "postern-portal", "portal", "running", 0, "unless-stopped", "sha256:aaa", HEAD, "healthy"
+            )
+        ]), "No such container: postern-nginx"
     )
     obs = _collect(FakeRunner(containers_out=partial))
     assert [c.name for c in obs.containers] == ["postern-portal"]
@@ -388,22 +531,375 @@ def test_collect_raises_when_docker_ps_fails():
     assert "Cannot connect to the Docker daemon" in str(excinfo.value)
 
 
-def test_collect_raises_on_a_malformed_inspect_line():
-    """A GIT_REVISION value containing an embedded tab would shift every
-    field after it; silently truncating/padding could reassign `health` to
-    part of a `revision` value instead of raising."""
-    bad = f"/postern-portal\tportal\trunning\t0\tunless-stopped\tsha256:aaa\t{HEAD}\n"  # only 7 fields
-    with pytest.raises(vd.CollectError):
+def test_collect_container_inspect_passes_no_format_flag():
+    """FakeRunner's dispatch rules match by argv PREFIX, so a stray --format would still match -- only an explicit
+    assertion catches its absence."""
+    runner = FakeRunner()
+    _collect(runner)
+    inspect_call = next(
+        a for a, _ in runner.calls
+        if a[:4] == ["docker", "inspect", "--type", "container"] and not any(x.startswith("ss-") for x in a)
+    )
+    assert "--format" not in inspect_call
+
+
+# JSON/array structure -------------------------------------------------------------------------------------------------
+def test_collect_raises_on_unparseable_json():
+    with pytest.raises(vd.CollectError, match="unparseable JSON"):
+        _collect(FakeRunner(containers_out="not json at all"))
+
+
+def test_collect_raises_when_the_top_level_value_is_not_an_array():
+    bad = json.dumps({"Name": "/x"})
+    with pytest.raises(vd.CollectError, match="not an array"):
         _collect(FakeRunner(containers_out=bad))
 
 
-def test_collect_raises_on_an_unparseable_exit_code():
-    """An unparseable ExitCode must not silently become 0 -- completed_one_shot
-    treats exit 0 as "ran to completion", which would downgrade a real
-    failure to a passing skip."""
-    bad = f"/postern-portal\tportal\trunning\tnot-a-number\tunless-stopped\tsha256:aaa\t{HEAD}\thealthy\n"
-    with pytest.raises(vd.CollectError):
+def test_collect_raises_when_an_array_element_is_not_an_object():
+    bad = json.dumps([1, 2])
+    with pytest.raises(vd.CollectError, match="record is not an object"):
         _collect(FakeRunner(containers_out=bad))
+
+
+# Required fields: missing ---------------------------------------------------------------------------------------------
+def test_collect_raises_when_a_record_has_no_name():
+    bad = json.dumps([{
+        "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'Name'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_a_record_has_no_image():
+    bad = json.dumps([{"Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {}}])
+    with pytest.raises(vd.CollectError, match="no usable 'Image'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_a_record_has_no_state():
+    bad = json.dumps([{"Name": "/x", "Config": {}, "HostConfig": {}, "Image": "sha256:aaa"}])
+    with pytest.raises(vd.CollectError, match="no usable 'State'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_state_has_no_status():
+    bad = json.dumps([{"Name": "/x", "Config": {}, "State": {"ExitCode": 0}, "HostConfig": {}, "Image": "sha256:aaa"}])
+    with pytest.raises(vd.CollectError, match="no usable 'State.Status'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+# Required fields: present but the wrong JSON type ---------------------------------------------------------------------
+def test_collect_raises_when_name_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": 123, "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'Name'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_name_is_an_empty_string():
+    bad = json.dumps([{
+        "Name": "", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'Name'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_image_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {}, "Image": [1, 2]
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'Image'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_image_is_an_empty_string():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {}, "Image": ""
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'Image'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_state_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": ["not", "a", "dict"], "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'State'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_status_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": 5, "ExitCode": 0}, "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'State.Status'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_status_is_an_empty_string():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "", "ExitCode": 0}, "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'State.Status'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_a_non_integer_exit_code():
+    bad = json.dumps([
+        _container_record("postern-portal", "portal", "running", "not-a-number", "unless-stopped", "sha256:aaa")
+    ])
+    with pytest.raises(vd.CollectError, match="non-integer ExitCode"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_a_boolean_exit_code():
+    """bool is a subclass of int in Python -- True/False must not silently
+    pass an isinstance(x, int) check as if they were 1/0."""
+    bad = json.dumps([_container_record("postern-portal", "portal", "running", True, "unless-stopped", "sha256:aaa")])
+    with pytest.raises(vd.CollectError, match="non-integer ExitCode"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_truncates_a_huge_hostile_exit_code_in_the_error_message():
+    """Every sibling error in this parser truncates untrusted content at 200 chars (`{value!r:.200}`) because the
+    message is rendered, not just raised -- main() puts it into a Check.detail that render_text/render_json both
+    emit verbatim. The ExitCode message must not be the one exception."""
+    bad = json.dumps([
+        _container_record("postern-portal", "portal", "running", "X" * 5000, "unless-stopped", "sha256:aaa")
+    ])
+    with pytest.raises(vd.CollectError) as excinfo:
+        _collect(FakeRunner(containers_out=bad))
+    assert len(str(excinfo.value)) < 400
+
+
+def test_collect_raises_when_state_has_no_exit_code():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running"}, "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-integer ExitCode"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+# Optional fields: present but the wrong JSON type ---------------------------------------------------------------------
+def test_collect_raises_when_config_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": ["not", "a", "dict"], "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-object 'Config'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_labels_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {"Labels": ["not", "a", "dict"]}, "State": {"Status": "running", "ExitCode": 0},
+        "HostConfig": {}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-object 'Config.Labels'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_host_config_is_the_wrong_type():
+    """`HostConfig` is required, not `_optional_dict`-style, so a wrong type raises the same "no usable" message an
+    absent key would -- see test_collect_raises_when_host_config_is_missing."""
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": "nope",
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'HostConfig'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_host_config_is_missing():
+    """A missing `RestartPolicy` must not collapse `restart_policy` into `""`, which `completed_one_shot` reads as
+    "not meant to stay up" -- the same ambiguous-absence hazard `Image`/`ExitCode` are already required against."""
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'HostConfig'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_restart_policy_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {"RestartPolicy": [1]},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'HostConfig.RestartPolicy'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_restart_policy_is_missing():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="no usable 'HostConfig.RestartPolicy'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_health_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0, "Health": [1]},
+        "HostConfig": {"RestartPolicy": {}}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-object 'State.Health'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+# Optional leaf strings: present but the wrong JSON type ---------------------------------------------------------------
+def test_collect_raises_when_the_service_label_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {"Labels": {"com.docker.compose.service": 123}},
+        "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {"RestartPolicy": {}}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-string 'com.docker.compose.service'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_the_revision_label_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {"Labels": {"org.opencontainers.image.revision": 123}},
+        "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {"RestartPolicy": {}}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-string 'org.opencontainers.image.revision'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_restart_policy_name_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0},
+        "HostConfig": {"RestartPolicy": {"Name": [1]}}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-string 'Name'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_when_health_status_is_the_wrong_type():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0, "Health": {"Status": 123}},
+        "HostConfig": {"RestartPolicy": {}}, "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="non-string 'Status'"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+# Optional fields: genuinely absent, must default rather than raise ----------------------------------------------------
+def test_collect_defaults_absent_optional_fields_to_empty():
+    """`HostConfig`/`RestartPolicy` themselves are required (see test_collect_raises_when_host_config_is_missing /
+    test_collect_raises_when_restart_policy_is_missing) -- only the `Name` leaf inside a present RestartPolicy is
+    optional, since real Docker output legitimately reports `Name: ""` for "no restart policy configured"."""
+    obj = {
+        "Name": "/postern-portal",
+        "Config": {},  # no Labels key
+        "State": {"Status": "running", "ExitCode": 0},  # no Health key
+        "HostConfig": {"RestartPolicy": {}},  # no Name key
+        "Image": "sha256:aaa",
+    }
+    portal = _collect(FakeRunner(containers_out=json.dumps([obj]))).containers[0]
+    assert (portal.service, portal.revision, portal.health, portal.restart_policy) == ("", "", "", "")
+
+
+def test_collect_tolerates_a_container_record_with_no_config_key_at_all():
+    """`_optional_dict`'s contract is "absent or null", not just "null" -- this exercises the top-level `Config` key
+    itself being absent from the record, distinct from test_collect_defaults_absent_optional_fields_to_empty's
+    Config-present-but-Labels-absent shape."""
+    obj = {
+        "Name": "/postern-portal",
+        "State": {"Status": "running", "ExitCode": 0},
+        "HostConfig": {"RestartPolicy": {}},
+        "Image": "sha256:aaa",
+    }
+    portal = _collect(FakeRunner(containers_out=json.dumps([obj]))).containers[0]
+    assert (portal.service, portal.revision) == ("", "")
+
+
+def test_collect_raises_on_a_revision_label_containing_a_control_character():
+    """A tab or newline in a label value must not reach render_text's fixed-width table verbatim -- it can forge a
+    line matching the `[OK]`/`[FAIL]` marker a log/CI scraper looks for."""
+    hostile = "abc\tdef\nghi"
+    record = _container_record(
+        "postern-portal", "portal", "running", 0, "unless-stopped", "sha256:aaa", hostile, "healthy"
+    )
+    with pytest.raises(vd.CollectError, match="control characters"):
+        _collect(FakeRunner(containers_out=json.dumps([record])))
+
+
+def test_collect_raises_on_a_name_containing_a_control_character():
+    """Coverage for a control character isn't limited to label leaves -- Name/Image/State.Status must keep it too."""
+    bad = json.dumps([{
+        "Name": "/x\ny", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="control characters"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_an_image_id_containing_a_control_character():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "running", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:a\tb"
+    }])
+    with pytest.raises(vd.CollectError, match="control characters"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_a_status_containing_a_control_character():
+    bad = json.dumps([{
+        "Name": "/x", "Config": {}, "State": {"Status": "run\nning", "ExitCode": 0}, "HostConfig": {},
+        "Image": "sha256:aaa"
+    }])
+    with pytest.raises(vd.CollectError, match="control characters"):
+        _collect(FakeRunner(containers_out=bad))
+
+
+def test_collect_raises_on_an_image_inspect_id_containing_a_control_character():
+    bad = json.dumps([{"Id": "sha256:a\tb", "Config": {}}])
+    with pytest.raises(vd.CollectError, match="control characters"):
+        _collect(FakeRunner(image_overrides={"local/nginx": _ok(bad)}))
+
+
+def test_collect_tolerates_benign_non_ascii_characters_in_a_label():
+    """The control-character guard must reject only characters that can corrupt render_text's fixed-width table
+    (tab, newline, CR, ...) -- not every character str.isprintable() considers non-printable. NBSP, a zero-width
+    space, and a soft hyphen are harmless here and must not abort collection."""
+    benign = "abc\u00a0def\u200bghi\u00adjkl"  # NBSP, zero-width space, soft hyphen
+    record = _container_record(
+        "postern-portal", "portal", "running", 0, "unless-stopped", "sha256:aaa", benign, "healthy"
+    )
+    portal = _collect(FakeRunner(containers_out=json.dumps([record]))).containers[0]
+    assert portal.revision == benign
+
+
+def test_parse_containers_returns_empty_tuple_for_an_empty_array():
+    """`[]` is the empty tuple, not an error."""
+    assert vd._parse_containers("[]") == ()
+
+
+def test_parse_containers_raises_on_blank_stdout():
+    """Blank stdout is not a shape a functioning docker inspect can produce
+    (it always emits at least `[]`) -- unlike the empty-array case above,
+    this must not be read as "zero containers", or a broken/truncated
+    invocation would misreport as a clean, empty deployment."""
+    with pytest.raises(vd.CollectError, match="unparseable JSON"):
+        vd._parse_containers("")
+    with pytest.raises(vd.CollectError, match="unparseable JSON"):
+        vd._parse_containers("   \n")
+
+
+def test_collect_defaults_null_labels_to_empty():
+    """A present-and-null Config.Labels must be treated the same as an absent key."""
+    obj = {
+        "Name": "/postern-portal",
+        "Config": {"Labels": None},
+        "State": {"Status": "running", "ExitCode": 0},
+        "HostConfig": {"RestartPolicy": {}},
+        "Image": "sha256:aaa",
+    }
+    portal = _collect(FakeRunner(containers_out=json.dumps([obj]))).containers[0]
+    assert (portal.service, portal.revision) == ("", "")
 
 
 def test_collect_refuses_an_empty_service_set():

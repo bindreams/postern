@@ -36,7 +36,14 @@ status=$?
 set -e
 cat "$LOG"
 
-grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed)' "$LOG" ||
+# The alternation includes `(no files to check)Skipped` (mirroring
+# scripts/ci-lint-selftest.sh's own liveness greps): that status contains
+# neither `Passed` nor `Failed`, so if EVERY hook matched zero files (e.g. a
+# widened top-level `exclude`, or `default_stages` set to a stage
+# `--all-files` doesn't run at), a narrower grep here would misreport it as
+# "prek ran no hooks at all" and exit before the correct, more specific
+# diagnosis at the zero-match check below ever runs.
+grep -qE '^[A-Za-z].*\.\.\.\.+(Passed|Failed|\(no files to check\)Skipped)$' "$LOG" ||
   { echo "prek ran no hooks at all -- install/clone failure, not a lint result"; exit 1; }
 
 # The grep below is line-anchored to a hook status line. `--show-diff-on-failure`

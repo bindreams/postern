@@ -42,11 +42,18 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from ci_lint_lib import PER_HOOK_CHECKS  # noqa: E402
 from ci_lint_lib import first_party_shell_scripts  # noqa: E402
 
-# A hardcoded expectation, NOT derived from prek.toml (that would be the same
-# self-reference `ci_lint_lib.is_vendored` already has -- see
-# test_prek_exclude_is_exactly_the_vendored_prefix for why an independent
-# second source matters here).
+# Hardcoded expectations, NOT derived from prek.toml. `ci_lint_lib.is_vendored`,
+# `_FORMAT_SECTION_COMMENTS_TAGS` and `_EDITORCONFIG_EXCLUDE_TAGS` all derive their
+# filtering/predicate logic from these same three prek.toml fields -- which is right
+# for FILTERING (it keeps the derived logic in sync with prek's real matcher), but
+# wrong as the sole oracle for whether the field's VALUE itself has drifted: a
+# self-referential check that reads the field it's supposed to be validating can
+# never detect that field being narrowed or widened, since the check silently moves
+# with it. These three constants are the independent second source that makes the
+# corresponding value-pinning test below non-vacuous.
 EXPECTED_EXCLUDE = "^external/"
+EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR = ["rust", "python", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile"]
+EXPECTED_EDITORCONFIG_EXCLUDE_TYPES = ["rust", "markdown", "python"]
 
 # Hooks that legitimately need no `ci_lint_lib.PER_HOOK_CHECKS` entry:
 # `shellcheck` has its own dedicated, live per-file reachability check in
@@ -119,6 +126,22 @@ def _config() -> dict:
 
 def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
+
+
+def _hook_field(hook_id: str, field: str) -> list[str]:
+    """The value of `field` on the prek.toml hook with this `id`.
+
+    A small, deliberate duplicate of ci_lint_lib._hook_field rather than an
+    import of it: that helper is a private (underscore-prefixed) production
+    detail, and this file's own established boundary is to read prek.toml
+    independently (via _config()/_hooks() above) rather than reach into
+    ci_lint_lib's internals -- the same reason ci_lint_lib.py itself never
+    imports from this test file.
+    """
+    for hook in _hooks():
+        if hook.get("id") == hook_id:
+            return hook[field]
+    raise KeyError(f"no hook with id {hook_id!r} in prek.toml")
 
 
 def test_hook_id_to_dry_run_name_map_is_complete():
@@ -195,9 +218,7 @@ def test_prek_exclude_is_exactly_the_vendored_prefix():
     Widening `exclude` is real project risk, not a hypothetical: it drops matching files
     from every prek hook at once (the same mechanism `test_prek_has_no_top_level_narrowing_key`
     guards for `files`/`default_stages`), including `scripts/deploy.sh` and this repo's own
-    lint-gate scripts -- confirmed by mutation-testing `exclude = "^(external|scripts)/"`,
-    which left every other check in this file and in `ci_lint_lib.find_dry_run_coverage_gaps`
-    green with `scripts/deploy.sh` silently unlinted.
+    lint-gate scripts.
     """
     exclude = _config().get("exclude", "")
     assert exclude == EXPECTED_EXCLUDE, (
@@ -205,6 +226,35 @@ def test_prek_exclude_is_exactly_the_vendored_prefix():
         "files from every hook at once, invisibly to every other check in this file (they all filter through "
         "the same value via ci_lint_lib.is_vendored) -- confirm the new pattern still covers only external/, "
         "then update EXPECTED_EXCLUDE"
+    )
+
+
+def test_format_section_comments_types_or_is_pinned():
+    """Same self-reference risk as `test_prek_exclude_is_exactly_the_vendored_prefix`,
+    one hook down: `ci_lint_lib._FORMAT_SECTION_COMMENTS_TAGS` derives its predicate
+    from this same prek.toml `types_or` field, so narrowing it (e.g. dropping `python`)
+    moves the hook's real coverage and the check's oracle in lockstep -- the drift
+    would never be reported by anything that only reads the derived value.
+    """
+    actual = _hook_field("format-section-comments", "types_or")
+    assert actual == EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR, (
+        f"prek.toml's format-section-comments `types_or` changed from "
+        f"{EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR!r} to {actual!r}. ci_lint_lib.PER_HOOK_CHECKS derives its "
+        "coverage predicate for this hook from the same field, so this drift is invisible to every other check "
+        "-- confirm the narrowing is deliberate, then update EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR"
+    )
+
+
+def test_editorconfig_checker_exclude_types_is_pinned():
+    """Same self-reference risk as `test_format_section_comments_types_or_is_pinned`,
+    for `ci_lint_lib._EDITORCONFIG_EXCLUDE_TAGS`, derived from this `exclude_types`.
+    """
+    actual = _hook_field("editorconfig-checker", "exclude_types")
+    assert actual == EXPECTED_EDITORCONFIG_EXCLUDE_TYPES, (
+        f"prek.toml's editorconfig-checker `exclude_types` changed from "
+        f"{EXPECTED_EDITORCONFIG_EXCLUDE_TYPES!r} to {actual!r}. ci_lint_lib.PER_HOOK_CHECKS derives its coverage "
+        "predicate for this hook from the same field, so this drift is invisible to every other check -- confirm "
+        "the change is deliberate, then update EXPECTED_EDITORCONFIG_EXCLUDE_TYPES"
     )
 
 

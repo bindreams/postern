@@ -10,6 +10,7 @@ run, where a format shift shows up as an opaque exception or a silently wrong
 file list rather than a clear assertion failure.
 """
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from ci_lint_lib import find_dry_run_coverage_gaps  # noqa: E402
 from ci_lint_lib import is_vendored  # noqa: E402
 from ci_lint_lib import parse_dry_run_hook_files  # noqa: E402
 from ci_lint_lib import tags_for_first_party_file  # noqa: E402
+from ci_lint_lib import tracked_files  # noqa: E402
 
 # A trimmed but structurally real transcript covering every entry in
 # `PER_HOOK_CHECKS`, plus `ty check` and `shellcheck` -- the two hooks
@@ -111,9 +113,8 @@ mdformat (myst).........................................................Dry Run
 """
 # The `mdformat (myst)` section's "would be run on" line above reads
 # `` `mdformat` would be run on ... `` -- the bare hook id, matching real prek
-# output verbatim (verified against a live `prek run --dry-run --all-files -vv`
-# on this repo) -- NOT `` `mdformat (myst)` ``. Both mdformat entries print the
-# identical bare-id backtick line; only the status line ("mdformat
+# output verbatim -- NOT `` `mdformat (myst)` ``. Both mdformat entries print
+# the identical bare-id backtick line; only the status line ("mdformat
 # (myst)....Dry Run") carries the distinguishing suffix, which is exactly why
 # `parse_dry_run_hook_files` keys on that line instead. See
 # test_parse_dry_run_hook_files_ignores_the_backtick_line below.
@@ -193,6 +194,13 @@ FAKE_TAGS = {
     "orphan.md": frozenset({"text", "markdown"}),
     "run.sh": frozenset({"text", "executable", "shell"}),
     "config.yaml": frozenset({"text", "yaml"}),
+    # No "text" tag -- a real tracked binary asset, e.g.
+    # portal/src/postern/static/fonts/FiraCode-Regular.woff2, identify-tagged
+    # {"non-executable", "file", "woff2", "binary"}. No hook in SAMPLE_LOG
+    # claims this path; it must NOT be reported as uncovered, since the union
+    # and per-hook checks both gate on "text" in tags before ever reporting
+    # anything missing.
+    "image.png": frozenset({"non-executable", "file", "png", "binary"}),
 }
 
 SAMPLE_TRACKED = ["a.py", "b.py", "README.md", "docs/index.md", "run.sh", "config.yaml"]
@@ -200,6 +208,19 @@ SAMPLE_TRACKED = ["a.py", "b.py", "README.md", "docs/index.md", "run.sh", "confi
 
 def test_find_dry_run_coverage_gaps_clean_log_reports_nothing():
     assert find_dry_run_coverage_gaps(SAMPLE_LOG, SAMPLE_TRACKED, FAKE_TAGS.get) == []
+
+
+def test_find_dry_run_coverage_gaps_does_not_flag_a_binary_file_no_hook_claims():
+    """A tracked binary asset (no "text" tag) that no hook claims is correct, not a
+    gap: no prek hook in this repo targets binary files, so the union/per-hook
+    checks both gate on "text" in tags before reporting anything missing. A
+    regression that dropped or inverted that guard would report every binary
+    asset in the tree as "uncovered" -- nothing else in this file would catch it.
+    """
+    tracked = [*SAMPLE_TRACKED, "image.png"]
+    problems = find_dry_run_coverage_gaps(SAMPLE_LOG, tracked, FAKE_TAGS.get)
+
+    assert not any("image.png" in problem for problem in problems)
 
 
 def test_find_dry_run_coverage_gaps_flags_a_file_no_hook_claims():
@@ -416,6 +437,33 @@ def test_tags_for_first_party_file_propagates_non_missing_lstat_errors(monkeypat
     monkeypatch.setattr(Path, "lstat", _permission_denied)
     with pytest.raises(PermissionError):
         tags_for_first_party_file("portal/tests/test_ci_lint_lib.py")
+
+
+# tracked_files ========================================================================================================
+
+
+def test_tracked_files_returns_real_tracked_paths():
+    # Against the real repo -- this test file itself is guaranteed tracked.
+    files = tracked_files()
+    assert "portal/tests/test_ci_lint_lib.py" in files
+    assert all(path for path in files)  # no empty-string entries from a trailing NUL
+
+
+def test_tracked_files_raises_runtime_error_with_decoded_stderr_on_git_failure(monkeypatch):
+    """`capture_output=True` buffers git's own stderr onto the exception instead of
+    letting it reach the caller directly -- confirm the decode-and-reraise actually
+    surfaces it, rather than a bare `CalledProcessError` whose default traceback
+    shows only the exit code and discards git's real diagnostic.
+    """
+
+    def _fake_run(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            128, ["git", "ls-files", "-z"], output=b"", stderr=b"fatal: not a git repository"
+        )
+
+    monkeypatch.setattr(ci_lint_lib.subprocess, "run", _fake_run)
+    with pytest.raises(RuntimeError, match="fatal: not a git repository"):
+        tracked_files()
 
 
 # assert_no_newline_paths ==============================================================================================

@@ -36,3 +36,4 @@ scripts/docs-gate-fixture/_build/
 /.prek-gate-fixture-*.sh
 portal/src/postern/_ty_gate_fixture_portal_*.py
 scripts/_ty_gate_fixture_scripts_*.py
+docs/_ty_gate_fixture_docs_*.py

@@ -159,13 +159,17 @@ def first_party_shell_scripts() -> list[str]:
 # Per-hook dry-run coverage checks =====================================================================================
 
 # `format-section-comments`'s `types_or` and `editorconfig-checker`'s
-# `exclude_types` are read directly from prek.toml -- NOT hand-duplicated as
-# a second literal tag set below -- for the same reason `_vendored_pattern`
-# derives from prek.toml's `exclude` instead of a hardcoded prefix: a
-# hardcoded copy here could silently drift from prek.toml's real value with
-# nothing catching it (confirmed empirically before this fix: trimming
-# `types_or` in a hand-duplicated copy left every test in this codebase
-# green). The other hooks' predicates below are NOT similarly derivable --
+# `exclude_types` are read directly from prek.toml -- NOT hand-duplicated as a
+# second literal tag set below -- so the predicate always matches what the
+# hook actually does, the same reason `_vendored_pattern` derives from
+# prek.toml's `exclude` instead of a hardcoded prefix. This alone does NOT
+# detect the field itself being narrowed or widened -- a self-referential
+# check that reads the value it's meant to police can't catch that value
+# changing, since the check moves with it. portal/tests/test_ci_lint_job.py's
+# `test_format_section_comments_types_or_is_pinned` /
+# `test_editorconfig_checker_exclude_types_is_pinned` are the independent
+# hardcoded-value pins that close that gap (mirroring `EXPECTED_EXCLUDE`
+# there). The other hooks' predicates below are NOT similarly derivable --
 # their matchers are pinned entirely upstream (a `rev =`, not prek.toml
 # text), which is exactly why they need a `PER_HOOK_CHECKS` entry at all;
 # see the comment below.

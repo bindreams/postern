@@ -17,7 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from .._compose import PRODUCTION_MTA_SUBMIT_SUBNET  # noqa: F401  (re-exported; see below)
+from .._compose import production_mta_submit_subnet  # noqa: F401  (re-exported; see below)
 from . import _helpers
 from ._helpers import TESTS_E2E_DIR, run
 
@@ -33,11 +33,8 @@ COMPOSE_FILES_MTA: tuple[Path, ...] = (
 # the base e2e project, fixtures targeting different stacks would collide.
 assert PROJECT_MTA != _helpers.PROJECT, ("PROJECT_MTA must differ from _helpers.PROJECT to keep stacks isolated")
 
-# PRODUCTION_MTA_SUBMIT_SUBNET itself now lives in portal/tests/_compose.py (a
-# docker-free, loader-only module): the base test_compose_colocation.py needs
-# it too and must not depend on this e2e/docker-orchestration module to get
-# it. Re-exported here since this file is still where e2e tests look for
-# MTA-related constants.
+# Re-exported from portal/tests/_compose.py -- see that module's docstring
+# for why the constant lives there instead of here.
 
 
 # Compose primitives ===================================================================================================

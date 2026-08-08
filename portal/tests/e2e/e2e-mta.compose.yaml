@@ -23,7 +23,7 @@
 ##
 ## Co-location: this stack pins its own mta-submit subnet (10.234.43.0/29) and
 ## publishes only loopback ports, so it can come up on a host that already runs
-## a production stack. See test_compose_submission.py.
+## a production stack. See test_compose_colocation.py.
 
 services:
   mta:

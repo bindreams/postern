@@ -9,6 +9,7 @@ first needs it -- not before.
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import yaml
@@ -39,7 +40,8 @@ def load_compose(path: Path) -> dict:
 
 
 # Derived constants shared across compose-parsing tests ================================================================
-def _production_mta_submit_subnet() -> str:
+@functools.lru_cache(maxsize=1)
+def production_mta_submit_subnet() -> str:
     """Production's IPAM-pinned mta-submit subnet, read from compose.yaml.
 
     Derived, never hand-typed: any consumer's whole requirement is being a
@@ -47,21 +49,27 @@ def _production_mta_submit_subnet() -> str:
     copy would keep comparing against a stale value after production moved.
 
     Lives in this docker-free, loader-only module rather than in
-    portal/tests/e2e/_mta_helpers.py -- both the base test_compose_colocation.py
-    (no Docker required, per its own docstring) and the e2e-scoped test_mta.py
+    portal/tests/e2e/_mta_helpers.py -- both test_compose_colocation.py (no
+    Docker required, per its own docstring) and the e2e-scoped test_mta.py
     need it, and the base suite must not depend on an e2e/docker-orchestration
     module to stay Docker-free.
+
+    A plain, lazily-memoized function rather than a module-level constant:
+    this loader is imported by several unrelated compose-parsing test modules
+    that only need `load_compose` (test_compose_edge.py, test_compose_gateway.py,
+    test_build_revision.py, ...), and an eager call here would make every one
+    of their test collections depend on compose.yaml's mta-submit block, not
+    just the two modules that actually use this value.
     """
-    net = load_compose(REPO_ROOT / "compose.yaml")["networks"]["mta-submit"]
-    # Tolerant of every partial shape, same as test_compose_colocation.py's
-    # _pinned_subnet_of -- an unworded KeyError/IndexError at module-import
-    # time (this is called eagerly below) would fail every importer's test
-    # collection with an opaque traceback instead of a clear message.
+    # Tolerant of every partial shape, same pattern as test_compose_colocation.py's
+    # _pinned_subnet_of -- a KeyError/IndexError here would surface as an
+    # unworded traceback in whichever test happens to trigger the first call,
+    # instead of a clear message.
+    networks = load_compose(REPO_ROOT / "compose.yaml").get("networks") or {}
+    net = networks.get("mta-submit")
+    assert net is not None, "compose.yaml declares no networks.mta-submit"
     configs = (net.get("ipam") or {}).get("config") or []
     assert configs and configs[0].get("subnet"), "compose.yaml networks.mta-submit has no pinned ipam subnet"
     subnet = configs[0]["subnet"]
     assert isinstance(subnet, str), f"compose.yaml mta-submit subnet is {subnet!r}"
     return subnet
-
-
-PRODUCTION_MTA_SUBMIT_SUBNET = _production_mta_submit_subnet()

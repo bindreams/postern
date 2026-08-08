@@ -17,12 +17,12 @@ import pytest
 
 from ._helpers import run
 from ._mta_helpers import (
-    PRODUCTION_MTA_SUBMIT_SUBNET,
     docker_inspect,
     get_container_id,
     get_provisioner_state,
     mta_exec,
     network_inspect,
+    production_mta_submit_subnet,
     read_dkim_volume_file,
 )
 
@@ -245,9 +245,10 @@ def test_mta_submit_network_is_internal(mta_e2e_stack):
     # duplicate -- Docker refuses the overlap either way, and a `!=` string
     # compare would miss it (see the same reasoning in
     # test_pinned_subnets_are_pairwise_disjoint, test_compose_colocation.py).
-    assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(PRODUCTION_MTA_SUBMIT_SUBNET)), (
+    production_subnet = production_mta_submit_subnet()
+    assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(production_subnet)), (
         f"the e2e mta-submit network ({expected}) overlaps production's subnet "
-        f"({PRODUCTION_MTA_SUBMIT_SUBNET}); Docker refuses overlapping subnets, so this stack cannot "
+        f"({production_subnet}); Docker refuses overlapping subnets, so this stack cannot "
         "start on a host that already runs production"
     )
 

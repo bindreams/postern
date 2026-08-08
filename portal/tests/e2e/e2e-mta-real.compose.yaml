@@ -20,7 +20,7 @@
 ## Co-location: the VPS this runs on very likely already has a production stack.
 ## This overlay therefore pins its own mta-submit subnet (10.234.44.0/29) and
 ## publishes the mta's SMTP listener on 127.0.0.1:2525, not host 25. See
-## test_compose_submission.py.
+## test_compose_colocation.py.
 
 services:
   mta:

@@ -20,15 +20,13 @@ from pathlib import Path
 
 import pytest
 
-from ._compose import PRODUCTION_MTA_SUBMIT_SUBNET, load_compose
+from ._compose import load_compose, production_mta_submit_subnet
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SUBMIT_ALIAS = "mta-submit"
 
-# Glob-derived, never a hand-maintained list: a fifth e2e overlay or a new
-# production compose file is covered by every guard below the moment it lands
-# (same construction as test_e2e_image_isolation.py).
+# Same glob-derived construction as test_e2e_image_isolation.py.
 E2E_COMPOSE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
 
 
@@ -62,9 +60,8 @@ def test_production_mta_submit_subnet_is_the_documented_literal():
     The subnet <-> CIDR <-> mynetworks agreement is checked for this file and
     every overlay by test_every_compose_file_agrees_on_its_own_mynetworks_chain.
     """
-    assert PRODUCTION_MTA_SUBMIT_SUBNET == "172.30.42.0/29", (
-        f"unexpected production mta-submit subnet {PRODUCTION_MTA_SUBMIT_SUBNET!r}"
-    )
+    subnet = production_mta_submit_subnet()
+    assert subnet == "172.30.42.0/29", f"unexpected production mta-submit subnet {subnet!r}"
 
 
 # Submission chain (subnet <-> MTA_SUBMIT_CIDR <-> mynetworks) =========================================================
@@ -152,16 +149,7 @@ def _check_submission_chain(path: Path, *, exempt: frozenset[Path]) -> str | Non
     subnet = _pinned_subnet_of(net, where=rel)
 
     # Checked whenever the file declares the network at all, independent of
-    # whether it also pins a subnet/CIDR: a file that re-opens mta-submit only
-    # to (accidentally or otherwise) drop `internal: true` would let any
-    # service on the host relay through mta unauthenticated, and that hazard
-    # doesn't depend on the same file also pinning IPAM. Exempt files get a
-    # narrower version of the same check: _PARTIAL_SUBMISSION_OVERLAYS exists
-    # so a file missing half the subnet/CIDR pair can't be checked for THAT
-    # agreement in isolation -- it does not mean every check on the file is
-    # suspended. An exempt file may omit `internal:` (inheriting the base
-    # file's `internal: true` at merge time) but must never actively set it
-    # to false.
+    # whether it also pins a subnet/CIDR (see the two tests below for why).
     if net is not None:
         if path not in exempt:
             assert net.get("internal") is True, f"{rel}: {SUBMIT_ALIAS} network must be internal: true"
@@ -248,7 +236,7 @@ def test_partial_submission_overlay_exemption_skips_files_that_would_otherwise_f
     assert _check_submission_chain(fake_path, exempt=frozenset({fake_path})) is None
 
 
-# Subnet inventory and disjointness =====================================================================================
+# Subnet inventory and disjointness ====================================================================================
 def _pinned_subnets(path: Path) -> list[tuple[str, str | None, ipaddress.IPv4Network | ipaddress.IPv6Network]]:
     """(network key, EXPLICIT Docker network name or None, subnet) for every
     IPAM subnet a compose file pins.
@@ -310,6 +298,12 @@ def _find_subnet_overlaps(entries: list[_SubnetEntry]) -> list[str]:
     """
     problems = []
     for (pa, ka, na, sa), (pb, kb, nb, sb) in itertools.combinations(entries, 2):
+        if sa.version != sb.version:
+            # A dual-stack network (enable_ipv6: true) legitimately pins one
+            # IPv4 and one IPv6 config entry under the same name -- that is
+            # not two conflicting subnets on one network, and the two
+            # families can never overlap on the wire either way.
+            continue
         shown_a = f"{_rel(pa)} {ka} ({na or '<project-derived>'}) {sa}"
         shown_b = f"{_rel(pb)} {kb} ({nb or '<project-derived>'}) {sb}"
         # An interpolated name (`${VAR:-default}`) is not provably the same
@@ -422,7 +416,20 @@ def test_find_subnet_overlaps_does_not_trust_interpolated_names_as_equal():
     assert "overlaps" in problems[0]
 
 
-# Host ports =============================================================================================================
+def test_find_subnet_overlaps_allows_a_dual_stack_network_same_name_different_family():
+    """`enable_ipv6: true` lets one Docker network legitimately pin both an
+    IPv4 and an IPv6 `ipam.config` entry -- two entries, same name, same
+    family, deliberately different subnets. Must not be mistaken for the
+    "same name, mismatched subnet" collision case."""
+    a = REPO_ROOT / "a.compose.yaml"
+    entries: list[_SubnetEntry] = [
+        (a, "mta-submit", "dual-stack-net", ipaddress.ip_network("10.99.0.0/29")),
+        (a, "mta-submit", "dual-stack-net", ipaddress.ip_network("fd00:dead:beef::/64")),
+    ]
+    assert _find_subnet_overlaps(entries) == []
+
+
+# Host ports ===========================================================================================================
 def parse_published_ports(entries: list, *, where: str) -> list[tuple[str | None, int, str]]:
     """(host_ip, host_port, protocol) for each entry of one service's `ports:` list.
 
@@ -601,7 +608,7 @@ def test_is_loopback_accepts_ipv6_and_rejects_bare_and_malformed():
     assert _is_loopback("not-an-ip") is False
 
 
-# Documentation literals =================================================================================================
+# Documentation literals ===============================================================================================
 def _mta_submit_subnet(path: Path) -> str:
     for key, _, net in _pinned_subnets(path):
         if key == SUBMIT_ALIAS:

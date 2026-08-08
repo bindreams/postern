@@ -24,14 +24,18 @@ from ci_lint_lib import parse_dry_run_hook_files  # noqa: E402
 from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 
 # A trimmed but structurally real transcript covering every entry in
-# `PER_HOOK_CHECKS` plus the two hooks it deliberately excludes: two ordinary
-# hooks, a `pass_filenames = false` hook (ty, no file list at all), and the
-# two same-id mdformat entries told apart only by their display name. Tracked
+# `PER_HOOK_CHECKS`, plus `ty check` and `shellcheck` -- the two hooks
+# `PER_HOOK_CHECKS` deliberately excludes (see that constant's own header
+# comment for why: `pass_filenames = false` makes ty's own `types`
+# restriction irrelevant, and shellcheck has its own live per-file
+# reachability check in scripts/ci-lint-selftest.sh instead) -- and the two
+# same-id mdformat entries told apart only by their display name. Tracked
 # files are a.py/b.py (python), README.md (non-docs markdown), docs/index.md
 # (docs markdown), run.sh (text+executable+shell, so it also exercises `check
-# that executables have shebangs`, whose predicate every OTHER fixture file
-# here fails), and config.yaml (text, not rust/markdown/python, so it also
-# exercises `Check .editorconfig rules`'s predicate).
+# that executables have shebangs` and `shellcheck`, whose predicates every
+# OTHER fixture file here fails), and config.yaml (text, not
+# rust/markdown/python, so it also exercises `Check .editorconfig rules`'s
+# predicate).
 SAMPLE_LOG = """\
 format section comments.................................................Dry Run
 - hook id: format-section-comments
@@ -71,6 +75,12 @@ mixed line ending.......................................................Dry Run
   - docs/index.md
   - run.sh
   - config.yaml
+shellcheck...............................................................Dry Run
+- hook id: shellcheck
+- duration: 0.00s
+
+  `shellcheck` would be run on 1 files:
+  - run.sh
 Check .editorconfig rules...............................................Dry Run
 - hook id: editorconfig-checker
 - duration: 0.00s

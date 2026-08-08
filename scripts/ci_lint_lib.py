@@ -194,8 +194,9 @@ def parse_dry_run_hook_files(log: str) -> dict[str, list[str]]:
     if duplicated:
         raise ValueError(
             f"prek's dry-run output has more than one hook section named {sorted(duplicated)} -- "
-            "prek.toml has two hooks sharing a display name (same `id`, no distinguishing `name =`), "
-            "which would silently merge their per-hook coverage checks. Give each a unique `name =`."
+            "two hooks in prek.toml resolve to the same display name (either the same `id` with no "
+            "distinguishing `name =`, or two different `id`s whose upstream manifests both default to "
+            "this name), which would silently merge their per-hook coverage checks. Give one a unique `name =`."
         )
     return by_name
 

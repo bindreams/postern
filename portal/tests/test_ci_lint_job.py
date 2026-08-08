@@ -108,25 +108,36 @@ def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
 
 
-def test_no_two_hooks_share_a_display_name():
-    """`hook.get("name", hook.get("id"))` is the identity every other test in this
-    file keys on -- `test_prek_has_exactly_the_expected_hooks`'s set comparison,
+def test_no_two_hooks_share_a_dry_run_display_name():
+    """The identity that actually matters -- prek's dry-run *display* name, via
+    `HOOK_ID_TO_DRY_RUN_NAME` -- not prek.toml's own `name`/`id` text.
+
+    `test_prek_has_exactly_the_expected_hooks`'s set comparison,
     `test_no_hook_narrows_its_own_file_set_unexpectedly`'s `(name, key)` pairs, and
-    `test_every_hook_has_a_dry_run_coverage_check`'s roster diff all silently
-    collapse two hooks sharing a name into one entry (a `set` dedupes, so a
-    duplicate name changes neither side of an equality check). prek.toml does not
-    enforce name uniqueness itself -- `name =` is optional, falling back to `id` --
-    so this is the one guard that makes every other check's `name`-keying safe
-    to rely on; enforce it once here rather than converting every downstream
+    `test_every_hook_has_a_dry_run_coverage_check`'s roster diff all key on the
+    dry-run name (the last two through `HOOK_ID_TO_DRY_RUN_NAME`) and all silently
+    collapse two hooks sharing THAT name into one entry (a `set` dedupes, so a
+    duplicate changes neither side of an equality check) -- even when the two
+    hooks' prek.toml `id`s differ, e.g. `editorconfig-checker` and a hypothetical
+    `editorconfig-checker-system` both resolve to the upstream display name `Check
+    .editorconfig rules`. Keying this guard on prek.toml's own `name`/`id` instead
+    of the mapped dry-run name would miss exactly that case. prek.toml does not
+    enforce dry-run-name uniqueness itself -- `name =` is optional, falling back to
+    `id`, and even an explicit `name =` can coincide with another hook's upstream
+    name -- so this is the one guard that makes every other check's name-keying
+    safe to rely on; enforce it once here rather than converting every downstream
     check to a counted/ordered comparison.
     """
-    names = [hook.get("name", hook.get("id")) for hook in _hooks()]
-    duplicates = {name for name in names if names.count(name) > 1}
+    dry_run_names = [
+        HOOK_ID_TO_DRY_RUN_NAME.get(hook.get("name", hook.get("id")), hook.get("name", hook.get("id")))
+        for hook in _hooks()
+    ]
+    duplicates = {name for name in dry_run_names if dry_run_names.count(name) > 1}
 
     assert not duplicates, (
-        f"these hooks share a display name with another hook: {sorted(duplicates)}. Every hook needs a name "
-        "unique among the whole roster -- prek.toml's two mdformat entries do this via an explicit `name =` "
-        "on the second one; a duplicate silently collapses in every set-keyed check in this file"
+        f"these hooks share a dry-run display name with another hook: {sorted(duplicates)}. Every hook needs a "
+        "dry-run display name unique among the whole roster -- prek.toml's two mdformat entries do this via an "
+        "explicit `name =` on the second one; a duplicate silently collapses in every name-keyed check in this file"
     )
 
 

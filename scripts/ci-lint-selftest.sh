@@ -26,14 +26,13 @@ mkdir -p .tmp
 exec 9>.tmp/ci-lint.lock
 flock -x 9
 
-# Scratch output lives under .tmp/ (gitignored) so a run that aborts before
-# the trap-based cleanup below can't trip scripts/deploy.sh's dirty-worktree
-# check or get swept into a `git add -A`. The three fixture paths below are
-# also gitignored, for the same reason -- see .gitignore's own comment for
-# why they can't just live in .tmp/. mktemp'd rather than fixed names, as
-# defense in depth alongside the flock above and for a clearer diagnostic if
-# the lock is ever bypassed (e.g. a future edit that drops it from one of
-# the two scripts).
+# Scratch output lives under .tmp/ (gitignored) -- see scripts/ci-lint-run.sh's
+# own SCRATCH_DIR comment for why an aborted run's leftovers are safe there.
+# The three fixture paths below are also gitignored, for the same reason --
+# see .gitignore's own comment for why they can't just live in .tmp/.
+# mktemp'd rather than fixed names, as defense in depth alongside the flock
+# above and for a clearer diagnostic if the lock is ever bypassed (e.g. a
+# future edit that drops it from one of the two scripts).
 #
 # The trap is installed BEFORE any of the four `mktemp` calls, not after: an
 # empty-string path in the trap body is a harmless `rm -rf ""` no-op, but a

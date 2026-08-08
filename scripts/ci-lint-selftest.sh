@@ -9,11 +9,11 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 # Exclusive lock, held for this script's entire run, shared with
-# scripts/ci-lint-run.sh (same lock file): the ty fixture below briefly
-# exists as a real file under portal/src/postern/, and ty's
-# `pass_filenames = false` hook scans that whole directory regardless of git
+# scripts/ci-lint-run.sh (same lock file): the ty fixtures below briefly
+# exist as real files under portal/src/postern/ and scripts/, and ty's
+# `pass_filenames = false` hook scans both directories regardless of git
 # tracking -- so a concurrent `ci-lint-run.sh` (a second terminal during
-# local debugging, or a retried job) would see the fixture as a genuine type
+# local debugging, or a retried job) would see a fixture as a genuine type
 # error in the real run, not just in this script's own fixtures. `mkdir -p`
 # both so a from-scratch checkout has somewhere for the lock file to live.
 #
@@ -21,7 +21,7 @@ shopt -s inherit_errexit
 # specifically (the pair that matters in CI, where they run as two steps of
 # the same job). It does NOT serialize against an unrelated concurrent
 # `prek run` / `git commit` (the installed pre-commit hook) / `git add -A` in
-# the same working tree -- those don't take this lock either, so the two
+# the same working tree -- those don't take this lock either, so the three
 # fixture files below are gitignored as a second line of defense: a leak from
 # that scenario can't be staged or trip scripts/deploy.sh's dirty-worktree
 # check, even though it can still transiently misdiagnose a concurrent manual
@@ -33,27 +33,34 @@ flock -x 9
 
 # Scratch output lives under .tmp/ (gitignored) so a run that aborts before
 # the trap-based cleanup below can't trip scripts/deploy.sh's dirty-worktree
-# check or get swept into a `git add -A`. The two fixture files below are the
-# exception: prek matches them by their real, meaningful path (repo root for
-# `--files`, portal/src/postern/ for ty's whole-project scan), so they can't
-# move into the scratch dir -- both patterns are in .gitignore for the same
-# reason as a leftover .tmp/ scratch dir. mktemp'd rather than fixed names, as
-# defense in depth alongside the flock above and for a clearer diagnostic if
-# the lock is ever bypassed (e.g. a future edit that drops it from one of the
-# two scripts).
+# check or get swept into a `git add -A`. The three fixture files below are
+# the exception: prek matches them by their real, meaningful path (repo root
+# for `--files`, portal/src/postern/ and scripts/ for ty's project scan), so
+# they can't move into the scratch dir -- all three patterns are in
+# .gitignore for the same reason as a leftover .tmp/ scratch dir. mktemp'd
+# rather than fixed names, as defense in depth alongside the flock above and
+# for a clearer diagnostic if the lock is ever bypassed (e.g. a future edit
+# that drops it from one of the two scripts).
 #
-# The trap is installed BEFORE any of the three `mktemp` calls, not after: an
+# The trap is installed BEFORE any of the four `mktemp` calls, not after: an
 # empty-string path in the trap body is a harmless `rm -rf ""` no-op, but a
-# trap installed only after all three succeed leaves a window where the
-# 2nd/3rd `mktemp` failing (disk full, a permissions issue) aborts under
-# `set -e` with whatever the 1st/2nd already created never cleaned up -- for
-# TY_FIXTURE specifically, that's the same poisoning risk this whole trap
-# exists to prevent.
-SCRATCH_DIR="" FIXTURE_SH="" TY_FIXTURE=""
-trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE"' EXIT
+# trap installed only after all four succeed leaves a window where a later
+# `mktemp` failing (disk full, a permissions issue) aborts under `set -e`
+# with whatever the earlier ones already created never cleaned up -- for
+# either ty fixture, that's the same poisoning risk this whole trap exists
+# to prevent.
+SCRATCH_DIR="" FIXTURE_SH="" TY_FIXTURE="" TY_FIXTURE_SCRIPTS=""
+trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE" "$TY_FIXTURE_SCRIPTS"' EXIT
 SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-selftest-XXXXXX)"
 FIXTURE_SH="$(mktemp --suffix=.sh .prek-gate-fixture-XXXXXX)"
-TY_FIXTURE="$(mktemp --suffix=.py portal/src/postern/_ty_gate_fixture_XXXXXX)"
+TY_FIXTURE="$(mktemp --suffix=.py portal/src/postern/_ty_gate_fixture_portal_XXXXXX)"
+# A second ty fixture living directly under scripts/ (not portal/src/postern/):
+# prek.toml's ty entry names `../scripts` as a check target specifically so
+# every first-party script (not just ci_lint_lib.py) gets type-checked, and
+# nothing else proves that claim -- test_ci_lint_job.py never reads a hook's
+# `entry`, and ci-lint-run.sh's zero-match grep can't see a narrowed entry
+# because the hook still matches python files and still prints `Passed`.
+TY_FIXTURE_SCRIPTS="$(mktemp --suffix=.py scripts/_ty_gate_fixture_scripts_XXXXXX)"
 
 cat >"$FIXTURE_SH" <<'FIXTURE'
 #!/usr/bin/env bash
@@ -74,12 +81,14 @@ rm "$FIXTURE_SH"
 
 printf 'x: int = "not an int"\n' >"$TY_FIXTURE"
 test -s "$TY_FIXTURE" || { echo "could not write the ty fixture -- setup failure"; exit 1; }
+printf 'y: int = "not an int"\n' >"$TY_FIXTURE_SCRIPTS"
+test -s "$TY_FIXTURE_SCRIPTS" || { echo "could not write the scripts/ ty fixture -- setup failure"; exit 1; }
 
 set +e
 uv run --project portal --group dev prek run ty --all-files >"$SCRATCH_DIR/ty-fixture.log" 2>&1
 ty_status=$?
 set -e
-rm "$TY_FIXTURE"
+rm "$TY_FIXTURE" "$TY_FIXTURE_SCRIPTS"
 
 echo "--- shellcheck fixture ---"
 cat "$SCRATCH_DIR/shellcheck-fixture.log"
@@ -110,7 +119,10 @@ grep -qE '^ty check\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_D
 test "$ty_status" -ne 0 ||
   { echo "ty passed a known-bad annotation -- the type gate is dead"; exit 1; }
 grep -q 'invalid-assignment' "$SCRATCH_DIR/ty-fixture.log" || { echo "no invalid-assignment -- the type gate is dead"; exit 1; }
-grep -q '_ty_gate_fixture' "$SCRATCH_DIR/ty-fixture.log" || { echo "ty never saw the fixture -- the type gate is dead"; exit 1; }
+grep -q '_ty_gate_fixture_portal' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "ty never saw the portal/src/postern fixture -- the type gate is dead"; exit 1; }
+grep -q '_ty_gate_fixture_scripts' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "ty never saw the scripts/ fixture -- the ../scripts check target is dead"; exit 1; }
 
 # scripts/ci-lint-run.sh's zero-match grep rests on an assumption -- that prek
 # reports a hook matching no files as `Skipped` with this exact phrase and

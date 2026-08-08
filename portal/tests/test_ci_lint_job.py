@@ -41,7 +41,31 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PREK_CONFIG = REPO_ROOT / "prek.toml"
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from ci_lint_lib import PER_HOOK_CHECKS  # noqa: E402
 from ci_lint_lib import first_party_shell_scripts  # noqa: E402
+
+# Hooks that legitimately need no `ci_lint_lib.PER_HOOK_CHECKS` entry:
+# `shellcheck` has its own dedicated, live per-file reachability check in
+# scripts/ci-lint-selftest.sh (shell is the language this whole gate exists
+# to enforce), and `ty check`'s `pass_filenames = false` makes its own
+# `types = ["python"]` restriction irrelevant to what it actually scans (see
+# ci_lint_lib.py's own comment on `PER_HOOK_CHECKS`).
+HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS = frozenset({"shellcheck", "ty check"})
+
+# prek.toml's `id`/`name` (what `_hooks()` below reads) does not always match
+# `PER_HOOK_CHECKS`'s key, which is prek's own dry-run *display* name pulled
+# from each hook's upstream `.pre-commit-hooks.yaml`. Four external hooks
+# carry no `name =` override in prek.toml, so `_hooks()` falls back to their
+# bare `id` -- an explicit map here, rather than a fuzzy/derived comparison,
+# is what keeps the two rosters from silently drifting apart. `format
+# section comments` and the two `mdformat` entries already set `name =` to
+# match their display name, so they need no entry.
+HOOK_ID_TO_DRY_RUN_NAME = {
+    "check-executables-have-shebangs": "check that executables have shebangs",
+    "check-shebang-scripts-are-executable": "check that scripts with shebangs are executable",
+    "mixed-line-ending": "mixed line ending",
+    "editorconfig-checker": "Check .editorconfig rules",
+}
 
 # Keys on a hook table that narrow which files -- or which runs -- it
 # participates in. Anything else (`name`, `args`, `verbose`, ...) leaves the
@@ -146,4 +170,28 @@ def test_no_hook_narrows_its_own_file_set_unexpectedly():
         f"these hooks narrow their own file matcher: {sorted(narrowing - allowed)}. prek reports a narrowed "
         "hook as `Passed` with no file count, so add the entry here only after checking it does not drop "
         "files the gate is supposed to cover"
+    )
+
+
+def test_every_hook_has_a_dry_run_coverage_check():
+    """Every hook in prek.toml, except the documented exemptions, needs a `ci_lint_lib.PER_HOOK_CHECKS` entry.
+
+    Adding a hook to `prek.toml` only fails `test_prek_has_exactly_the_expected_hooks`,
+    whose message tells the author to update `EXPECTED_HOOKS` and says nothing about
+    `PER_HOOK_CHECKS`. Following just that instruction leaves the new hook's matcher
+    -- including one pinned upstream by a `rev =`, invisible to prek.toml's own text
+    -- with no per-hook narrowing check: it can be narrowed to a subset of its files
+    with every other guard staying green (`Passed`, no file count; the union check in
+    `ci_lint_lib.find_dry_run_coverage_gaps` is dominated by the file/executable-wide
+    hooks that claim nearly every tracked file regardless).
+    """
+    checked_hooks = {name for name, _tag_matches, _in_scope in PER_HOOK_CHECKS}
+    actual = {hook.get("name", hook.get("id")) for hook in _hooks()}
+    actual_dry_run_names = {HOOK_ID_TO_DRY_RUN_NAME.get(name, name) for name in actual}
+    missing = actual_dry_run_names - checked_hooks - HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS
+
+    assert not missing, (
+        f"these hooks have no ci_lint_lib.PER_HOOK_CHECKS entry: {sorted(missing)}. Add one (see "
+        "PER_HOOK_CHECKS's own header comment for the predicate shape), or add the hook to "
+        "HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS here with a reason if it genuinely needs none"
     )

@@ -34,7 +34,15 @@ name = "ty check"
 # explicit path. The whole directory, not just ci_lint_lib.py: a single named
 # file would leave every OTHER script in scripts/ unchecked despite the claim
 # (CLAUDE.md) that this is the only place CI type-checks.
-entry = "uv run --directory portal --group dev ty check . ../scripts"
+#
+# `--no-respect-ignore-files`: without it, whether ty applies .gitignore to a
+# given path is inconsistent between a single check root and multiple roots
+# (measured against ty 0.0.31 -- a gitignored file under portal/src/postern/
+# is skipped by `ty check .` alone but caught by `ty check . ../scripts`).
+# scripts/ci-lint-selftest.sh's fixtures are gitignored (so a leak can't be
+# staged), so this flag is what makes their detection depend on ty actually
+# scanning the file rather than on that incidental multi-root behavior.
+entry = "uv run --directory portal --group dev ty check . ../scripts --no-respect-ignore-files"
 language = "python"
 types = ["python"]
 pass_filenames = false

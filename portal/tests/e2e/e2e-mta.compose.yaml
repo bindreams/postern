@@ -161,7 +161,8 @@ networks:
   default:
     name: postern-e2e-mta-default
     # NOT inside Docker's default dynamic-allocation pool (172.17.0.0/16-
-    # 172.31.0.0/16) -- see the co-location invariant in CLAUDE.md.
+    # 172.31.0.0/16, plus 192.168.0.0/16 in /20s) -- see the co-location
+    # invariant in CLAUDE.md.
     ipam:
       config:
         - subnet: 10.234.45.0/24

@@ -280,8 +280,39 @@ def test_pinned_subnet_inventory_is_complete():
         ("compose.yaml", "mta-submit", "172.30.42.0/29"),
         ("portal/tests/e2e/e2e-mta.compose.yaml", "default", "10.234.45.0/24"),
         ("portal/tests/e2e/e2e-mta.compose.yaml", "mta-submit", "10.234.43.0/29"),
+        ("portal/tests/e2e/e2e-mta-real.compose.yaml", "default", "10.234.46.0/24"),
         ("portal/tests/e2e/e2e-mta-real.compose.yaml", "mta-submit", "10.234.44.0/29"),
     }, f"the set of IPAM-pinned subnets changed: {sorted(inventory)!r}"
+
+
+def test_unpinned_e2e_networks_are_exactly_the_documented_residual():
+    """Every network any e2e compose file declares with NO ipam pin is
+    outside every subnet guard above -- dynamically allocated from Docker's
+    default pool, the residual gap CLAUDE.md's co-location bullet names
+    explicitly (not something this issue's scope closes; most of these
+    networks are declared by the shared base e2e.compose.yaml and
+    e2e-edge.compose.yaml, used suite-wide and owned outside this issue).
+    Tripwire, not enforcement: a NEW unpinned e2e network changes this set
+    and reds the test, forcing a human to decide whether it needs a pin or
+    just a doc update -- the one thing nothing else in this module catches.
+    """
+    unpinned = set()
+    for path in E2E_COMPOSE_FILES():
+        pinned_keys = {key for key, _, _ in _pinned_subnets(path)}
+        for key in (load_compose(path).get("networks") or {}):
+            if key not in pinned_keys:
+                unpinned.add((_rel(path), key))
+    assert unpinned == {
+        ("portal/tests/e2e/e2e.compose.yaml", "default"),
+        ("portal/tests/e2e/e2e.compose.yaml", "e2e-tunnel-entry"),
+        ("portal/tests/e2e/e2e.compose.yaml", "e2e-shadowsocks"),
+        ("portal/tests/e2e/e2e-edge.compose.yaml", "default"),
+        ("portal/tests/e2e/e2e-edge.compose.yaml", "e2e-shadowsocks-edge"),
+        ("portal/tests/e2e/e2e-mta.compose.yaml", "e2e-tunnel-entry"),
+        ("portal/tests/e2e/e2e-mta.compose.yaml", "e2e-shadowsocks"),
+        ("portal/tests/e2e/e2e-mta-real.compose.yaml", "e2e-tunnel-entry"),
+        ("portal/tests/e2e/e2e-mta-real.compose.yaml", "e2e-shadowsocks"),
+    }, f"the set of unpinned e2e networks changed: {sorted(unpinned)!r} -- update CLAUDE.md's residual-gap note"
 
 
 _SubnetEntry = tuple[Path, str, "str | None", "ipaddress.IPv4Network | ipaddress.IPv6Network"]
@@ -307,6 +338,12 @@ def _find_subnet_overlaps(entries: list[_SubnetEntry]) -> list[str]:
     """
     problems = []
     for (pa, ka, na, sa), (pb, kb, nb, sb) in itertools.combinations(entries, 2):
+        if (pa, ka) == (pb, kb):
+            # Two `ipam.config` entries under the SAME file+network-key are
+            # one network's own multi-pool list (e.g. two IPv4 CIDRs, valid
+            # Compose/Docker), not two declarations to reconcile against each
+            # other -- neither the same-name nor the overlap check applies.
+            continue
         shown_a = f"{_rel(pa)} {ka} ({na or '<project-derived>'}) {sa}"
         shown_b = f"{_rel(pb)} {kb} ({nb or '<project-derived>'}) {sb}"
         # An interpolated name (`${VAR:-default}`) is not provably the same
@@ -462,6 +499,88 @@ def test_find_subnet_overlaps_allows_a_dual_stack_network_same_name_different_fa
     assert _find_subnet_overlaps(entries) == []
 
 
+def test_find_subnet_overlaps_allows_a_network_with_two_ipv4_pools():
+    """A single Docker network can legitimately have more than one IPv4
+    `ipam.config` entry (`docker network create --subnet A --subnet B`).
+    Same file, same network key, two pools -- not two networks to compare,
+    and must not be flagged as "same name, different subnets"."""
+    a = REPO_ROOT / "a.compose.yaml"
+    entries: list[_SubnetEntry] = [
+        (a, "edge", "edge-net", ipaddress.ip_network("10.99.0.0/29")),
+        (a, "edge", "edge-net", ipaddress.ip_network("10.99.1.0/29")),
+    ]
+    assert _find_subnet_overlaps(entries) == []
+
+
+def _declared_network_names(path: Path) -> list[tuple[str, str | None, bool]]:
+    """(network key, explicit name, external) for every network a compose
+    file declares -- independent of whether it pins a subnet. Unlike
+    _pinned_subnets, an unpinned entry still shows up here: both a bare
+    name reuse and `external: true` attach to another Docker network without
+    ever touching Docker's IPAM allocator, so a subnet-only check can't see
+    either. _PARTIAL_SUBMISSION_OVERLAYS exists specifically because a file
+    can declare `mta-submit` with no `ipam:` at all -- the same shape.
+    """
+    found = []
+    for key, cfg in (load_compose(path).get("networks") or {}).items():
+        cfg = cfg or {}
+        found.append((key, cfg.get("name"), bool(cfg.get("external"))))
+    return found
+
+
+def _find_network_name_reuse(entries: list[tuple[Path, str, str | None, bool]]) -> list[str]:
+    """Problem strings for cross-family Docker network name reuse (pinned or
+    not) and any e2e network declared `external: true`. Split out for direct
+    synthetic testing, same pattern as _find_subnet_overlaps."""
+    problems = []
+    for path, key, name, external in entries:
+        if _compose_family(path) == "e2e" and external:
+            problems.append(f"{_rel(path)}: network {key!r} sets external: true")
+    for (pa, ka, na, _), (pb, kb, nb, _) in itertools.combinations(entries, 2):
+        if na is None or nb is None or na != nb or "${" in na or "${" in nb:
+            continue
+        if _compose_family(pa) == _compose_family(pb):
+            continue
+        problems.append(
+            f"{_rel(pa)} {ka!r} and {_rel(pb)} {kb!r} both declare Docker network name {na!r} across production/e2e"
+        )
+    return problems
+
+
+def test_no_cross_family_network_name_reuse_or_external_network():
+    """Subnet-independent sibling of test_pinned_subnets_are_pairwise_disjoint:
+    that guard only ever sees IPAM-*pinned* entries, so an e2e file that
+    declares production's exact network name with no `ipam:` block (or reaches
+    it via `external: true`) is invisible to it. This one isn't."""
+    entries = [(p, key, name, ext) for p in ALL_COMPOSE_FILES() for key, name, ext in _declared_network_names(p)]
+    assert entries, "no declared networks found -- this guard would pass vacuously"
+    problems = _find_network_name_reuse(entries)
+    assert not problems, (
+        "An e2e compose file must not reuse production's Docker network name, pinned or not, "
+        "and must not attach to an existing network via external: true:\n" + "\n".join(f"  {p}" for p in problems)
+    )
+
+
+def test_find_network_name_reuse_flags_unpinned_cross_family_name_collision():
+    """The exact shape _find_subnet_overlaps cannot see: no ipam on either
+    side, so it never reaches _pinned_subnets, but the two files still name
+    the identical Docker network across the production/e2e boundary."""
+    prod = REPO_ROOT / "compose.yaml"
+    e2e = E2E_COMPOSE_DIR / "e2e-mta.compose.yaml"
+    entries = [(prod, "mta-submit", "mta-submit", False), (e2e, "mta-submit", "mta-submit", False)]
+    problems = _find_network_name_reuse(entries)
+    assert len(problems) == 1
+    assert "across production/e2e" in problems[0]
+
+
+def test_find_network_name_reuse_flags_external_on_an_e2e_network():
+    e2e = E2E_COMPOSE_DIR / "e2e-mta.compose.yaml"
+    entries = [(e2e, "mta-submit", None, True)]
+    problems = _find_network_name_reuse(entries)
+    assert len(problems) == 1
+    assert "external: true" in problems[0]
+
+
 # Host ports ===========================================================================================================
 def parse_published_ports(entries: list, *, where: str) -> list[tuple[str | None, int, str]]:
     """(host_ip, host_port, protocol) for each entry of one service's `ports:` list.
@@ -525,11 +644,34 @@ def _published_host_ports(path: Path) -> list[tuple[str, str | None, int, str]]:
     """(service, host_ip, host_port, protocol) for every port a compose file publishes."""
     found = []
     for service, cfg in (load_compose(path).get("services") or {}).items():
+        cfg = cfg or {}
+        # `network_mode: host` claims every host port directly, with no
+        # `ports:` entry to parse -- invisible to every guard below it.
+        assert cfg.get("network_mode") != "host", (
+            f"{_rel(path)}: service {service!r} sets network_mode: host, which claims the entire host port "
+            "namespace and is invisible to the port-collision/loopback guards -- extend this module"
+        )
         # `ports: !reset []` (compose.gateway.yaml) loads as None via ComposeLoader.
-        entries = (cfg or {}).get("ports") or []
+        entries = cfg.get("ports") or []
         for host_ip, port, protocol in parse_published_ports(entries, where=f"{_rel(path)} service {service!r}"):
             found.append((service, host_ip, port, protocol))
     return found
+
+
+def test_published_host_ports_rejects_network_mode_host(monkeypatch):
+    """`network_mode: host` is Compose's other way to claim host ports --
+    bypassing `ports:` entirely, so parse_published_ports never sees it.
+    Tested directly against a synthetic path/compose pair rather than a real
+    file: no compose file in this repo uses network_mode today."""
+    fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-network-mode-host.compose.yaml"
+    fake_compose = {"services": {"mta": {"network_mode": "host"}}}
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "load_compose",
+        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
+    )
+    with pytest.raises(AssertionError, match="network_mode: host"):
+        _published_host_ports(fake_path)
 
 
 def _is_loopback(host_ip: str | None) -> bool:

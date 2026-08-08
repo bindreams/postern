@@ -172,6 +172,11 @@ services:
 networks:
   default:
     name: postern-e2e-mta-real-default
+    # NOT inside Docker's default dynamic-allocation pool -- mirrors the
+    # e2e-mta default network fix. See the co-location invariant in CLAUDE.md.
+    ipam:
+      config:
+        - subnet: 10.234.46.0/24
   e2e-tunnel-entry:
     name: e2e-tunnel-entry-mta-real
   e2e-shadowsocks:

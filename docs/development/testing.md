@@ -141,6 +141,8 @@ uv run pytest -m e2e_mta -v --timeout=180
 The compose project is `postern-e2e-mta` (separate from `postern-e2e`), but both projects publish nginx on `127.0.0.1:8443` and mailpit on `127.0.0.1:8025` — only one project can be up at a time on the same host.
 ```
 
+Both MTA overlays are safe to run on a host that already runs a production stack: they pin their own `mta-submit` subnets (`10.234.43.0/29` and `10.234.44.0/29` against production's `172.30.42.0/29`) and publish only loopback, non-privileged host ports — the real-mode mta's SMTP listener is on `127.0.0.1:2525`, not host `25`.
+
 Manual bring-up, from inside `portal/`:
 
 ```bash

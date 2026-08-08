@@ -240,6 +240,81 @@ def test_find_dry_run_coverage_gaps_flags_editorconfig_narrowing():
     )
 
 
+def test_find_dry_run_coverage_gaps_flags_format_section_comments_narrowing():
+    """b.py is still claimed by yapf, so the union check alone would report this log
+    as clean -- only the per-hook `format section comments` check catches the
+    narrowing.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `format-section-comments` would be run on 2 files:\n  - a.py\n  - b.py\n",
+        "\n  `format-section-comments` would be run on 1 files:\n  - a.py\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("format section comments" in problem and "b.py" in problem for problem in problems)
+
+
+def test_find_dry_run_coverage_gaps_flags_check_shebang_scripts_are_executable_narrowing():
+    """config.yaml is still claimed by mixed-line-ending and editorconfig-checker, so
+    the union check alone would report this log as clean -- only the per-hook
+    `check that scripts with shebangs are executable` check catches the narrowing.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "  `check-shebang-scripts-are-executable` would be run on 6 files:\n"
+        "  - a.py\n  - b.py\n  - README.md\n  - docs/index.md\n  - run.sh\n  - config.yaml\n",
+        "  `check-shebang-scripts-are-executable` would be run on 5 files:\n"
+        "  - a.py\n  - b.py\n  - README.md\n  - docs/index.md\n  - run.sh\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any(
+        "check that scripts with shebangs are executable" in problem and "config.yaml" in problem
+        for problem in problems
+    )
+
+
+def test_find_dry_run_coverage_gaps_flags_mixed_line_ending_narrowing():
+    """run.sh is still claimed by check-executables-have-shebangs, check-shebang-scripts-
+    are-executable, and shellcheck, so the union check alone would report this log as
+    clean -- only the per-hook `mixed line ending` check catches the narrowing.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "  `mixed-line-ending` would be run on 6 files:\n"
+        "  - a.py\n  - b.py\n  - README.md\n  - docs/index.md\n  - run.sh\n  - config.yaml\n",
+        "  `mixed-line-ending` would be run on 5 files:\n"
+        "  - a.py\n  - b.py\n  - README.md\n  - docs/index.md\n  - config.yaml\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("mixed line ending" in problem and "run.sh" in problem for problem in problems)
+
+
+def test_find_dry_run_coverage_gaps_flags_mdformat_narrowing():
+    """README.md is the only fixture in the non-docs mdformat hook's scope -- confirm
+    the per-hook check actually fires on it.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `mdformat` would be run on 1 files:\n  - README.md\n",
+        "\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("mdformat" in problem and "README.md" in problem for problem in problems)
+
+
+def test_find_dry_run_coverage_gaps_flags_mdformat_myst_narrowing():
+    """docs/index.md is the only fixture in the docs mdformat (myst) hook's scope --
+    confirm the per-hook check actually fires on it.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `mdformat` would be run on 1 files:\n  - docs/index.md\n",
+        "\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("mdformat (myst)" in problem and "docs/index.md" in problem for problem in problems)
+
+
 def test_find_dry_run_coverage_gaps_flags_per_hook_narrowing_masked_by_union():
     """A file yapf silently dropped, while another hook still covers it in the union."""
     log_with_narrowed_yapf = SAMPLE_LOG.replace(
@@ -294,6 +369,31 @@ def test_tags_for_first_party_file_returns_none_for_vendored_path():
 
 def test_tags_for_first_party_file_returns_none_for_a_missing_path():
     assert tags_for_first_party_file("this/path/does/not/exist.py") is None
+
+
+def test_tags_for_first_party_file_returns_none_on_a_bare_file_not_found_error(monkeypatch):
+    """identify's `tags_from_path` normally wraps an `os.lstat` miss as `ValueError`, but
+    for a file it cannot classify from its filename alone, it falls through to a content
+    sniff with its own separate `open()` call -- a deletion racing strictly after
+    `tags_from_path`'s own initial lstat check raises a bare `FileNotFoundError` there,
+    unwrapped, from that second call. That must be treated the same as any other
+    "missing" disposition: skipped, not left to propagate and crash the caller.
+
+    The re-stat inside the except block must ALSO see the file as gone here (unlike
+    test_tags_for_first_party_file_propagates_non_missing_lstat_errors, where it
+    doesn't): a real content-sniff race means the file really is gone by the time
+    the disambiguation re-stat runs.
+    """
+
+    def _raise_bare_file_not_found(path):
+        raise FileNotFoundError("simulated content-sniff race")
+
+    def _also_missing(self):
+        raise FileNotFoundError("really gone by the re-stat too")
+
+    monkeypatch.setattr(ci_lint_lib, "tags_from_path", _raise_bare_file_not_found)
+    monkeypatch.setattr(Path, "lstat", _also_missing)
+    assert tags_for_first_party_file("portal/tests/test_ci_lint_lib.py") is None
 
 
 def test_tags_for_first_party_file_propagates_non_missing_lstat_errors(monkeypatch):

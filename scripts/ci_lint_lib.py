@@ -31,8 +31,33 @@ PREK_CONFIG = REPO_ROOT / "prek.toml"
 
 
 @functools.lru_cache(maxsize=1)
+def _prek_config() -> dict:
+    """prek.toml, parsed once per process (see `_vendored_pattern`'s docstring for why
+    "once per process" -- not cached across runs -- is the right lifetime).
+    """
+    return tomllib.loads(PREK_CONFIG.read_text(encoding="utf-8"))
+
+
+def _local_hooks() -> list[dict]:
+    return [hook for repo in _prek_config()["repos"] for hook in repo.get("hooks", [])]
+
+
+def _hook_field(hook_id: str, field: str) -> list[str]:
+    """The value of `field` on the prek.toml hook with this `id`.
+
+    Used to derive `PER_HOOK_CHECKS` predicates from prek.toml's own
+    `types_or`/`exclude_types` text instead of hand-duplicating the same tag
+    set as a second, driftable copy -- see `PER_HOOK_CHECKS`'s own header
+    comment.
+    """
+    for hook in _local_hooks():
+        if hook.get("id") == hook_id:
+            return hook[field]
+    raise KeyError(f"no hook with id {hook_id!r} in prek.toml")
+
+
 def _vendored_pattern() -> re.Pattern[str]:
-    """prek.toml's own top-level `exclude`, compiled once per process.
+    """prek.toml's own top-level `exclude`, compiled.
 
     Not a second hardcoded copy of `^external/`: a hardcoded VENDORED prefix
     string here could silently drift from prek.toml's real `exclude` (e.g. a
@@ -40,13 +65,10 @@ def _vendored_pattern() -> re.Pattern[str]:
     every downstream coverage check filters through this value before ever
     reaching prek's own matcher. Deriving it from prek.toml directly makes
     that drift structurally impossible instead of relying on a test to catch
-    it after the fact. `functools.lru_cache` avoids re-parsing the TOML file
-    on every one of the hundreds of per-file calls in a typical run; a fresh
-    process (every script invocation is one) re-reads it, so this never
-    serves a stale value across runs.
+    it after the fact. `_prek_config` is cached, so this recompiles a small
+    regex on every call but never re-reads the file within one process.
     """
-    config = tomllib.loads(PREK_CONFIG.read_text(encoding="utf-8"))
-    return re.compile(config.get("exclude", ""))
+    return re.compile(_prek_config().get("exclude", ""))
 
 
 def is_vendored(path: str) -> bool:
@@ -106,17 +128,22 @@ def tags_for_first_party_file(path: str) -> frozenset[str] | None:
     full_path = REPO_ROOT / path
     try:
         return frozenset(tags_from_path(full_path))
-    except ValueError:
-        # identify.tags_from_path re-raises every os.lstat failure -- not just
-        # a missing file -- as this same generic ValueError. Re-stat directly
-        # (not Path.exists(), which also swallows PermissionError into False)
-        # to recover the real errno: FileNotFoundError is "indexed but missing
-        # from the working tree" -- an ordinary transient state during a
-        # staged deletion or sparse checkout -- and is skipped; anything else
-        # propagates instead of being silently dropped from the set this
-        # module exists to defend. A residual race between the two stats is
-        # accepted: it can only misclassify a file that changed state during
-        # this single check, not hide a stable unreadable one.
+    except (ValueError, FileNotFoundError):
+        # identify.tags_from_path re-raises most os.lstat failures -- not just
+        # a missing file -- as a generic ValueError. But for a file identify
+        # cannot classify from its filename alone, tags_from_path falls
+        # through to a content sniff (its own separate `open(path, "rb")`)
+        # that can race a deletion landing *after* tags_from_path's initial
+        # lstat and raise a bare FileNotFoundError instead -- caught here too,
+        # for the same reason. Re-stat directly (not Path.exists(), which also
+        # swallows PermissionError into False) to recover the real errno:
+        # FileNotFoundError is "indexed but missing from the working tree" --
+        # an ordinary transient state during a staged deletion or sparse
+        # checkout -- and is skipped; anything else propagates instead of
+        # being silently dropped from the set this module exists to defend. A
+        # residual race between the two stats is accepted: it can only
+        # misclassify a file that changed state during this single check, not
+        # hide a stable unreadable one.
         try:
             full_path.lstat()
         except FileNotFoundError:
@@ -130,6 +157,20 @@ def first_party_shell_scripts() -> list[str]:
 
 
 # Per-hook dry-run coverage checks =====================================================================================
+
+# `format-section-comments`'s `types_or` and `editorconfig-checker`'s
+# `exclude_types` are read directly from prek.toml -- NOT hand-duplicated as
+# a second literal tag set below -- for the same reason `_vendored_pattern`
+# derives from prek.toml's `exclude` instead of a hardcoded prefix: a
+# hardcoded copy here could silently drift from prek.toml's real value with
+# nothing catching it (confirmed empirically before this fix: trimming
+# `types_or` in a hand-duplicated copy left every test in this codebase
+# green). The other hooks' predicates below are NOT similarly derivable --
+# their matchers are pinned entirely upstream (a `rev =`, not prek.toml
+# text), which is exactly why they need a `PER_HOOK_CHECKS` entry at all;
+# see the comment below.
+_FORMAT_SECTION_COMMENTS_TAGS = frozenset(_hook_field("format-section-comments", "types_or"))
+_EDITORCONFIG_EXCLUDE_TAGS = frozenset(_hook_field("editorconfig-checker", "exclude_types"))
 
 # Each entry is (dry-run display name, "is this file the hook's language"
 # tag predicate, "is this file in the hook's path scope" predicate). Every
@@ -148,12 +189,15 @@ def first_party_shell_scripts() -> list[str]:
 # `test_no_hook_narrows_its_own_file_set_unexpectedly` only asserts a
 # narrowing KEY is present and allow-listed, never the key's VALUE, so
 # narrowing an already-allow-listed `types_or`/`exclude_types`/etc. in place
-# (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to it.
+# (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to
+# it -- deriving the predicate from prek.toml (above) closes that specific
+# gap for these two hooks, but the entry itself still needs to exist so the
+# union/per-hook checks below actually run it.
 PER_HOOK_CHECKS: list[tuple[str, Callable[[frozenset[str]], bool], Callable[[str], bool]]] = [
     (
         "format section comments",
         # OR semantics (types_or), matching prek.toml's format-section-comments hook.
-        lambda tags: bool({"rust", "python", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile"} & tags),
+        lambda tags: bool(_FORMAT_SECTION_COMMENTS_TAGS & tags),
         lambda path: True,
     ),
     (
@@ -173,7 +217,7 @@ PER_HOOK_CHECKS: list[tuple[str, Callable[[frozenset[str]], bool], Callable[[str
     ),
     (
         "Check .editorconfig rules",
-        lambda tags: "text" in tags and not ({"rust", "markdown", "python"} & tags),
+        lambda tags: "text" in tags and not (_EDITORCONFIG_EXCLUDE_TAGS & tags),
         lambda path: True,
     ),
     (

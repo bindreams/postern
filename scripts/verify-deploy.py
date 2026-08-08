@@ -153,24 +153,6 @@ def git_revision(repo: Path) -> str:
 
 
 # Observation ==========================================================================================================
-# `with` yields the empty string for an absent label instead of erroring under
-# missingkey=error. `.ID` (not `.Id`) is the typed field on an image: `.Id`
-# forces a fallback to raw-JSON templating, which then blows up on any image
-# whose config has no Labels map at all. `.State.Health` is a nil pointer when
-# no HEALTHCHECK is defined; `{{if .State.Health}}` guards it the same way.
-_CONTAINER_FMT = (
-    '{{.Name}}\t'
-    '{{with index .Config.Labels "com.docker.compose.service"}}{{.}}{{end}}\t'
-    '{{.State.Status}}\t'
-    '{{.State.ExitCode}}\t'
-    '{{.HostConfig.RestartPolicy.Name}}\t'
-    '{{.Image}}\t'
-    '{{with index .Config.Labels "org.opencontainers.image.revision"}}{{.}}{{end}}\t'
-    '{{if .State.Health}}{{.State.Health.Status}}{{end}}'
-)
-_IMAGE_FMT = ('{{.ID}}\t'
-              '{{with index .Config.Labels "org.opencontainers.image.revision"}}{{.}}{{end}}')
-
 MANAGED_FILTER = "label=postern.managed=true"
 INSTANCE_LABEL = "postern.instance"
 DEFAULT_SS_IMAGE = "local/shadowsocks-server"
@@ -284,42 +266,192 @@ def resolve_instance_id(config: dict, project: str) -> str:
     return override or project
 
 
-def _parse_containers(stdout: str) -> tuple[ContainerState, ...]:
-    """Parse `_CONTAINER_FMT`'s tab-separated output.
-
-    Both checks below raise CollectError rather than padding/truncating or
-    defaulting silently: a label value an operator controls (GIT_REVISION,
-    forwarded verbatim into org.opencontainers.image.revision) could in
-    principle contain a tab or newline, which would shift every field after
-    it. A field-count mismatch is exactly that shift; an unparseable exit
-    code is the same failure surfacing one field over. Either one silently
-    misreading `revision` or `health` -- or defaulting `exit_code` to 0, which
-    `ContainerState.completed_one_shot` treats as "exited cleanly" -- is worse
-    than a loud stop.
+def _optional_dict(obj: dict, key: str, label: str, context: str) -> dict:
+    """Read `key` from `obj`: `{}` when absent or JSON null (real Docker
+    optionality -- no labels, no HEALTHCHECK, no explicit restart policy),
+    but raise if present with any other type. `label` is the dotted name
+    used in the error message (e.g. "Config.Labels"), independent of `key`
+    (the literal dict key, e.g. "Labels") so nested lookups still read
+    naturally: `_optional_dict(config, "Labels", "Config.Labels", ctx)`.
     """
-    states: list[ContainerState] = []
-    for line in stdout.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split("\t")
-        if len(parts) != 8:
-            raise CollectError(f"docker inspect produced {len(parts)} fields (expected 8) in line: {line!r}")
-        name, service, state, exit_code, restart_policy, image_id, revision, health = parts
-        if not exit_code.strip().lstrip("-").isdigit():
-            raise CollectError(f"docker inspect produced a non-numeric exit code {exit_code!r} for {name!r}")
-        states.append(
-            ContainerState(
-                service=service,
-                name=name.lstrip("/"),
-                state=state,
-                exit_code=int(exit_code),
-                restart_policy=restart_policy,
-                image_id=image_id,
-                revision=revision,
-                health=health,
-            )
-        )
-    return tuple(states)
+    value = obj.get(key)
+    if value is not None and not isinstance(value, dict):
+        raise CollectError(f"{context} has a non-object {label!r}")
+    return value or {}
+
+
+# C0 controls, DEL, C1 controls (covers tab/newline/CR/NEL), plus the two
+# Unicode line-breaking separators outside that range -- deliberately NOT
+# `str.isprintable()`, which also rejects harmless categories (NBSP,
+# zero-width space, soft hyphen, private-use characters, ...) that cannot
+# corrupt `render_text`'s fixed-width table.
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+
+def _reject_control_chars(value: str, label: str) -> None:
+    """Raise CollectError if `value` contains a control character (tab,
+    newline, ...). Every string this file extracts from a `docker
+    inspect`/`docker image inspect` record ends up interpolated into a
+    `Check.label`/`Check.detail`, which `render_text` emits inside a
+    fixed-width table with no further escaping -- a newline there forges an
+    extra row a log/CI scraper matching `^\\[OK\\]`/`^\\[FAIL\\]` would misread
+    as a real check result.
+    """
+    if _CONTROL_CHARS.search(value):
+        raise CollectError(f"{label} contains control characters: {value!r:.200}")
+
+
+def _optional_leaf_str(d: dict, key: str, context: str) -> str:
+    """Read `key` from an already-validated dict: `""` when absent or JSON
+    null, or the string value -- but raise if present with any other type.
+    Applying this to every leaf, not just the containing dict, is what keeps
+    a wrong-typed label/Name/Status value from being silently stored into a
+    `ContainerState`/`tag_revisions` field typed `str`.
+    """
+    value = d.get(key)
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise CollectError(f"{context} has a non-string {key!r}: {value!r:.200}")
+    _reject_control_chars(value, f"{context}'s {key!r}")
+    return value
+
+
+def _labels(obj: dict, ctx: str) -> dict:
+    """Read `obj.Config.Labels`, the identical Config -> Labels walk
+    `_container_from_inspect` and `_parse_image` both need before reading
+    any label leaf out of it."""
+    config = _optional_dict(obj, "Config", "Config", ctx)
+    return _optional_dict(config, "Labels", "Config.Labels", ctx)
+
+
+def _container_from_inspect(obj: object) -> ContainerState:
+    """Extract the fields `evaluate()` needs from one inspect record.
+
+    `image_id == ""` and `exit_code == 0` already mean something specific
+    downstream, so a missing/wrong-typed/empty required field must raise
+    rather than collapse into those values by accident; optional fields fall
+    back to `_optional_dict`/`_optional_leaf_str` for that behavior.
+    """
+    if not isinstance(obj, dict):
+        raise CollectError(f"docker inspect record is not an object: {obj!r:.200}")
+
+    name = obj.get("Name")
+    if not isinstance(name, str) or not name:
+        raise CollectError(f"docker inspect record has no usable 'Name': {obj!r:.200}")
+    _reject_control_chars(name, "docker inspect record's 'Name'")
+    ctx = f"docker inspect record for {name!r}"
+
+    image_id = obj.get("Image")
+    if not isinstance(image_id, str) or not image_id:
+        raise CollectError(f"{ctx} has no usable 'Image'")
+    _reject_control_chars(image_id, f"{ctx}: 'Image'")
+
+    state = obj.get("State")
+    if not isinstance(state, dict):
+        raise CollectError(f"{ctx} has no usable 'State'")
+    status = state.get("Status")
+    if not isinstance(status, str) or not status:
+        raise CollectError(f"{ctx} has no usable 'State.Status'")
+    _reject_control_chars(status, f"{ctx}: 'State.Status'")
+    exit_code = state.get("ExitCode")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
+        raise CollectError(f"{ctx} has a non-integer ExitCode: {exit_code!r:.200}")
+
+    labels = _labels(obj, ctx)
+
+    # `HostConfig`/`RestartPolicy` are required dicts, not `_optional_dict`,
+    # even though the `Name` leaf inside is legitimately `""` for "no restart
+    # policy" (real Docker output, handled by `_optional_leaf_str` below): a
+    # *missing* RestartPolicy must not collapse into that same `""`, which
+    # `ContainerState.completed_one_shot` reads as "not meant to stay up" --
+    # the exact "ambiguous absence collapses into a meaningful default"
+    # hazard this function's docstring already guards Image/ExitCode against.
+    host_config = obj.get("HostConfig")
+    if not isinstance(host_config, dict):
+        raise CollectError(f"{ctx} has no usable 'HostConfig'")
+    restart_policy = host_config.get("RestartPolicy")
+    if not isinstance(restart_policy, dict):
+        raise CollectError(f"{ctx} has no usable 'HostConfig.RestartPolicy'")
+
+    health = _optional_dict(state, "Health", "State.Health", ctx)
+
+    service = _optional_leaf_str(labels, "com.docker.compose.service", f"{ctx}: Config.Labels")
+    revision = _optional_leaf_str(labels, "org.opencontainers.image.revision", f"{ctx}: Config.Labels")
+    restart_policy_name = _optional_leaf_str(restart_policy, "Name", f"{ctx}: HostConfig.RestartPolicy")
+    health_status = _optional_leaf_str(health, "Status", f"{ctx}: State.Health")
+
+    return ContainerState(
+        service=service,
+        name=name.lstrip("/"),
+        state=status,
+        exit_code=exit_code,
+        restart_policy=restart_policy_name,
+        image_id=image_id,
+        revision=revision,
+        health=health_status,
+    )
+
+
+def _parse_json_array(stdout: str, label: str) -> list:
+    """Decode `stdout` as a JSON array, or raise CollectError -- the shared
+    first step `_parse_containers` and `_parse_image` both need, since
+    `docker inspect`/`docker image inspect` with no `--format` always print a
+    JSON array (`[]` when nothing was found), never blank text. The array
+    itself is Docker's record boundary, decided by json.loads's own grammar,
+    so no byte inside any field -- a tab, a newline, anything -- can be
+    mistaken for structure. `label` names the command in the error message,
+    e.g. "docker inspect" or "docker image inspect local/nginx".
+    """
+    try:
+        records = json.loads(stdout)
+    except ValueError as exc:
+        raise CollectError(f"{label} produced unparseable JSON: {exc}") from exc
+    if not isinstance(records, list):
+        raise CollectError(f"{label} produced a JSON value that is not an array: {stdout[:200]!r}")
+    return records
+
+
+def _parse_containers(stdout: str) -> tuple[ContainerState, ...]:
+    """Parse `docker inspect`'s native JSON array (no `--format`). (The
+    legitimate "zero containers" result, when `names` itself is empty, is
+    handled earlier in `_inspect`, which never calls this function at all.)
+    """
+    records = _parse_json_array(stdout, "docker inspect")
+    return tuple(_container_from_inspect(obj) for obj in records)
+
+
+def _parse_image(stdout: str, ref: str) -> tuple[str, str]:
+    """Parse `docker image inspect`'s native JSON array (no `--format`) for
+    a single ref into (image_id, revision). Only called after a zero exit
+    code -- the nonzero-exit "tag not present locally" case is handled by
+    the caller before this runs, and is a distinct meaning from anything
+    raised here. Requires exactly one record: zero is an unexplained
+    zero-exit anomaly, and more than one is a shape a single-ref inspect
+    should never produce -- picking `records[0]` and silently ignoring the
+    rest would be the same arbitrary-pick hazard `evaluate()` already
+    refuses for multiple containers claiming one service.
+
+    `ref` is threaded into every error message: `collect()` inspects several
+    refs per pass, and an unattributed error leaves the operator unable to
+    tell which one failed.
+    """
+    records = _parse_json_array(stdout, f"docker image inspect {ref}")
+    if len(records) != 1:
+        raise CollectError(f"docker image inspect for {ref} reported {len(records)} image records: {stdout[:200]!r}")
+    obj = records[0]
+    if not isinstance(obj, dict):
+        raise CollectError(f"docker image inspect {ref} record is not an object: {obj!r:.200}")
+
+    image_id = obj.get("Id")
+    if not isinstance(image_id, str) or not image_id:
+        raise CollectError(f"docker image inspect {ref} record has no usable 'Id': {obj!r:.200}")
+    _reject_control_chars(image_id, f"docker image inspect {ref} record's 'Id'")
+    ctx = f"docker image inspect record for {ref} ({image_id!r})"
+
+    labels = _labels(obj, ctx)
+    revision = _optional_leaf_str(labels, "org.opencontainers.image.revision", f"{ctx}: Config.Labels")
+    return image_id, revision
 
 
 def _inspect(run: Runner, names: Sequence[str]) -> tuple[ContainerState, ...]:
@@ -332,7 +464,7 @@ def _inspect(run: Runner, names: Sequence[str]) -> tuple[ContainerState, ...]:
     """
     if not names:
         return ()
-    result = run(["docker", "inspect", "--type", "container", "--format", _CONTAINER_FMT, *names], None)
+    result = run(["docker", "inspect", "--type", "container", *names], None)
     return _parse_containers(result.stdout)
 
 
@@ -445,12 +577,11 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
     tag_ids: dict[str, str] = {}
     tag_revisions: dict[str, str] = {}
     for ref in sorted({s.image for s in services if s.image} | {ss_image}):
-        result = run(["docker", "image", "inspect", ref, "--format", _IMAGE_FMT], None)
+        result = run(["docker", "image", "inspect", ref], None)
         if result.returncode != 0:
             tag_ids[ref], tag_revisions[ref] = "", ""
             continue
-        image_id, revision = (result.stdout.strip().split("\t") + ["", ""])[:2]
-        tag_ids[ref], tag_revisions[ref] = image_id, revision
+        tag_ids[ref], tag_revisions[ref] = _parse_image(result.stdout, ref)
 
     if tunnels:
         instance_id = resolve_instance_id(config, project)

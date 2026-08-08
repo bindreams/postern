@@ -20,6 +20,7 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_lint_lib  # noqa: E402
 from ci_lint_lib import assert_no_newline_paths  # noqa: E402
 from ci_lint_lib import find_dry_run_coverage_gaps  # noqa: E402
+from ci_lint_lib import is_vendored  # noqa: E402
 from ci_lint_lib import parse_dry_run_hook_files  # noqa: E402
 from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 
@@ -263,6 +264,18 @@ def test_find_dry_run_coverage_gaps_on_no_hooks_at_all_reports_install_failure()
 def test_find_dry_run_coverage_gaps_reports_newline_paths_instead_of_raising():
     problems = find_dry_run_coverage_gaps(SAMPLE_LOG, ["a.py", "b\nc.py"], FAKE_TAGS.get)
     assert any("newline" in problem for problem in problems)
+
+
+# is_vendored ==========================================================================================================
+
+
+def test_is_vendored_reads_prek_tomls_real_exclude_pattern():
+    """Against the real, tracked prek.toml (not injected) -- confirms this is a live
+    derivation, not a hardcoded prefix that could silently drift from prek.toml's
+    actual `exclude`.
+    """
+    assert is_vendored("external/shadowsocks-rust/Cargo.toml")
+    assert not is_vendored("scripts/ci_lint_lib.py")
 
 
 # tags_for_first_party_file ============================================================================================

@@ -8,20 +8,36 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
+# This script writes real, briefly-type-broken .py files directly into
+# portal/src/postern/ and scripts/ -- tracked source directories, not a
+# scratch dir -- for the duration of one `prek run ty --all-files`. The flock
+# below only serializes this script against scripts/ci-lint-run.sh; it does
+# NOT protect against an unrelated concurrent `prek run` / `git commit` (the
+# installed pre-commit hook) / a developer's own `ty` invocation in the same
+# checkout, any of which would see a fixture as a genuine type error in
+# first-party code. GitHub Actions sets `CI=true` on every `run:` step, and
+# in CI this script is always one sequential step of one job -- nothing else
+# is running `prek`/`ty` concurrently there. Locally, refuse unless the
+# caller explicitly accepts the risk: this is a debugging/verification tool,
+# not something to run casually alongside other git/prek activity.
+if [ "${CI:-}" != "true" ] && [ "${1:-}" != "--force-local" ]; then
+  echo "refusing to run outside CI: this script briefly writes real files into" >&2
+  echo "portal/src/postern/ and scripts/, which a concurrent 'prek run' or" >&2
+  echo "'git commit' in this checkout could misdiagnose as a real type error." >&2
+  echo "Re-run with --force-local if you understand this and won't run prek or" >&2
+  echo "git commit concurrently in this checkout." >&2
+  exit 1
+fi
+
 # Exclusive lock, shared with scripts/ci-lint-run.sh's own (see that
 # script's header for why the two must serialize). `mkdir -p` both so a
 # from-scratch checkout has somewhere for the lock file to live.
 #
 # Scope: this lock only serializes THIS script against `ci-lint-run.sh`
 # specifically (the pair that matters in CI, where they run as two steps of
-# the same job). It does NOT serialize against an unrelated concurrent
-# `prek run` / `git commit` (the installed pre-commit hook) / `git add -A` in
-# the same working tree -- those don't take this lock either, so the three
-# fixture files below are gitignored as a second line of defense: a leak from
-# that scenario can't be staged or trip scripts/deploy.sh's dirty-worktree
-# check, even though it can still transiently misdiagnose a concurrent manual
-# `prek run ty` as a real type error. Don't run this script while also
-# running `prek`/`git commit` by hand in the same checkout.
+# the same job) -- see the CI-only guard above for the wider concurrency risk
+# this doesn't cover. The three fixture files below are also gitignored, as a
+# second line of defense (see .gitignore's own comment for why).
 mkdir -p .tmp
 exec 9>.tmp/ci-lint.lock
 flock -x 9

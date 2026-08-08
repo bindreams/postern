@@ -53,17 +53,30 @@ HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS = frozenset({"shellcheck", "ty check"})
 
 # prek.toml's `id`/`name` (what `_hooks()` below reads) does not always match
 # `PER_HOOK_CHECKS`'s key, which is prek's own dry-run *display* name pulled
-# from each hook's upstream `.pre-commit-hooks.yaml`. Four external hooks
-# carry no `name =` override in prek.toml, so `_hooks()` falls back to their
-# bare `id` -- an explicit map here, rather than a fuzzy/derived comparison,
-# is what keeps the two rosters from silently drifting apart. `format
-# section comments` and the two `mdformat` entries already set `name =` to
-# match their display name, so they need no entry.
+# from each hook's upstream `.pre-commit-hooks.yaml`. Every hook needs an
+# explicit entry here, not just the four whose prek.toml identity happens to
+# differ from their real display name: `test_hook_id_to_dry_run_name_map_is_complete`
+# asserts every hook in `_hooks()` is a key, so a newly added hook with no
+# entry fails loudly there, by name, instead of silently falling back to
+# itself in every consumer (`test_no_two_hooks_share_a_dry_run_display_name`,
+# `test_every_hook_has_a_dry_run_coverage_check`) and defeating whichever one
+# depended on it actually resolving to the hook's true display name -- proven
+# empirically: adding a hypothetical `editorconfig-checker-system` hook (a
+# real id shipped by editorconfig-checker.python's own pre-commit-hooks.yaml,
+# sharing display name `Check .editorconfig rules` with `editorconfig-checker`)
+# without an entry here passed the duplicate-name guard silently, because an
+# unmapped id falls back to itself rather than colliding with the mapped name.
 HOOK_ID_TO_DRY_RUN_NAME = {
+    "format section comments": "format section comments",
+    "ty check": "ty check",
     "check-executables-have-shebangs": "check that executables have shebangs",
     "check-shebang-scripts-are-executable": "check that scripts with shebangs are executable",
     "mixed-line-ending": "mixed line ending",
+    "shellcheck": "shellcheck",
     "editorconfig-checker": "Check .editorconfig rules",
+    "yapf": "yapf",
+    "mdformat": "mdformat",
+    "mdformat (myst)": "mdformat (myst)",
 }
 
 # Keys on a hook table that narrow which files -- or which runs -- it
@@ -106,6 +119,29 @@ def _config() -> dict:
 
 def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
+
+
+def test_hook_id_to_dry_run_name_map_is_complete():
+    """Every hook in prek.toml needs an explicit `HOOK_ID_TO_DRY_RUN_NAME` entry.
+
+    `test_no_two_hooks_share_a_dry_run_display_name` and
+    `test_every_hook_has_a_dry_run_coverage_check` both resolve through
+    `HOOK_ID_TO_DRY_RUN_NAME.get(name, name)` -- a graceful-looking fallback that
+    is actually a silent hole: a newly added hook absent from the map falls back
+    to its own prek.toml identity, which can coincidentally collide with (or fail
+    to collide with) another hook's real display name, with neither downstream
+    test able to tell the difference. This test makes that fallback unreachable
+    for any hook actually in prek.toml, by requiring every one of them to have a
+    real, explicitly recorded entry.
+    """
+    actual = {hook.get("name", hook.get("id")) for hook in _hooks()}
+    missing = actual - HOOK_ID_TO_DRY_RUN_NAME.keys()
+
+    assert not missing, (
+        f"these hooks have no entry in HOOK_ID_TO_DRY_RUN_NAME: {sorted(missing)}. Look up each one's real prek "
+        "dry-run display name (run `prek run --dry-run --all-files -vv` and find its status line) and add an "
+        "explicit entry -- don't assume the prek.toml `name`/`id` text is already correct"
+    )
 
 
 def test_no_two_hooks_share_a_dry_run_display_name():

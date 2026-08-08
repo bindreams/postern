@@ -17,15 +17,48 @@ in portal/pyproject.toml.
 
 from __future__ import annotations
 
+import functools
 import re
 import subprocess
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
 from identify.identify import tags_from_path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-VENDORED = "external/"
+PREK_CONFIG = REPO_ROOT / "prek.toml"
+
+
+@functools.lru_cache(maxsize=1)
+def _vendored_pattern() -> re.Pattern[str]:
+    """prek.toml's own top-level `exclude`, compiled once per process.
+
+    Not a second hardcoded copy of `^external/`: a hardcoded VENDORED prefix
+    string here could silently drift from prek.toml's real `exclude` (e.g. a
+    maintainer widens or renames the pattern) with nothing catching it, since
+    every downstream coverage check filters through this value before ever
+    reaching prek's own matcher. Deriving it from prek.toml directly makes
+    that drift structurally impossible instead of relying on a test to catch
+    it after the fact. `functools.lru_cache` avoids re-parsing the TOML file
+    on every one of the hundreds of per-file calls in a typical run; a fresh
+    process (every script invocation is one) re-reads it, so this never
+    serves a stale value across runs.
+    """
+    config = tomllib.loads(PREK_CONFIG.read_text(encoding="utf-8"))
+    return re.compile(config.get("exclude", ""))
+
+
+def is_vendored(path: str) -> bool:
+    """True if prek.toml's top-level `exclude` would drop this path from every hook.
+
+    One assumption, shared with portal/tests/test_ci_lint_job.py's own
+    `exclude` check: prek matches this with Rust's `regex` crate and this
+    matches with Python's `re`. Today's pattern (`^external/`) is simple
+    enough to be dialect-agnostic.
+    """
+    pattern = _vendored_pattern()
+    return bool(pattern.pattern) and bool(pattern.search(path))
 
 
 def tracked_files() -> list[str]:
@@ -68,7 +101,7 @@ def tags_for_first_party_file(path: str) -> frozenset[str] | None:
     tracked files are readable, so an unreadable one is a broken checkout,
     not a file this module should silently drop from its coverage checks.
     """
-    if path.startswith(VENDORED):
+    if is_vendored(path):
         return None
     full_path = REPO_ROOT / path
     try:

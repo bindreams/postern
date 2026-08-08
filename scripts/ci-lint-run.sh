@@ -78,9 +78,9 @@ uv run --project portal --group dev python -c "
 import sys
 
 sys.path.insert(0, 'scripts')
-from ci_lint_lib import find_dry_run_coverage_gaps, tracked_files, VENDORED
+from ci_lint_lib import find_dry_run_coverage_gaps, tracked_files, is_vendored
 
-tracked = [path for path in tracked_files() if not path.startswith(VENDORED)]
+tracked = [path for path in tracked_files() if not is_vendored(path)]
 log = open('$DRY_RUN_LOG', encoding='utf-8').read()
 problems = find_dry_run_coverage_gaps(log, tracked)
 if problems:

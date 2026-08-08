@@ -44,6 +44,7 @@ readonly DEFAULT_WAIT_TIMEOUT="1800"
 wait_timeout="$DEFAULT_WAIT_TIMEOUT"
 dirty_marker=""
 GIT_REVISION=""
+expected_tunnels=""
 
 # Output helpers =======================================================================================================
 log() {
@@ -264,6 +265,52 @@ reconcile_and_wait() {
     docker compose exec -T portal postern reconcile --wait --wait-timeout "$wait_timeout"
 }
 
+# Expected tunnel set ==================================================================================================
+# Read AFTER the wait and as late as possible -- which narrows, but cannot close,
+# the expected-set/container-set race documented in docs/operations/index.md.
+#
+# No timeout wrapper, unlike reconcile_and_wait's --wait-timeout: that one bounds a
+# wait on the reconciler's single unsupervised background task, which can die
+# independently. This is an ordinary short-lived command in a container that
+# answered one a moment ago, and it hangs exactly as far as any other
+# `docker compose exec` in this script does.
+
+# Prints the ss-* container names this deployment should have, one per line. Returns
+# 1 without printing if the portal's answer is not a clean name list -- callers
+# decide whether that is fatal. `postern connection tunnels` exits non-zero when the
+# portal cannot resolve its own instance id, because the reconciler then creates
+# nothing and the list would be a lie. stdout only: warnings go to stderr.
+read_expected_tunnels() {
+    local out line
+    out="$(docker compose exec -T portal postern connection tunnels)" || return 1
+    out="${out//$'\r'/}"
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            continue
+        fi
+        # An `[[ ... ]] && continue` one-liner would be a live grenade under
+        # `set -e`: the list's status is the test's, so a non-empty line would
+        # return 1 and kill the script.
+        [[ "$line" =~ ^ss-[^[:space:]]+$ ]] || return 1
+    done <<<"$out"
+    printf '%s\n' "$out"
+}
+
+resolve_expected_tunnels() {
+    local names
+    log "Asking the portal which tunnels this deployment should have" >&2
+    # shellcheck disable=SC2310  # read_expected_tunnels already `return 1`s explicitly
+    # after every command that can fail (see its own body) -- it never relies on `set
+    # -e` to stop it, so disabling errexit for the call is a no-op here, not a hole.
+    if ! names="$(read_expected_tunnels)"; then
+        # Never fall back to a setless verification: that would turn a broken
+        # portal into a silently WEAKER gate, which is the failure this whole step
+        # exists to remove.
+        die "the portal did not report a usable tunnel list"
+    fi
+    printf '%s\n' "$names"
+}
+
 # Verification (issue #195) =============================================================================================
 # scripts/verify-deploy.py is the gate: everything above can succeed while the stack
 # still runs last month's images. `--tunnels` is safe here specifically because
@@ -273,6 +320,10 @@ reconcile_and_wait() {
 # Exit codes are three-valued and the distinction is real: 1 means the deployment is
 # stale, 2 means the gate itself could not run (bad environment, not a verdict). Both
 # abort this script, but the message told to the operator must not conflate them.
+#
+# `--expected-tunnels-from` is what makes "zero tunnel containers" a verdict rather
+# than a SKIP. Sound here for the same reason `--tunnels` is -- reconcile_and_wait
+# already blocked on a completed pass.
 run_verification() {
     local -a extra=()
     if [[ "$allow_dirty" == 1 ]]; then
@@ -284,14 +335,34 @@ run_verification() {
 
     log "Verifying the deploy actually took (scripts/verify-deploy.py --tunnels)"
     local rc=0
-    python3 scripts/verify-deploy.py --tunnels "${extra[@]}" || rc=$?
+    python3 scripts/verify-deploy.py --tunnels --expected-tunnels-from - "${extra[@]}" \
+        <<<"$expected_tunnels" || rc=$?
     if [[ "$rc" == 0 ]]; then
         return 0
-    elif [[ "$rc" == 1 ]]; then
-        die "deploy verification failed -- the running stack is not provably on the images just built (see the checks above)"
-    else
+    fi
+    if [[ "$rc" != 1 ]]; then
+        # Exit 2: the gate aborted before producing any tunnel row, so a "the set
+        # changed" note would blame a row that does not exist -- and would spend
+        # another Docker round-trip on a stack that may be exactly what is broken.
         die "deploy verification could not run (exit ${rc}) -- see the message above; this is not a verdict on the deploy"
     fi
+
+    # Only on a real verdict, so the happy path pays nothing. The expected set and
+    # the container listing were taken at different moments; a set that has since
+    # moved means a connection was added or disabled mid-verification, which
+    # produces exactly the tunnel rows the gate just printed. This does not clear
+    # the failure -- other rows may be real -- it stops the operator from hunting
+    # the reconciler. The re-read's STATUS is what decides whether it is usable --
+    # not whether it printed anything. A successful empty re-read (every connection
+    # was disabled or deleted mid-verification) is the case that most needs the
+    # note, since every surviving container then shows up as surplus.
+    local reread="" reread_ok=1
+    # shellcheck disable=SC2310  # see resolve_expected_tunnels' identical comment
+    reread="$(read_expected_tunnels)" || reread_ok=0
+    if [[ "$reread_ok" == 1 && "$reread" != "$expected_tunnels" ]]; then
+        warn "the set of enabled connections changed during verification. If the failure above is a tunnel row, that change is the cause, not the reconciler: re-run scripts/deploy.sh, or scripts/verify-deploy.py --tunnels --expected-tunnels-from - with a fresh \`postern connection tunnels\`"
+    fi
+    die "deploy verification failed -- the running stack is not provably on the images just built (see the checks above)"
 }
 
 # Main =================================================================================================================
@@ -306,6 +377,7 @@ main() {
     build_shadowsocks_image
     compose_up
     reconcile_and_wait
+    expected_tunnels="$(resolve_expected_tunnels)"
     run_verification
     log "Deploy complete: $(git rev-parse --short HEAD)${dirty_marker}"
 }

@@ -6,6 +6,7 @@ No test here touches Docker or the network: `collect()` takes an injected
 runner and `evaluate()` is pure.
 """
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -797,6 +798,179 @@ def test_dirty_checkout_can_be_acknowledged():
     assert report.exit_code == 0
 
 
+_SS_A = "ss-" + "a" * 24
+_SS_B = "ss-" + "b" * 24
+
+
+def test_zero_tunnels_with_connections_enabled_fails():
+    """The hole this closes: scripts/deploy.sh blocks on a completed reconcile
+    pass before calling the gate, so with an authoritative expected set "zero
+    tunnels" is a converged-to-nothing deploy, not an ambiguity. A finished
+    pass is not a converged one -- per-container failures are logged and
+    swallowed."""
+    report = vd.evaluate(_obs(ss_containers=()), HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A, _SS_B}))
+    labels = _labels(report)
+    assert labels[f"tunnel {_SS_A}: exists"].status == "fail"
+    assert labels[f"tunnel {_SS_B}: exists"].status == "fail"
+    assert "postern reconcile" in labels[f"tunnel {_SS_A}: exists"].fix
+    assert report.exit_code == 1
+
+
+def test_zero_tunnels_with_zero_connections_passes():
+    """A deployment with no enabled connections is correct with no tunnel
+    containers, and must not be red-flagged."""
+    report = vd.evaluate(_obs(ss_containers=()), HEAD, tunnels=True, expected_tunnels=frozenset())
+    assert _labels(report)["tunnels: expected set"].status == "ok"
+    assert report.exit_code == 0
+
+
+def test_a_missing_tunnel_is_named_individually():
+    """Which tunnel is missing is the actionable part; a bare count would make
+    the operator diff two lists by hand."""
+    obs = _obs(ss_containers=(_cs("", _SS_A, "sha256:ddd", HEAD, ""), ))
+    report = vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A, _SS_B}))
+    labels = _labels(report)
+    assert labels[f"tunnel {_SS_B}: exists"].status == "fail"
+    assert f"tunnel {_SS_A}: exists" not in labels
+    assert report.exit_code == 1
+
+
+def test_a_surplus_tunnel_is_named_individually():
+    """After a converged pass the reconciler has removed every container whose
+    connection is gone or disabled, and the listing is already scoped to this
+    instance -- so a surplus is a removal that did not happen, not another
+    deployment's tunnel."""
+    obs = _obs(ss_containers=(_cs("", _SS_A, "sha256:ddd", HEAD, ""), _cs("", _SS_B, "sha256:ddd", HEAD, "")))
+    report = vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A}))
+    check = _labels(report)[f"tunnel {_SS_B}: not expected"]
+    assert check.status == "fail"
+    assert "no enabled connection" in check.detail
+    assert report.exit_code == 1
+
+
+def test_a_shortfall_and_a_surplus_together_do_not_cancel_out():
+    """The reason this compares sets and not counts: one container never
+    created plus one never removed is a deployment that is provably not
+    converged, and their cardinalities are identical."""
+    obs = _obs(ss_containers=(_cs("", _SS_B, "sha256:ddd", HEAD, ""), ))
+    report = vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A}))
+    labels = _labels(report)
+    assert labels[f"tunnel {_SS_A}: exists"].status == "fail"
+    assert labels[f"tunnel {_SS_B}: not expected"].status == "fail"
+    assert report.exit_code == 1
+
+
+def test_missing_tunnels_with_no_image_locally_are_one_row_pointing_at_the_build():
+    """reconcile() returns normally when the tunnel image is missing: it logs,
+    skips the container branch, and creates nothing -- so every further pass is
+    identically a no-op and `postern reconcile` cannot fix this. One row, not
+    one per missing tunnel: they are all wrong in the same way, and the
+    neighbouring rows already refuse to repeat a fix hint that is a guaranteed
+    no-op."""
+    obs = _obs(
+        ss_containers=(),
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": ""},
+    )
+    report = vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A, _SS_B}))
+    labels = _labels(report)
+    check = labels["tunnels: expected set"]
+    assert check.status == "fail"
+    assert "not present locally" in check.detail
+    assert "shadowsocks/Dockerfile" in check.fix
+    assert "postern reconcile" not in check.fix
+    assert f"tunnel {_SS_A}: exists" not in labels
+
+
+def test_a_missing_image_with_surviving_tunnels_reports_both_questions_once_each():
+    """Two rows, two questions: the containers that exist are on a tag that no
+    longer does (`tunnels: image identity`), and the ones that do not exist
+    were never created (`tunnels: expected set`). Pinned so the overlap is a
+    reviewed decision rather than an accident."""
+    obs = _obs(
+        ss_containers=(_cs("", _SS_A, "sha256:ddd", HEAD, ""), ),
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": ""},
+    )
+    labels = _labels(vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A, _SS_B})))
+    assert labels["tunnels: image identity"].status == "fail"
+    assert labels["tunnels: expected set"].status == "fail"
+    assert f"tunnel {_SS_A}: running" not in labels  # the per-tunnel loop is skipped when the tag is gone
+
+
+def test_a_missing_image_collapses_missing_and_surplus_into_the_same_row():
+    """With the image absent, reconcile() short-circuits its whole container
+    branch: it neither creates nor removes. So a surplus container is as
+    unfixable by `postern reconcile` as a missing one, and must not carry a fix
+    hint that provably cannot work."""
+    obs = _obs(
+        ss_containers=(_cs("", _SS_B, "sha256:ddd", HEAD, ""), ),
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", "local/shadowsocks-server": ""},
+    )
+    labels = _labels(vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A})))
+    check = labels["tunnels: expected set"]
+    assert check.status == "fail"
+    assert "1 missing, 1 unexpected" in check.detail
+    assert "shadowsocks/Dockerfile" in check.fix
+    assert f"tunnel {_SS_A}: exists" not in labels
+    assert f"tunnel {_SS_B}: not expected" not in labels
+
+
+def test_a_surplus_container_does_not_also_get_a_passing_running_row():
+    """A container the report just condemned as one that should not exist must
+    not appear two rows later as `running: ok`."""
+    obs = _obs(ss_containers=(_cs("", _SS_A, "sha256:ddd", HEAD, ""), _cs("", _SS_B, "sha256:ddd", HEAD, "")))
+    labels = _labels(vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A})))
+    assert labels[f"tunnel {_SS_A}: running"].status == "ok"  # expected: still checked
+    assert f"tunnel {_SS_B}: running" not in labels
+    assert f"tunnel {_SS_B}: image identity" not in labels
+
+
+def test_a_matching_set_still_checks_each_tunnels_image():
+    """The set row is an addition, not a replacement: a deployment with exactly
+    the right tunnels can still be running all of them on last month's image."""
+    obs = _obs(ss_containers=(_cs("", _SS_A, "sha256:old", "0" * 40, ""), ))
+    report = vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A}))
+    assert _labels(report)["tunnels: expected set"].status == "ok"
+    assert _labels(report)[f"tunnel {_SS_A}: image identity"].status == "fail"
+    assert report.exit_code == 1
+
+
+def test_a_shortfall_names_concurrent_mutation_as_the_other_possible_cause():
+    """The expected set and the container listing are two unsynchronized
+    observations, so a connection added while the gate runs produces this same
+    row. Asserting non-convergence as fact would send the operator to hunt the
+    wrong subsystem."""
+    report = vd.evaluate(_obs(ss_containers=()), HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A}))
+    assert "added while this ran" in _labels(report)[f"tunnel {_SS_A}: exists"].detail
+
+
+def test_without_an_expected_set_the_zero_case_stays_an_honest_skip():
+    """An operator running the gate by hand has not necessarily blocked on a
+    completed reconcile pass, so the tool cannot upgrade the ambiguity into a
+    verdict on its own. Same command, less information from the caller, weaker
+    answer."""
+    report = vd.evaluate(_obs(ss_containers=()), HEAD, tunnels=True)
+    labels = _labels(report)
+    assert labels["tunnels: image identity"].status == "skip"
+    assert "has not converged yet" in labels["tunnels: image identity"].detail
+    assert labels["tunnels: expected set"].status == "skip"
+    assert "--expected-tunnels-from" in labels["tunnels: expected set"].detail
+    assert report.exit_code == 0
+
+
+def test_no_set_rows_at_all_without_tunnels():
+    assert "tunnels: expected set" not in _labels(vd.evaluate(_obs(), HEAD))
+
+
+def test_evaluate_ignores_an_expected_set_when_tunnels_are_not_checked():
+    """The pure function has no opinion on the combination; main() is where it
+    is rejected. Pinned so a caller that bypasses the CLI (a script, a REPL)
+    finds a tested contract rather than an accident."""
+    report = vd.evaluate(_obs(), HEAD, tunnels=False, expected_tunnels=frozenset({_SS_A}))
+    assert "tunnels: expected set" not in _labels(report)
+    assert _labels(report)["tunnels: image identity"].status == "skip"
+    assert report.exit_code == 0
+
+
 # CLI ------------------------------------------------------------------------------------------------------------------
 def test_print_revision_mode_emits_one_line(repo):
     out = subprocess.run([sys.executable, str(SCRIPT), "--print-revision", "--repo",
@@ -906,3 +1080,88 @@ def test_main_reports_a_bad_repo_as_usage_error_not_a_traceback(monkeypatch, cap
     assert result.returncode == 2
     assert "Traceback" not in result.stderr
     assert "verify-deploy:" in result.stderr
+
+
+def test_read_expected_tunnels_parses_one_name_per_line(tmp_path):
+    path = tmp_path / "names"
+    path.write_text(f"{_SS_A}\n{_SS_B}\n\n")
+    assert vd.read_expected_tunnels(str(path)) == frozenset({_SS_A, _SS_B})
+
+
+def test_read_expected_tunnels_accepts_an_empty_list(tmp_path):
+    """A deployment with no enabled connections sends nothing, and that is a
+    real answer -- distinct from not passing the flag at all."""
+    path = tmp_path / "names"
+    path.write_text("")
+    assert vd.read_expected_tunnels(str(path)) == frozenset()
+
+
+def test_read_expected_tunnels_rejects_a_line_that_is_not_a_container_name(tmp_path):
+    """If anything ever leaks onto the portal's stdout, it must be a loud stop,
+    not a phantom tunnel the gate then reports as missing forever."""
+    path = tmp_path / "names"
+    path.write_text(f"{_SS_A}\nWARNING: could not determine this deployment's instance id\n")
+    with pytest.raises(vd.CollectError):
+        vd.read_expected_tunnels(str(path))
+
+
+def test_read_expected_tunnels_reports_an_unreadable_file_without_a_traceback(tmp_path):
+    with pytest.raises(vd.CollectError):
+        vd.read_expected_tunnels(str(tmp_path / "nope"))
+
+
+def test_read_expected_tunnels_reports_undecodable_stdin_as_a_collect_error(monkeypatch):
+    """sys.stdin decodes strictly, and UnicodeDecodeError is not an OSError --
+    the stdin half of this function must not be the one path that produces a
+    traceback."""
+
+    class Undecodable:
+
+        def read(self):
+            return b"\xff".decode("utf-8")  # raises UnicodeDecodeError
+
+    monkeypatch.setattr("sys.stdin", Undecodable())
+    with pytest.raises(vd.CollectError):
+        vd.read_expected_tunnels("-")
+
+
+def test_main_passes_the_expected_set_through_to_the_verdict(monkeypatch, capsys, isolated, tmp_path):
+    path = tmp_path / "names"
+    path.write_text(f"{_SS_A}\n")
+    monkeypatch.setattr(vd, "collect", lambda *a, **k: _obs(ss_containers=()))
+    assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", str(path)]) == 1
+    assert f"tunnel {_SS_A}: exists" in capsys.readouterr().out
+
+
+def test_main_reads_the_expected_set_from_stdin(monkeypatch, capsys, isolated):
+    """`-` is how scripts/deploy.sh passes it: container names embed connection
+    path tokens, and argv is world-readable through `ps` on the deploy host."""
+    monkeypatch.setattr(vd, "collect", lambda *a, **k: _obs(ss_containers=()))
+    monkeypatch.setattr("sys.stdin", io.StringIO(f"{_SS_A}\n"))
+    assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", "-"]) == 1
+    assert f"tunnel {_SS_A}: exists" in capsys.readouterr().out
+
+
+def test_main_rejects_an_expected_set_without_tunnels(monkeypatch, capsys, isolated, tmp_path):
+    """Silently discarding it would be the worst outcome: the operator asked
+    for the strictest check available and would get the weakest, with a green
+    exit code. Mirrors `postern reconcile`'s --wait-timeout-without--wait."""
+    monkeypatch.setattr(vd, "collect", lambda *a, **k: pytest.fail("must fail before collecting"))
+    assert vd.main([*isolated, "--expected-tunnels-from", str(tmp_path / "names")]) == 2
+    assert "--tunnels" in capsys.readouterr().err
+
+
+def test_main_treats_an_explicitly_empty_flag_value_as_an_error_not_as_absence(capsys, isolated):
+    """`--expected-tunnels-from ""` (an unset variable in a wrapper, a CI step
+    whose earlier command produced nothing) must not silently downgrade to the
+    no-set SKIP and exit 0. It is an unreadable path: exit 2."""
+    assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", ""]) == 2
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_main_reports_an_unreadable_expected_set_as_could_not_run(capsys, isolated, tmp_path):
+    """Exit 2, not 1: the gate could not run. A caller must not read a missing
+    input file as "the deployment is stale"."""
+    assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", str(tmp_path / "nope")]) == 2
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err

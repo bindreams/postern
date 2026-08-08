@@ -508,10 +508,8 @@ def _ss_build(ref: str) -> str:
 _RECONCILE = "docker compose exec portal postern reconcile"
 # Distinct from _RECONCILE: a set mismatch means the pass FINISHED without
 # converging, so "trigger a pass" alone is not the whole fix -- the operator
-# needs the blocking form. Kept to a single command, not "cmd; if it repeats,
-# other-cmd" -- a fix hint must be copy-pasteable (see the section comment
-# below), and "if it repeats" is not valid shell after a `;`. The repeats-anyway
-# guidance lives in the check details instead, which are prose, not a paste target.
+# needs the blocking form. Fix hints must stay copy-pasteable (see the section
+# comment below); the repeats-anyway guidance lives in the check details instead.
 _RECONVERGE = "docker compose exec -T portal postern reconcile --wait"
 
 

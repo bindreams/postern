@@ -1162,11 +1162,10 @@ def test_read_expected_tunnels_reports_undecodable_stdin_as_a_collect_error(monk
 
 def test_read_expected_tunnels_reports_closed_stdin_as_a_collect_error(monkeypatch):
     """CPython sets sys.stdin to None (not a stream that raises on .read()) when
-    fd 0 is closed -- confirmed by forking with fd 0 closed and exec'ing this
-    script with --expected-tunnels-from -. An unguarded .read() there is an
-    uncaught AttributeError, which exits 1 (verify-deploy's "stale deployment"
-    verdict) rather than 2 ("could not run"); deploy.sh's own branch on that
-    distinction (die vs. re-read) depends on getting 2 here."""
+    fd 0 is closed. An unguarded .read() there is an uncaught AttributeError,
+    which exits 1 (verify-deploy's "stale deployment" verdict) rather than 2
+    ("could not run"); deploy.sh's own branch on that distinction (die vs.
+    re-read) depends on getting 2 here."""
     monkeypatch.setattr("sys.stdin", None)
     with pytest.raises(vd.CollectError):
         vd.read_expected_tunnels("-")

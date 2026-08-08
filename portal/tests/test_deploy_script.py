@@ -16,6 +16,7 @@ test suite.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -511,6 +512,30 @@ def test_allow_dirty_is_not_forwarded_on_a_clean_deploy(tmp_path):
     _proc, calls = _run(tmp_path)
     verify_call = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
     assert "--allow-dirty" not in verify_call
+
+
+def test_verification_log_line_quotes_the_command_actually_run(tmp_path):
+    """The progress line prints the gate's command in parentheses, and the failure
+    path a few lines below tells the operator to re-run the gate by hand -- so that
+    parenthetical is a paste target, not decoration. A flag dropped from it is not a
+    typo: re-running the weaker `--tunnels`-only form takes verify-deploy's
+    zero-container SKIP branch and exits 0, reporting the half-finished deploy that
+    just failed as fine. Compare against the real argv rather than a hardcoded string,
+    so adding a flag to the invocation without the log line fails here too. Equality,
+    not startswith: dropping a flag from the log leaves it a strict PREFIX of the real
+    argv, which is exactly the bug and exactly what a prefix check would wave through.
+    Deploy is clean, so `${extra[@]}` contributes no --allow-dirty."""
+    proc, calls = _run(tmp_path)
+    assert proc.returncode == 0
+
+    logged = re.search(r"Verifying the deploy actually took \((.+?)\)$", proc.stdout, re.MULTILINE)
+    assert logged, f"no verification progress line in stdout:\n{proc.stdout}"
+
+    actual = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
+    assert actual == logged.group(1), (
+        f"deploy.sh logs {logged.group(1)!r} but runs {actual!r} -- an operator copying the logged "
+        "form out of a failed deploy would run a weaker gate than the one that just failed"
+    )
 
 
 def test_success_line_marks_a_dirty_deploy(tmp_path):

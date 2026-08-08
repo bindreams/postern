@@ -66,7 +66,8 @@ Usage: scripts/deploy.sh [options]
 
 Deploys this checkout: builds the shadowsocks image, rebuilds and restarts the
 compose stack, reconciles the tunnel containers, and verifies (scripts/verify-
-deploy.py --tunnels) that everything running is on the images just built.
+deploy.py --tunnels --expected-tunnels-from -) that everything running is on the
+images just built and that the tunnel set converged.
 
 Options:
   --allow-dirty    Deploy with uncommitted changes in the worktree.
@@ -342,7 +343,7 @@ run_verification() {
         extra+=(--allow-dirty)
     fi
 
-    log "Verifying the deploy actually took (scripts/verify-deploy.py --tunnels)"
+    log "Verifying the deploy actually took (scripts/verify-deploy.py --tunnels --expected-tunnels-from -)"
     local rc=0
     python3 scripts/verify-deploy.py --tunnels --expected-tunnels-from - "${extra[@]}" \
         <<<"$expected_tunnels" || rc=$?

@@ -764,3 +764,81 @@ def test_version_json_shape(monkeypatch):
     payload = json.loads(result.output)
     assert payload["revision"] == "b" * 40
     assert isinstance(payload["version"], str) and payload["version"]
+
+
+# Connection tunnels ===================================================================================================
+def _tokens(cli_env) -> list[str]:
+    """The path tokens of every connection, read straight out of SQLite --
+    deliberately not through the command under test."""
+    import sqlite3
+    with sqlite3.connect(cli_env) as conn:
+        return [row[0] for row in conn.execute("SELECT path_token FROM connections ORDER BY path_token")]
+
+
+def test_connection_tunnels_prints_one_container_name_per_enabled_connection(cli_env):
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Laptop"])
+
+    result = runner.invoke(app, ["connection", "tunnels"])
+
+    assert result.exit_code == 0
+    assert result.stdout.split() == sorted(f"ss-{t}" for t in _tokens(cli_env))
+
+
+def test_connection_tunnels_of_an_empty_deployment_prints_nothing(cli_env):
+    """A fresh deployment with no connections is a legitimate state, and
+    scripts/deploy.sh feeds this straight into the deploy gate: the empty set
+    must be an empty list, not an error."""
+    result = runner.invoke(app, ["connection", "tunnels"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == ""
+
+
+def test_connection_tunnels_excludes_disabled_connections(cli_env):
+    """The reconciler creates a container per ENABLED connection only, so a
+    disabled one must not appear in the set the gate expects."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Laptop"])
+    conn_id = runner.invoke(app, ["connection", "list"]).stdout.split()[0]
+    runner.invoke(app, ["connection", "disable", conn_id])
+
+    result = runner.invoke(app, ["connection", "tunnels"])
+
+    assert result.exit_code == 0
+    assert len(result.stdout.split()) == 1
+
+
+def test_connection_tunnels_names_match_the_reconcilers_own_naming(cli_env):
+    """The `ss-` prefix is not cosmetic: nginx proxies to http://ss-<token> via
+    Docker's embedded DNS. This command must produce the identical string
+    reconciler._container_name does, or the gate compares against names that
+    never existed."""
+    from postern.models import Connection
+    from postern.reconciler import _container_name
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    token = _tokens(cli_env)[0]
+
+    listed = runner.invoke(app, ["connection", "tunnels"]).stdout.split()
+
+    assert listed == [_container_name(Connection(user_id="u", path_token=token, label="l", password="p"))]
+
+
+def test_connection_tunnels_keeps_the_identity_warning_off_stdout(cli_env, monkeypatch):
+    """With no instance id the reconciler creates NOTHING, so this list is not
+    what will exist. The operator must be told, scripts/deploy.sh must be able
+    to parse stdout, and a deploy must not proceed on a list that is a lie --
+    hence exit 1, mirroring `postern reconcile`'s own behaviour in this state.
+    """
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    _unresolve_identity(monkeypatch)
+
+    result = runner.invoke(app, ["connection", "tunnels"])
+
+    assert result.exit_code == 1
+    assert result.stdout.split() == [f"ss-{_tokens(cli_env)[0]}"]
+    assert "WARNING: could not determine this deployment's instance id" in result.stderr
+    assert "WARNING" not in result.stdout

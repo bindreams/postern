@@ -322,6 +322,31 @@ def connection_list(user_email: str | None = None) -> None:
         typer.echo(f"  {c.id}  {c.label}  [{c.plugin}]  [ech:{c.ech}]  {status}")
 
 
+@connection_app.command("tunnels")
+def connection_tunnels() -> None:
+    """Print the container name of every enabled connection, one per line.
+
+    Machine-readable: stdout carries the names and nothing else, warnings go to
+    stderr. Disabled connections have no tunnel and are not listed.
+    """
+    from postern.reconciler import _container_name
+    settings = _settings()
+
+    async def _tunnels() -> list[str]:
+        async with db.get_connection(settings.database_path) as database:
+            await db.migrate(database)
+            connections = await db.list_connections(database)
+            return sorted(_container_name(c) for c in connections if c.enabled)
+
+    for name in run(_tunnels()):
+        typer.echo(name)
+    # Exit 1, not 0: with no instance id the reconciler creates no containers at
+    # all, so this list is not what will exist. scripts/deploy.sh must refuse to
+    # feed it to the gate. `postern reconcile` already exits 1 in this state.
+    if _warn_if_identity_unresolved(settings):
+        raise typer.Exit(code=1)
+
+
 @connection_app.command("disable")
 def connection_disable(id: str) -> None:
     """Disable a connection."""

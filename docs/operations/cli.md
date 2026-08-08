@@ -57,6 +57,16 @@ docker compose exec portal postern connection add alice@example.com "phone" --ec
 
 Lists connections (id, label, plugin, enabled/disabled). `--user-email EMAIL` filters by user and exits 1 if the email is unknown.
 
+### postern connection tunnels
+
+```bash
+postern connection tunnels
+```
+
+Prints the container name (`ss-<path token>`) of every enabled connection, one per line, sorted — nothing else on stdout, so a script can read it. Disabled connections have no tunnel container and are not listed. [scripts/deploy.sh](https://github.com/bindreams/postern/blob/main/scripts/deploy.sh) pipes this into `scripts/verify-deploy.py --expected-tunnels-from -`, which is how the deploy gate learns which tunnels should exist without querying the portal itself.
+
+Exits 1, after printing the list, when the reconciler cannot resolve its instance id: it then creates no containers at all, so the list is not what will exist, and a deploy must not be verified against it.
+
 ### postern connection disable
 
 `postern connection disable ID` — disables a connection; exits 1 if the id is unknown. Triggers a reconcile, which removes the tunnel container.

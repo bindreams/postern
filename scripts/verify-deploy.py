@@ -374,11 +374,19 @@ def read_expected_tunnels(path: str) -> frozenset[str]:
     dropping it would be indistinguishable from a shorter expected set.
     """
     try:
-        text = sys.stdin.read() if path == "-" else Path(path).read_text(errors="replace")
-    except (OSError, UnicodeDecodeError) as exc:
-        # UnicodeDecodeError is not an OSError. The file branch cannot raise it
-        # (errors="replace"), but sys.stdin decodes strictly, and "no failure
-        # path produces a traceback" applies to both halves of this function.
+        if path == "-":
+            # sys.stdin is None with fd 0 closed (CPython sets it that way), not an
+            # object that raises on .read() -- must be caught before dereferencing.
+            if sys.stdin is None:
+                raise CollectError("cannot read the expected tunnel list: stdin is closed")
+            text = sys.stdin.read()
+        else:
+            text = Path(path).read_text(errors="replace")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # UnicodeDecodeError is not an OSError. The file branch cannot raise either
+        # (errors="replace"), but sys.stdin decodes strictly and raises ValueError
+        # on an already-closed stream -- "no failure path produces a traceback"
+        # applies to both halves of this function.
         raise CollectError(f"cannot read the expected tunnel list: {exc}") from exc
     names = set()
     for line in text.splitlines():
@@ -492,9 +500,11 @@ _SS_BUILD = (
 _RECONCILE = "docker compose exec portal postern reconcile"
 # Distinct from _RECONCILE: a set mismatch means the pass FINISHED without
 # converging, so "trigger a pass" alone is not the whole fix -- the operator
-# needs the blocking form and, if it repeats, the log where the reconciler
-# swallowed the per-container failure.
-_RECONVERGE = ("docker compose exec -T portal postern reconcile --wait; if it repeats, docker compose logs portal")
+# needs the blocking form. Kept to a single command, not "cmd; if it repeats,
+# other-cmd" -- a fix hint must be copy-pasteable (see the section comment
+# below), and "if it repeats" is not valid shell after a `;`. The repeats-anyway
+# guidance lives in the check details instead, which are prose, not a paste target.
+_RECONVERGE = "docker compose exec -T portal postern reconcile --wait"
 
 
 def _short(revision: str) -> str:
@@ -578,7 +588,10 @@ def _check_tunnel_set(obs: Observation, expected: frozenset[str] | None) -> list
             Check(
                 f"tunnel {name}: exists", "fail",
                 "no container for this connection: the reconcile pass finished without converging, or the "
-                "connection was added while this ran", _RECONVERGE
+                "connection was added while this ran. If a fresh reconcile doesn't fix it, check `docker "
+                "compose logs portal` -- a pre-instance-labelling legacy container squatting on this name "
+                "is a standing cause the reconciler backs off on rather than removes (see "
+                "docs/operations/index.md's post-upgrade migration)", _RECONVERGE
             )
         )
     for name in surplus:
@@ -586,7 +599,8 @@ def _check_tunnel_set(obs: Observation, expected: frozenset[str] | None) -> list
             Check(
                 f"tunnel {name}: not expected", "fail",
                 "no enabled connection for this container: the reconciler did not remove it, or the connection "
-                "was disabled while this ran", _RECONVERGE
+                "was disabled while this ran. If a fresh reconcile doesn't fix it, check `docker compose logs "
+                "portal`", _RECONVERGE
             )
         )
     return checks
@@ -882,9 +896,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         # None, not "": an explicitly-supplied empty value (`--expected-tunnels-from
         # ""`, or an unset variable in a wrapper) must NOT be read as "the flag was
         # not passed" -- that would silently downgrade the strictest check the tool
-        # has to the weakest, with a green exit code. As None-vs-empty, an empty
-        # value falls through to read_expected_tunnels(""), which fails as an
-        # unreadable path: exit 2, loudly.
+        # has to the weakest, with a green exit code. An empty value falls through to
+        # read_expected_tunnels(""), which fails as an unreadable path: exit 2, loudly.
         default=None,
         metavar="FILE",
         help="File listing the ss-* container names this deployment should have, one per "
@@ -909,9 +922,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.expected_tunnels_from is not None and not args.tunnels:
-        # Not silently ignored: the operator asked for the strictest check the
-        # tool has, and discarding it would hand back the weakest one with a
-        # green exit code. 2, not 1 -- a usage error is not a verdict.
+        # 2, not 1 -- a usage error is not a verdict (see the flag's own comment
+        # above for why an unset value is never read as "flag not passed").
         print("verify-deploy: --expected-tunnels-from requires --tunnels", file=sys.stderr)
         return 2
 

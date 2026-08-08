@@ -786,6 +786,23 @@ def test_connection_tunnels_prints_one_container_name_per_enabled_connection(cli
     assert result.stdout.split() == sorted(f"ss-{t}" for t in _tokens(cli_env))
 
 
+def test_connection_tunnels_output_is_sorted_even_when_insertion_order_is_not(cli_env, monkeypatch):
+    """Two random tokens land in sorted order about half the time, so the test
+    above can't reliably pin the `sorted(...)` call in `connection_tunnels` --
+    it would still pass most runs even with plain insertion order. Force
+    descending token allocation and check the output comes back ascending."""
+    tokens = iter(["c" * 24, "b" * 24, "a" * 24])
+    monkeypatch.setattr("secrets.token_hex", lambda _n: next(tokens))
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "First"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Second"])
+    runner.invoke(app, ["connection", "add", "alice@example.com", "Third"])
+
+    result = runner.invoke(app, ["connection", "tunnels"])
+
+    assert result.stdout.split() == [f"ss-{'a' * 24}", f"ss-{'b' * 24}", f"ss-{'c' * 24}"]
+
+
 def test_connection_tunnels_of_an_empty_deployment_prints_nothing(cli_env):
     """A fresh deployment with no connections is a legitimate state, and
     scripts/deploy.sh feeds this straight into the deploy gate: the empty set
@@ -797,17 +814,23 @@ def test_connection_tunnels_of_an_empty_deployment_prints_nothing(cli_env):
 
 def test_connection_tunnels_excludes_disabled_connections(cli_env):
     """The reconciler creates a container per ENABLED connection only, so a
-    disabled one must not appear in the set the gate expects."""
+    disabled one must not appear in the set the gate expects. Asserts the
+    surviving name itself, not just the count: a filter inverted to `if not
+    c.enabled` would also print exactly one name -- the wrong one -- and a
+    bare length check would not catch it."""
+    import sqlite3
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
     runner.invoke(app, ["connection", "add", "alice@example.com", "Laptop"])
     conn_id = runner.invoke(app, ["connection", "list"]).stdout.split()[0]
     runner.invoke(app, ["connection", "disable", conn_id])
+    with sqlite3.connect(cli_env) as conn:
+        surviving_token = conn.execute("SELECT path_token FROM connections WHERE id != ?", (conn_id, )).fetchone()[0]
 
     result = runner.invoke(app, ["connection", "tunnels"])
 
     assert result.exit_code == 0
-    assert len(result.stdout.split()) == 1
+    assert result.stdout.split() == [f"ss-{surviving_token}"]
 
 
 def test_connection_tunnels_names_match_the_reconcilers_own_naming(cli_env):

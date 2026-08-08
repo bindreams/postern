@@ -1125,6 +1125,33 @@ def test_read_expected_tunnels_reports_undecodable_stdin_as_a_collect_error(monk
         vd.read_expected_tunnels("-")
 
 
+def test_read_expected_tunnels_reports_closed_stdin_as_a_collect_error(monkeypatch):
+    """CPython sets sys.stdin to None (not a stream that raises on .read()) when
+    fd 0 is closed -- confirmed by forking with fd 0 closed and exec'ing this
+    script with --expected-tunnels-from -. An unguarded .read() there is an
+    uncaught AttributeError, which exits 1 (verify-deploy's "stale deployment"
+    verdict) rather than 2 ("could not run"); deploy.sh's own branch on that
+    distinction (die vs. re-read) depends on getting 2 here."""
+    monkeypatch.setattr("sys.stdin", None)
+    with pytest.raises(vd.CollectError):
+        vd.read_expected_tunnels("-")
+
+
+def test_read_expected_tunnels_reports_a_closed_stdin_stream_as_a_collect_error(monkeypatch):
+    """A stdin object that exists but was already closed raises ValueError on
+    .read(), not OSError -- a second way to hit the same traceback the None
+    case does."""
+
+    class Closed:
+
+        def read(self):
+            raise ValueError("I/O operation on closed file")
+
+    monkeypatch.setattr("sys.stdin", Closed())
+    with pytest.raises(vd.CollectError):
+        vd.read_expected_tunnels("-")
+
+
 def test_main_passes_the_expected_set_through_to_the_verdict(monkeypatch, capsys, isolated, tmp_path):
     path = tmp_path / "names"
     path.write_text(f"{_SS_A}\n")
@@ -1145,7 +1172,7 @@ def test_main_reads_the_expected_set_from_stdin(monkeypatch, capsys, isolated):
 def test_main_rejects_an_expected_set_without_tunnels(monkeypatch, capsys, isolated, tmp_path):
     """Silently discarding it would be the worst outcome: the operator asked
     for the strictest check available and would get the weakest, with a green
-    exit code. Mirrors `postern reconcile`'s --wait-timeout-without--wait."""
+    exit code."""
     monkeypatch.setattr(vd, "collect", lambda *a, **k: pytest.fail("must fail before collecting"))
     assert vd.main([*isolated, "--expected-tunnels-from", str(tmp_path / "names")]) == 2
     assert "--tunnels" in capsys.readouterr().err
@@ -1163,5 +1190,16 @@ def test_main_reports_an_unreadable_expected_set_as_could_not_run(capsys, isolat
     """Exit 2, not 1: the gate could not run. A caller must not read a missing
     input file as "the deployment is stale"."""
     assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", str(tmp_path / "nope")]) == 2
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out + captured.err
+
+
+def test_main_reports_closed_stdin_as_could_not_run_not_stale(monkeypatch, capsys, isolated):
+    """Regression: an unguarded sys.stdin.read() with fd 0 closed raised an
+    uncaught AttributeError that main() did not catch, exiting 1 -- the
+    "stale deployment" verdict -- instead of 2. deploy.sh's run_verification
+    branches on exactly that 1-vs-2 distinction (die vs. re-read-and-blame)."""
+    monkeypatch.setattr("sys.stdin", None)
+    assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", "-"]) == 2
     captured = capsys.readouterr()
     assert "Traceback" not in captured.out + captured.err

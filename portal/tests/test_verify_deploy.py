@@ -1236,10 +1236,9 @@ def test_main_reports_an_unreadable_expected_set_as_could_not_run(capsys, isolat
 
 
 def test_main_reports_closed_stdin_as_could_not_run_not_stale(monkeypatch, capsys, isolated):
-    """Regression: an unguarded sys.stdin.read() with fd 0 closed raised an
-    uncaught AttributeError that main() did not catch, exiting 1 -- the
-    "stale deployment" verdict -- instead of 2. deploy.sh's run_verification
-    branches on exactly that 1-vs-2 distinction (die vs. re-read-and-blame)."""
+    """Same fd-0-closed mechanism as
+    test_read_expected_tunnels_reports_closed_stdin_as_a_collect_error, exercised
+    through main() so the exit-code branch (2, not 1) is pinned end-to-end too."""
     monkeypatch.setattr("sys.stdin", None)
     assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", "-"]) == 2
     captured = capsys.readouterr()

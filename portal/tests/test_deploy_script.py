@@ -20,6 +20,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
 
@@ -514,28 +516,62 @@ def test_allow_dirty_is_not_forwarded_on_a_clean_deploy(tmp_path):
     assert "--allow-dirty" not in verify_call
 
 
-def test_verification_log_line_quotes_the_command_actually_run(tmp_path):
-    """The progress line prints the gate's command in parentheses, and the failure
-    path a few lines below tells the operator to re-run the gate by hand -- so that
-    parenthetical is a paste target, not decoration. A flag dropped from it is not a
-    typo: re-running the weaker `--tunnels`-only form takes verify-deploy's
-    zero-container SKIP branch and exits 0, reporting the half-finished deploy that
-    just failed as fine. Compare against the real argv rather than a hardcoded string,
-    so adding a flag to the invocation without the log line fails here too. Equality,
-    not startswith: dropping a flag from the log leaves it a strict PREFIX of the real
-    argv, which is exactly the bug and exactly what a prefix check would wave through.
-    Deploy is clean, so `${extra[@]}` contributes no --allow-dirty."""
-    proc, calls = _run(tmp_path)
+@pytest.mark.parametrize(
+    "argv, env",
+    [
+        pytest.param([], {}, id="clean"),
+        pytest.param(["--allow-dirty"], {"FAKE_GIT_DIRTY": " M portal/src/postern/cli.py\n"}, id="allow-dirty"),
+    ],
+)
+def test_verification_log_line_quotes_the_command_actually_run(tmp_path, argv, env):
+    """The progress line prints the gate's command in parentheses, and both failure
+    paths below tell the operator to re-run the gate by hand -- so that parenthetical
+    is a paste target, not decoration. A flag dropped from it is not a typo: the
+    weaker `--tunnels`-only form takes verify-deploy's zero-container SKIP branch and
+    exits 0, reporting the half-finished deploy that just failed as fine.
+
+    Both flag paths, because they are the two the function can emit and only one of
+    them used to be covered: `--allow-dirty` reaches the real argv through
+    `${extra[@]}`, so a log line that did not read the same array diverged there and
+    nowhere else.
+
+    Equality after normalizing the producer, not startswith: dropping a flag leaves
+    the logged form a strict PREFIX of the real argv, which is the bug itself and
+    exactly what a prefix check waves through (an earlier draft of this test used
+    startswith and passed with the bug reintroduced). The logged form names a process
+    substitution where the real invocation reads stdin from a heredoc -- the logged
+    one has to be runnable standalone, and bare `-` on a terminal blocks forever."""
+    proc, calls = _run(tmp_path, *argv, **env)
     assert proc.returncode == 0
 
     logged = re.search(r"Verifying the deploy actually took \((.+?)\)$", proc.stdout, re.MULTILINE)
     assert logged, f"no verification progress line in stdout:\n{proc.stdout}"
+    normalized = re.sub(r"--expected-tunnels-from <\(.+?\)", "--expected-tunnels-from -", logged.group(1))
 
     actual = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
-    assert actual == logged.group(1), (
+    assert actual == normalized, (
         f"deploy.sh logs {logged.group(1)!r} but runs {actual!r} -- an operator copying the logged "
-        "form out of a failed deploy would run a weaker gate than the one that just failed"
+        "form out of a failed deploy would run a different gate than the one that just failed"
     )
+
+
+def test_verification_log_line_is_runnable_standalone(tmp_path):
+    """`--expected-tunnels-from -` with no producer blocks on the terminal with no
+    prompt, and Ctrl-D out of that hang reads as an EMPTY expected set -- which
+    condemns every running tunnel as surplus and prints a louder, fabricated failure
+    than the one being investigated. So the advertised form must name its own
+    producer. Process substitution rather than a pipe, so the gate's exit status is
+    the gate's and not the producer's."""
+    proc, _calls = _run(tmp_path)
+    logged = re.search(r"Verifying the deploy actually took \((.+?)\)$", proc.stdout, re.MULTILINE)
+    assert logged, f"no verification progress line in stdout:\n{proc.stdout}"
+
+    advertised = logged.group(1)
+    assert "--expected-tunnels-from <(" in advertised, (
+        f"logged gate command is not runnable standalone: {advertised!r} -- reading stdin with no "
+        "producer hangs, and an empty read condemns every tunnel as surplus"
+    )
+    assert "| scripts/verify-deploy.py" not in advertised, "a pipe would report the producer's exit status, not the gate's"
 
 
 def test_success_line_marks_a_dirty_deploy(tmp_path):
@@ -629,8 +665,24 @@ def test_a_connection_set_that_changed_under_the_gate_is_named_as_such(tmp_path)
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="ss-bbb", FAKE_VERIFY_RC="1")
     combined = proc.stdout + proc.stderr
     assert proc.returncode != 0
-    assert "changed during verification" in combined
+    assert "changed since this deploy read it" in combined
     assert "deploy verification failed" in combined
+
+
+def test_a_changed_connection_set_does_not_exonerate_the_reconciler(tmp_path):
+    """The re-read compares a set taken before the gate started against one taken
+    after it exited -- a window that strictly contains the one that decides the
+    rows (up to the gate's own container listing). A mutation landing in the
+    trailing part moved the set without affecting anything the gate printed, so
+    the warn must not name it as THE cause. Concretely: a tunnel genuinely missing
+    because a legacy container squats on its name, plus a connection added after
+    the listing, would otherwise send the operator to re-run a full deploy instead
+    of reading the portal log -- and the re-run fails identically, having dropped
+    every tunnel on the way."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="ss-bbb", FAKE_VERIFY_RC="1")
+    combined = proc.stdout + proc.stderr
+    assert "not the reconciler" not in combined, "the warn must not exonerate the reconciler; the re-read cannot prove that"
+    assert "docker compose logs portal" in combined, "the warn must still point at the reconciler as a live possibility"
 
 
 def test_a_swap_that_keeps_the_count_identical_is_still_detected(tmp_path):
@@ -638,7 +690,7 @@ def test_a_swap_that_keeps_the_count_identical_is_still_detected(tmp_path):
     deleted and another added leaves the count untouched."""
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa ss-bbb", FAKE_TUNNELS_2="ss-aaa ss-ccc", FAKE_VERIFY_RC="1")
     assert proc.returncode != 0  # the note explains the failure; it does not clear it
-    assert "changed during verification" in (proc.stdout + proc.stderr)
+    assert "changed since this deploy read it" in (proc.stdout + proc.stderr)
 
 
 def test_an_emptied_connection_set_is_still_reported_as_a_change(tmp_path):
@@ -651,13 +703,13 @@ def test_an_emptied_connection_set_is_still_reported_as_a_change(tmp_path):
     # empty list.
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2=" ", FAKE_VERIFY_RC="1")
     assert proc.returncode != 0  # the note explains the failure; it does not clear it
-    assert "changed during verification" in (proc.stdout + proc.stderr)
+    assert "changed since this deploy read it" in (proc.stdout + proc.stderr)
 
 
 def test_no_change_note_when_the_set_held_still(tmp_path):
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_VERIFY_RC="1")
     assert proc.returncode != 0
-    assert "changed during verification" not in (proc.stdout + proc.stderr)
+    assert "changed since this deploy read it" not in (proc.stdout + proc.stderr)
 
 
 def test_no_re_read_when_the_gate_could_not_run(tmp_path):

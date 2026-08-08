@@ -343,7 +343,17 @@ run_verification() {
         extra+=(--allow-dirty)
     fi
 
-    log "Verifying the deploy actually took (scripts/verify-deploy.py --tunnels --expected-tunnels-from -)"
+    # The failure paths below tell the operator to re-run the gate by hand, so this
+    # string is a paste target and must be RUNNABLE, not merely accurate. Bare
+    # `--expected-tunnels-from -` has no producer on a terminal: it blocks with no
+    # prompt, and a Ctrl-D out of that hang reads as an EMPTY expected set, which
+    # condemns every running tunnel as surplus and invents a louder failure than the
+    # one being investigated. Process substitution rather than a pipe, so the gate's
+    # own exit status survives. Built from the same `extra` array as the invocation
+    # below so the advertised flags cannot drift from the real ones.
+    local runnable="scripts/verify-deploy.py --tunnels --expected-tunnels-from <(docker compose exec -T portal postern connection tunnels)${extra[*]:+ ${extra[*]}}"
+
+    log "Verifying the deploy actually took (${runnable})"
     local rc=0
     python3 scripts/verify-deploy.py --tunnels --expected-tunnels-from - "${extra[@]}" \
         <<<"$expected_tunnels" || rc=$?
@@ -370,7 +380,14 @@ run_verification() {
     # shellcheck disable=SC2310  # see resolve_expected_tunnels' identical comment
     reread="$(read_expected_tunnels)" || reread_ok=0
     if [[ "$reread_ok" == 1 && "$reread" != "$expected_tunnels" ]]; then
-        warn "the set of enabled connections changed during verification. If the failure above is a tunnel row, that change is the cause, not the reconciler: re-run scripts/deploy.sh, or scripts/verify-deploy.py --tunnels --expected-tunnels-from - with a fresh \`postern connection tunnels\`"
+        # Deliberately does NOT exonerate the reconciler. This compares the set read
+        # before the gate started against one read after it exited, a window that
+        # strictly contains the one that matters (up to the gate's own `docker ps`).
+        # A mutation landing in the trailing part moved the set without touching a
+        # single row the gate printed, so "the set moved" is a hint, never a verdict
+        # -- claiming otherwise sends an operator to re-run a deploy when the real
+        # cause was a squatting legacy container the reconciler keeps backing off from.
+        warn "the set of enabled connections changed since this deploy read it. That change may post-date the gate's own container listing, so a tunnel row above may still be a genuine non-convergence: check \`docker compose logs portal\` as well as re-running scripts/deploy.sh or ${runnable}"
     fi
     die "deploy verification failed -- the running stack is not provably on the images just built (see the checks above)"
 }

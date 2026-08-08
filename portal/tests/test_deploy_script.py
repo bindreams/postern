@@ -340,9 +340,7 @@ def test_allow_flags_let_the_whole_deploy_proceed(tmp_path):
 
 def test_reconcile_is_triggered_and_waited_on(tmp_path):
     _proc, calls = _run(tmp_path)
-    assert any(
-        a.startswith("compose exec -T portal postern reconcile --wait") for a in _args_of(calls, "docker")
-    )
+    assert any(a.startswith("compose exec -T portal postern reconcile --wait") for a in _args_of(calls, "docker"))
 
 
 def test_reconcile_wait_has_a_bounded_default_timeout(tmp_path):

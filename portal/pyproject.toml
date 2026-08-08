@@ -34,6 +34,8 @@ dev = [
     "asgi-lifespan>=2.1.0",
     "mmdb-writer>=0.2",
     "pyyaml>=6.0",
+    "prek>=0.4.12",
+    "identify>=2.6",
 ]
 e2e = [
     {include-group = "dev"},
@@ -74,3 +76,11 @@ missing-argument = "ignore"
 # `User(**dict(row))` and test fixture dicts. The DB layer validates values; the
 # rule as it fires here is library-typing noise, not a real bug surface.
 invalid-argument-type = "ignore"
+
+[tool.ty.environment]
+# tests/test_ci_lint_job.py and tests/test_ci_lint_lib.py both import
+# scripts/ci_lint_lib.py via a `sys.path.insert(0, "scripts")` at runtime (the
+# same way scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh reach it from
+# a repo-root CWD), which ty cannot follow statically. Without this, ty reports
+# `unresolved-import` on every run.
+extra-paths = ["../scripts"]

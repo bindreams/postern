@@ -7,6 +7,35 @@ on:
   workflow_call:
 
 jobs:
+  lint:
+    name: Lint (prek)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # prek's own `ty` hook shells out to `uv run` again, so setup-uv is needed here too.
+      - uses: astral-sh/setup-uv@v8.3.2
+        with:
+          enable-cache: true
+
+      # uv.lock is in the key because it pins prek itself, and prek owns the
+      # on-disk layout of these environments; prek.toml's `rev =` pins are what
+      # populates them. The two move independently.
+      - name: Cache prek hook environments
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/prek
+          key: prek-${{ runner.os }}-${{ hashFiles('prek.toml', 'portal/uv.lock') }}
+
+      # Both scripts are tracked, so prek's own shellcheck hook lints them --
+      # the same coverage this job gives every other first-party shell script.
+      # See each script's header comment for what it proves and why.
+      - name: Lint-gate self-test (known-bad fixtures must FAIL)
+        run: scripts/ci-lint-selftest.sh
+
+      - name: Run every prek hook over the whole tree
+        run: scripts/ci-lint-run.sh
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest

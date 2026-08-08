@@ -89,6 +89,8 @@ To run every hook on the whole tree:
 prek run --all-files
 ```
 
+CI runs the same hooks against the same `prek.toml` in [test.yaml](https://github.com/bindreams/postern/blob/main/.github/workflows/test.yaml)'s `Lint (prek)` job, so a `--no-verify` commit or a missing local hook install cannot land unlinted code.
+
 ## Commit messages
 
 Commit subjects follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/): `type(scope): subject`.

@@ -23,7 +23,35 @@ name = "ty check"
 # `[tool.ty.rules]` from the `pyproject.toml` in its CWD, and those rules live
 # in portal/pyproject.toml. With only `--project`, CWD stays at the repo root
 # and the ignore rules are silently dropped.
-entry = "uv run --directory portal --group dev ty check"
+#
+# The trailing `../scripts ../docs` is deliberate, not the default "the
+# project root": every tracked first-party script under scripts/
+# (ci_lint_lib.py, format-section-comments.py, verify-deploy.py, ...) and
+# docs/conf.py live outside the portal project ty would otherwise scan, and
+# `[tool.ty.environment] extra-paths` in portal/pyproject.toml only makes
+# ci_lint_lib *importable* from portal/tests -- it does not add any of these
+# modules as a check target, so a bug entirely inside one of their own
+# bodies would pass silently without this explicit path. Whole directories,
+# not single named files: a single file would leave every OTHER script in
+# that directory unchecked despite the claim (CLAUDE.md) that this is the
+# only place CI type-checks.
+#
+# `mta/entrypoint.py` and `provisioner/entrypoint.py` are NOT covered --
+# tracked as issue #220. Both currently fail ty for reasons unrelated to
+# this gate (a module-scope-unresolved `dns` reference in mta/entrypoint.py;
+# provisioner/entrypoint.py's `from postern_mta import ...` not resolving,
+# since `postern_mta` only exists as `portal/src/postern/mta` COPYed at
+# Docker build time, not as an importable path in the source tree) -- fixing
+# either belongs to #220, not to widening this gate's roots.
+#
+# `--no-respect-ignore-files`: without it, whether ty applies .gitignore to a
+# given path is inconsistent between a single check root and multiple roots
+# (measured against ty 0.0.31 -- a gitignored file under portal/src/postern/
+# is skipped by `ty check .` alone but caught by `ty check . ../scripts`).
+# scripts/ci-lint-selftest.sh's fixtures are gitignored (so a leak can't be
+# staged), so this flag is what makes their detection depend on ty actually
+# scanning the file rather than on that incidental multi-root behavior.
+entry = "uv run --directory portal --group dev ty check . ../scripts ../docs --no-respect-ignore-files"
 language = "python"
 types = ["python"]
 pass_filenames = false
@@ -41,7 +69,10 @@ hooks = [
 [[repos]]
 repo = "https://github.com/shellcheck-py/shellcheck-py"
 rev = "v0.10.0.1"
-hooks = [{ id = "shellcheck" }]
+# SC2310/SC2311: `set -e` does not apply inside a function called in a
+# condition or a command substitution -- the failure mode scripts/deploy.sh
+# guards by hand with `shopt -s inherit_errexit`.
+hooks = [{ id = "shellcheck", args = ["--enable=check-set-e-suppressed"] }]
 
 [[repos]]
 repo = "https://github.com/editorconfig-checker/editorconfig-checker.python"

@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+# Fixture self-test for the `lint` job in .github/workflows/test.yaml. Proves
+# the shellcheck and ty hooks still catch a known-bad file, that prek's
+# zero-match reporting still matches the phrase scripts/ci-lint-run.sh greps
+# for, and that shellcheck's own hook manifest (pinned upstream by
+# prek.toml's `rev =`, not written there) still reaches every first-party
+# shell script. Run from the repo root.
+set -euo pipefail
+shopt -s inherit_errexit
+
+# This script writes real, briefly-type-broken .py files directly into
+# portal/src/postern/, scripts/, and docs/ -- tracked source directories, not
+# a scratch dir -- for the duration of one `prek run ty --all-files`. The
+# flock below only serializes this script against scripts/ci-lint-run.sh; it
+# does NOT protect against an unrelated concurrent `prek run` / `git commit`
+# (the installed pre-commit hook) / a developer's own `ty` invocation in the
+# same checkout, any of which would see a fixture as a genuine type error in
+# first-party code. GitHub Actions sets `CI=true` on every `run:` step, and
+# in CI this script is always one sequential step of one job -- nothing else
+# is running `prek`/`ty` concurrently there. Locally, refuse unless the
+# caller explicitly accepts the risk: this is a debugging/verification tool,
+# not something to run casually alongside other git/prek activity.
+if [ "${CI:-}" != "true" ] && [ "${1:-}" != "--force-local" ]; then
+  echo "refusing to run outside CI: this script briefly writes real files into" >&2
+  echo "portal/src/postern/, scripts/, and docs/, which a concurrent 'prek run'" >&2
+  echo "or 'git commit' in this checkout could misdiagnose as a real type error." >&2
+  echo "Re-run with --force-local if you understand this and won't run prek or" >&2
+  echo "git commit concurrently in this checkout." >&2
+  exit 1
+fi
+
+# Exclusive lock, shared with scripts/ci-lint-run.sh's own (see that
+# script's header for why the two must serialize). `mkdir -p` both so a
+# from-scratch checkout has somewhere for the lock file to live.
+#
+# Scope: this lock only serializes THIS script against `ci-lint-run.sh`
+# specifically (the pair that matters in CI, where they run as two steps of
+# the same job) -- see the CI-only guard above for the wider concurrency risk
+# this doesn't cover. The four fixture files below are also gitignored, as a
+# second line of defense (see .gitignore's own comment for why).
+mkdir -p .tmp
+exec 9>.tmp/ci-lint.lock
+flock -x 9
+
+# Scratch output lives under .tmp/ (gitignored) -- see scripts/ci-lint-run.sh's
+# own SCRATCH_DIR comment for why an aborted run's leftovers are safe there.
+# The four fixture paths below are also gitignored, for the same reason --
+# see .gitignore's own comment for why they can't just live in .tmp/.
+# mktemp'd rather than fixed names, as defense in depth alongside the flock
+# above and for a clearer diagnostic if the lock is ever bypassed (e.g. a
+# future edit that drops it from one of the two scripts).
+#
+# The trap is installed BEFORE any of the five `mktemp` calls, not after: an
+# empty-string path in the trap body is a harmless `rm -rf ""` no-op, but a
+# trap installed only after all five succeed leaves a window where a later
+# `mktemp` failing (disk full, a permissions issue) aborts under `set -e`
+# with whatever the earlier ones already created never cleaned up -- for
+# any ty fixture, that's the same poisoning risk this whole trap exists
+# to prevent.
+SCRATCH_DIR="" FIXTURE_SH="" TY_FIXTURE="" TY_FIXTURE_SCRIPTS="" TY_FIXTURE_DOCS=""
+trap 'rm -rf "$SCRATCH_DIR" "$FIXTURE_SH" "$TY_FIXTURE" "$TY_FIXTURE_SCRIPTS" "$TY_FIXTURE_DOCS"' EXIT
+SCRATCH_DIR="$(mktemp -d .tmp/ci-lint-selftest-XXXXXX)"
+FIXTURE_SH="$(mktemp --suffix=.sh .prek-gate-fixture-XXXXXX)"
+TY_FIXTURE="$(mktemp --suffix=.py portal/src/postern/_ty_gate_fixture_portal_XXXXXX)"
+# Two more ty fixtures, living directly under scripts/ and docs/ (not
+# portal/src/postern/): prek.toml's ty entry names `../scripts` and `../docs`
+# as check targets specifically so every first-party script/doc-conf module
+# (not just ci_lint_lib.py) gets type-checked, and nothing else proves that
+# claim -- test_ci_lint_job.py never reads a hook's `entry`, and
+# ci-lint-run.sh's zero-match grep can't see a narrowed entry because the
+# hook still matches python files and still prints `Passed`. mta/ and
+# provisioner/ are deliberately NOT covered here either -- see prek.toml's
+# own comment on the `ty` hook and issue #220.
+TY_FIXTURE_SCRIPTS="$(mktemp --suffix=.py scripts/_ty_gate_fixture_scripts_XXXXXX)"
+TY_FIXTURE_DOCS="$(mktemp --suffix=.py docs/_ty_gate_fixture_docs_XXXXXX)"
+
+cat >"$FIXTURE_SH" <<'FIXTURE'
+#!/usr/bin/env bash
+set -e
+f() { false; }
+if f; then echo yes; fi
+export REV=$(git rev-parse HEAD)
+echo $REV
+FIXTURE
+test -s "$FIXTURE_SH" || { echo "could not write the shell fixture -- setup failure"; exit 1; }
+
+set +e
+uv run --project portal --group dev prek run shellcheck \
+  --files "$FIXTURE_SH" >"$SCRATCH_DIR/shellcheck-fixture.log" 2>&1
+sc_status=$?
+set -e
+rm "$FIXTURE_SH"
+
+printf 'x: int = "not an int"\n' >"$TY_FIXTURE"
+test -s "$TY_FIXTURE" || { echo "could not write the ty fixture -- setup failure"; exit 1; }
+printf 'y: int = "not an int"\n' >"$TY_FIXTURE_SCRIPTS"
+test -s "$TY_FIXTURE_SCRIPTS" || { echo "could not write the scripts/ ty fixture -- setup failure"; exit 1; }
+printf 'z: int = "not an int"\n' >"$TY_FIXTURE_DOCS"
+test -s "$TY_FIXTURE_DOCS" || { echo "could not write the docs/ ty fixture -- setup failure"; exit 1; }
+
+set +e
+uv run --project portal --group dev prek run ty --all-files >"$SCRATCH_DIR/ty-fixture.log" 2>&1
+ty_status=$?
+set -e
+rm "$TY_FIXTURE" "$TY_FIXTURE_SCRIPTS" "$TY_FIXTURE_DOCS"
+
+echo "--- shellcheck fixture ---"
+cat "$SCRATCH_DIR/shellcheck-fixture.log"
+echo "--- ty fixture ---"
+cat "$SCRATCH_DIR/ty-fixture.log"
+
+# Assert the hook RAN before judging what it found: a prek install failure or
+# an unreachable hook repo also produces "no SC2155", and reporting that as a
+# dead lint gate would misdiagnose an outage. The alternation includes the
+# `(no files to check)Skipped` status prek prints when a hook's matcher
+# selects nothing -- that status contains neither `Failed` nor `Passed`, so a
+# narrower grep here would misreport a narrowed-out fixture as an install
+# failure instead of letting the status-code check below call it what it is.
+grep -qE '^shellcheck\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/shellcheck-fixture.log" ||
+  { echo "prek never ran the shellcheck hook -- install/clone failure?"; exit 1; }
+test "$sc_status" -ne 0 ||
+  { echo "shellcheck passed a known-bad script -- the shell gate is dead"; exit 1; }
+grep -q SC2155 "$SCRATCH_DIR/shellcheck-fixture.log" || { echo "no SC2155 finding -- the shell gate is dead"; exit 1; }
+grep -q SC2086 "$SCRATCH_DIR/shellcheck-fixture.log" || { echo "no SC2086 finding -- the shell gate is dead"; exit 1; }
+# SC2310 only fires with the optional check-set-e-suppressed enabled
+# (prek.toml's `args` on this hook) -- proves that arg still reaches the
+# linter, not just that the hook runs at all.
+grep -q SC2310 "$SCRATCH_DIR/shellcheck-fixture.log" ||
+  { echo "no SC2310 finding -- check-set-e-suppressed is not reaching shellcheck"; exit 1; }
+
+grep -qE '^ty check\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "prek never ran the ty hook -- install failure?"; exit 1; }
+test "$ty_status" -ne 0 ||
+  { echo "ty passed a known-bad annotation -- the type gate is dead"; exit 1; }
+grep -q 'invalid-assignment' "$SCRATCH_DIR/ty-fixture.log" || { echo "no invalid-assignment -- the type gate is dead"; exit 1; }
+grep -q '_ty_gate_fixture_portal' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "ty never saw the portal/src/postern fixture -- the type gate is dead"; exit 1; }
+grep -q '_ty_gate_fixture_scripts' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "ty never saw the scripts/ fixture -- the ../scripts check target is dead"; exit 1; }
+grep -q '_ty_gate_fixture_docs' "$SCRATCH_DIR/ty-fixture.log" ||
+  { echo "ty never saw the docs/ fixture -- the ../docs check target is dead"; exit 1; }
+
+# scripts/ci-lint-run.sh's zero-match grep rests on an assumption -- that prek
+# reports a hook matching no files as `Skipped` with this exact phrase and
+# exit 0 -- that nothing above has exercised. Prove it against real prek
+# output, the same way the two fixtures above prove the `Failed|Passed`
+# format. README.md is never shell, so shellcheck matches nothing -- but prek
+# reports the identical `(no files to check)Skipped` line and exit 0 for a
+# *missing* path too, distinguished only by an extra warning line, so this
+# fixture asserts that warning is absent from the captured output rather than
+# pre-checking README.md's existence (which a later, separate command could
+# race).
+set +e
+uv run --project portal --group dev prek run shellcheck \
+  --files README.md >"$SCRATCH_DIR/zero-match-fixture.log" 2>&1
+zm_status=$?
+set -e
+echo "--- zero-match fixture ---"
+cat "$SCRATCH_DIR/zero-match-fixture.log"
+test "$zm_status" -eq 0 ||
+  { echo "prek exited nonzero on a hook matching no files -- the zero-match assumption is already wrong"; exit 1; }
+! grep -q 'does not exist and will be ignored' "$SCRATCH_DIR/zero-match-fixture.log" ||
+  { echo "prek treated README.md as a missing path -- pick another always-present non-shell fixture file"; exit 1; }
+grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/zero-match-fixture.log" ||
+  { echo "prek's zero-match output no longer matches the grep in ci-lint-run.sh -- update it"; exit 1; }
+
+# The shellcheck hook's OWN matcher config -- types/exclude_types/stages --
+# is pinned by prek.toml's `rev =`, not written there, so it is invisible to
+# portal/tests/test_ci_lint_job.py, which only ever reads prek.toml's own
+# text. Ask prek directly whether it still reaches every real first-party
+# shell script instead of inferring from static config. NUL-TERMINATED
+# (trailing NUL after every path, not just between paths) on both ends --
+# `git ls-files -z` (ci_lint_lib.tracked_files, this oracle's own source) is
+# NUL-safe both so a tracked filename containing a literal newline round-trips
+# intact AND so `while read -d ''` on the far end doesn't silently drop the
+# last entry (a '\0'.join(...) separator would).
+uv run --project portal --group dev python -c "
+import sys
+sys.path.insert(0, 'scripts')
+from ci_lint_lib import first_party_shell_scripts
+sys.stdout.write(''.join(path + '\0' for path in first_party_shell_scripts()))
+" >"$SCRATCH_DIR/shell-scripts.nul"
+test -s "$SCRATCH_DIR/shell-scripts.nul" || { echo "no first-party shell scripts found -- the oracle broke"; exit 1; }
+while IFS= read -r -d '' path; do
+  set +e
+  uv run --project portal --group dev prek run shellcheck --files "$path" >"$SCRATCH_DIR/reach.log" 2>&1
+  reach_status=$?
+  set -e
+  # The liveness grep must accept the `(no files to check)Skipped` status
+  # too, not just `Failed|Passed`: that status is exactly what a narrowed-out
+  # $path produces, and it contains neither word. A narrower grep here would
+  # misreport the one failure this loop exists to catch -- shellcheck's own
+  # upstream matcher having dropped $path -- as an unrelated install/clone
+  # failure, and the dedicated diagnostic in the `if` below would never run.
+  grep -qE '^shellcheck\.+(Failed|Passed|\(no files to check\)Skipped)$' "$SCRATCH_DIR/reach.log" ||
+    { echo "prek never ran the shellcheck hook for $path -- install/clone failure?"; cat "$SCRATCH_DIR/reach.log"; exit 1; }
+  # Anchored the same way as the liveness grep above, NOT a bare substring
+  # match: this file (a first-party shell script this very loop lints) prints
+  # the literal phrase "(no files to check)Skipped" in several unescaped
+  # comments and grep patterns, so an unanchored match could fire on the
+  # linter's own quoted-source-line output for a genuine finding here and
+  # misreport a real lint error as an upstream matcher regression.
+  if grep -qE '^shellcheck\.+\(no files to check\)Skipped$' "$SCRATCH_DIR/reach.log"; then
+    echo "shellcheck skipped $path -- its upstream hook manifest narrowed to exclude it:"
+    cat "$SCRATCH_DIR/reach.log"
+    exit 1
+  fi
+  if [ "$reach_status" -ne 0 ]; then
+    echo "shellcheck found a real issue in $path -- fix it, this is not a coverage gap:"
+    cat "$SCRATCH_DIR/reach.log"
+    exit 1
+  fi
+done <"$SCRATCH_DIR/shell-scripts.nul"

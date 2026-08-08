@@ -27,3 +27,13 @@ CLAUDE.local.md
 # Sphinx build output
 docs/_build/
 scripts/docs-gate-fixture/_build/
+
+# scripts/ci-lint-selftest.sh's fixtures live at real, meaningful paths (not
+# under .tmp/) so prek matches them the same way it would a genuine file;
+# ignored so a leak from an aborted run (or a concurrent invocation racing
+# past this script's own flock) can't be staged by `git add -A` or trip
+# scripts/deploy.sh's dirty-worktree check.
+/.prek-gate-fixture-*.sh
+portal/src/postern/_ty_gate_fixture_portal_*.py
+scripts/_ty_gate_fixture_scripts_*.py
+docs/_ty_gate_fixture_docs_*.py

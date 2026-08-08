@@ -38,6 +38,7 @@ import httpx
 import pytest
 
 from ._helpers import TESTS_E2E_DIR, run
+from ._mta_helpers import assert_mta_submit_network_is_internal_and_disjoint
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,26 @@ def outbound_stack(mta_test_outbound_env: dict[str, str], e2e_certs: Path) -> It
         yield
     finally:
         subprocess.run(_compose_outbound("down", "-v", "--timeout", "60"), check=False)
+
+
+# Co-location ==========================================================================================================
+def _get_outbound_container_id(service: str) -> str:
+    cid = run(_compose_outbound("ps", "-aq", service)).stdout.strip()
+    if not cid:
+        raise AssertionError(f"no container for service {service!r} in project {PROJECT_OUTBOUND}")
+    return cid.splitlines()[0]
+
+
+def test_mta_submit_network_is_internal_and_disjoint_from_production(outbound_stack):
+    """Mirrors test_mta.py's test_mta_submit_network_is_internal for the
+    real-mode overlay. This is the one overlay that actually runs co-located
+    with production on a maintainer VPS (per this file's own header). See
+    _mta_helpers.assert_mta_submit_network_is_internal_and_disjoint for what
+    this pins and why."""
+    assert_mta_submit_network_is_internal_and_disjoint(
+        network_name="mta-submit-mta-real",
+        container_id=_get_outbound_container_id("mta"),
+    )
 
 
 # IMAP poll ============================================================================================================

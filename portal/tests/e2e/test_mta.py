@@ -16,11 +16,11 @@ import pytest
 
 from ._helpers import run
 from ._mta_helpers import (
+    assert_mta_submit_network_is_internal_and_disjoint,
     docker_inspect,
     get_container_id,
     get_provisioner_state,
     mta_exec,
-    network_inspect,
     read_dkim_volume_file,
 )
 
@@ -156,7 +156,7 @@ def test_postmaster_forwards_to_admin_email(mta_e2e_stack, mailpit_mta_client):
     """sendmail postmaster@postern.test (from inside mta) -> mailpit receives a
     message ultimately delivered to admin@elsewhere.test, exercising:
       - virtual_alias_maps (postmaster -> admin)
-      - transport_maps (elsewhere.test -> [172.30.99.10]:1025)
+      - transport_maps (elsewhere.test -> [10.234.45.10]:1025)
       - SRS envelope-sender rewriting (postsrsd via sender_canonical_maps)
 
     The header `To:` is left as `postmaster@postern.test` (mailpit indexes by
@@ -210,14 +210,13 @@ def test_mta_listens_on_smtp_and_submission_ports(mta_e2e_stack):
 
 
 def test_mta_submit_network_is_internal(mta_e2e_stack):
-    """`mta-submit` is internal: true with the fixed /29 subnet (architectural
-    invariant in CLAUDE.md). A "simplification" that drops `internal: true`
-    would let any service relay through mta unauthenticated."""
-    info = network_inspect("mta-submit-mta-e2e")
-    assert info.get("Internal") is True, f"network not internal: Internal={info.get('Internal')!r}"
-    cfgs = (info.get("IPAM", {}) or {}).get("Config", []) or []
-    subnets = [c.get("Subnet") for c in cfgs]
-    assert "172.30.42.0/29" in subnets, f"expected /29 subnet 172.30.42.0/29, got {subnets!r}"
+    """See _mta_helpers.assert_mta_submit_network_is_internal_and_disjoint for
+    what this pins and why -- shared with test_mta_outbound.py's real-mode
+    equivalent."""
+    assert_mta_submit_network_is_internal_and_disjoint(
+        network_name="mta-submit-mta-e2e",
+        container_id=get_container_id("mta"),
+    )
 
 
 def test_opendkim_runs_as_uid_gid_110(mta_e2e_stack, active_selector):

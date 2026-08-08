@@ -141,6 +141,8 @@ uv run pytest -m e2e_mta -v --timeout=180
 The compose project is `postern-e2e-mta` (separate from `postern-e2e`), but both projects publish nginx on `127.0.0.1:8443` and mailpit on `127.0.0.1:8025` — only one project can be up at a time on the same host.
 ```
 
+Both MTA overlays pin their own `mta-submit` subnets (`10.234.43.0/29` and `10.234.44.0/29` against production's `172.30.42.0/29`), and every other host port they publish is loopback and non-privileged. The one exception is `e2e-mta-real`'s mta, which publishes host `25:25/tcp` on all interfaces instead of loopback — a deliberate, allowlisted exception, including which side loses if it's brought up while production's mta is briefly down (see the co-location invariant in CLAUDE.md for why, and for the residual gap the subnet pins can't close).
+
 Manual bring-up, from inside `portal/`:
 
 ```bash

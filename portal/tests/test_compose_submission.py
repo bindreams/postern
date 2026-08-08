@@ -8,6 +8,10 @@ The fix: the mta service carries a network-scoped alias `mta-submit` on the
 mta-submit network and SMTP_HOST points at that alias. These tests pin that
 config across the production compose file and the maintainer overlays so it
 cannot silently drift back to the bare name. No Docker required.
+
+The `mta-submit` subnet <-> MTA_SUBMIT_CIDR <-> mynetworks agreement, and the
+co-location guards that keep e2e overlays off any host-namespace resource
+production claims, are a separate concern and live in test_compose_colocation.py.
 """
 from __future__ import annotations
 
@@ -60,24 +64,6 @@ def test_example_env_smtp_host_is_mta_submit_alias():
     assert value == SUBMIT_ALIAS, (
         f"example.env SMTP_HOST must be {SUBMIT_ALIAS!r} (issue #151), got {value!r}: "
         "the bare 'mta' name resolves to the default network and fails mynetworks."
-    )
-
-
-def test_mta_submit_network_pins_the_mynetworks_chain():
-    """The alias only lands the portal *inside* mynetworks if the whole chain
-    agrees: the mta-submit network is internal, uses the /29, AND MTA_SUBMIT_CIDR
-    (which renders Postfix's `mynetworks`) equals that subnet. A subnet that
-    drifts from the CIDR keeps the alias resolving but silently fails submission,
-    so pin all three together (cf. the path-token chain pinned elsewhere)."""
-    compose = _load_compose("compose.yaml")
-    net = compose["networks"]["mta-submit"]
-    assert net.get("internal") is True, "mta-submit network must be internal: true"
-    subnet = net["ipam"]["config"][0]["subnet"]
-    assert subnet == "172.30.42.0/29", f"unexpected mta-submit subnet {subnet!r}"
-    cidr = compose["services"]["mta"]["environment"]["MTA_SUBMIT_CIDR"]
-    assert cidr == subnet, (
-        f"MTA_SUBMIT_CIDR ({cidr!r}) must equal the mta-submit subnet ({subnet!r}); "
-        "mynetworks is derived from MTA_SUBMIT_CIDR, so a mismatch breaks submission."
     )
 
 

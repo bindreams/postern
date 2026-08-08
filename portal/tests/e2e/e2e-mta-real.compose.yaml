@@ -16,6 +16,13 @@
 ##     -f portal/tests/e2e/e2e-mta-real.compose.yaml \
 ##     build
 ##   docker compose -p postern-e2e-mta-real -f ... -f ... up -d --wait
+##
+## Co-location: the VPS this runs on very likely already has a production
+## stack. This overlay pins its own mta-submit subnet (10.234.44.0/29) --
+## see test_compose_colocation.py -- but deliberately does NOT move its mta
+## off host port 25. See CLAUDE.md's co-location invariant for why (sender-
+## callout/MX reachability, and which side loses if both stacks come up at
+## once) and issue #223 for a fully hermetic replacement.
 
 services:
   mta:
@@ -31,7 +38,7 @@ services:
       MTA_REQUIRE_DNSSEC: ${MTA_TEST_REQUIRE_DNSSEC:-false}
       DNS_PROVIDER: ${MTA_TEST_DNS_PROVIDER:?MTA_TEST_DNS_PROVIDER must be set for the real-mode overlay}
       MTA_ADMIN_EMAIL: ${MTA_TEST_ADMIN_EMAIL:?MTA_TEST_ADMIN_EMAIL must be set}
-      MTA_SUBMIT_CIDR: 172.30.42.0/29
+      MTA_SUBMIT_CIDR: 10.234.44.0/29
       SMTP_FROM: noreply@${MTA_TEST_DOMAIN}
       # NO MTA_E2E_TRANSPORT_OVERRIDE -- delivery uses real DNS + real outbound 25.
       # Provider creds are passed through via env_file from the test runner's shell.
@@ -53,6 +60,10 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
     security_opt: ["no-new-privileges:true"]
+    # Host port 25, all interfaces -- deliberately NOT loopback-bound. See the
+    # file header for why (sender-callout/MX reachability, and the ordering
+    # caveat) and test_compose_colocation.py's allowlisted exception for this
+    # entry.
     ports:
       - "25:25/tcp"
     volumes:
@@ -156,6 +167,11 @@ services:
 networks:
   default:
     name: postern-e2e-mta-real-default
+    # NOT inside Docker's default dynamic-allocation pool -- mirrors the
+    # e2e-mta default network fix. See the co-location invariant in CLAUDE.md.
+    ipam:
+      config:
+        - subnet: 10.234.46.0/24
   e2e-tunnel-entry:
     name: e2e-tunnel-entry-mta-real
   e2e-shadowsocks:
@@ -163,9 +179,11 @@ networks:
   mta-submit:
     name: mta-submit-mta-real
     internal: true
+    # Distinct from BOTH production's 172.30.42.0/29 and e2e-mta's
+    # 10.234.43.0/29. Must equal MTA_SUBMIT_CIDR above.
     ipam:
       config:
-        - subnet: 172.30.42.0/29
+        - subnet: 10.234.44.0/29
 
 volumes:
   postern-e2e-data:

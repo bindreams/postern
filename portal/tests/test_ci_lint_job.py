@@ -41,8 +41,10 @@ PREK_CONFIG = REPO_ROOT / "prek.toml"
 
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from ci_lint_lib import PER_HOOK_CHECKS  # noqa: E402
+from ci_lint_lib import find_ty_coverage_gaps  # noqa: E402
 from ci_lint_lib import first_party_shell_scripts  # noqa: E402
 from ci_lint_lib import is_vendored  # noqa: E402
+from ci_lint_lib import run_ty_verbose  # noqa: E402
 from ci_lint_lib import tracked_files  # noqa: E402
 
 # Hardcoded expectations, NOT derived from prek.toml. `ci_lint_lib.is_vendored`,
@@ -77,6 +79,31 @@ HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS = frozenset({"ty check"})
 # `test_every_hook_has_a_dry_run_coverage_check`) and defeating whichever one
 # depended on it actually resolving to the hook's true display name.
 HOOK_ID_TO_DRY_RUN_NAME = {
+    "format section comments": "format section comments",
+    "ty check": "ty check",
+    "check-executables-have-shebangs": "check that executables have shebangs",
+    "check-shebang-scripts-are-executable": "check that scripts with shebangs are executable",
+    "mixed-line-ending": "mixed line ending",
+    "shellcheck": "shellcheck",
+    "editorconfig-checker": "Check .editorconfig rules",
+    "yapf": "yapf",
+    "mdformat": "mdformat",
+    "mdformat (myst)": "mdformat (myst)",
+}
+
+# Independent second source for HOOK_ID_TO_DRY_RUN_NAME's VALUES, not just its key
+# set. test_hook_id_to_dry_run_name_map_is_complete only checks every hook has *a*
+# key; test_no_two_hooks_share_a_dry_run_display_name and
+# test_every_hook_has_a_dry_run_coverage_check only compare the *set* of values.
+# Swapping two entries' values -- e.g. giving `shellcheck` the real display name
+# that belongs to `editorconfig-checker` and vice versa -- leaves every one of
+# those checks green: no key is missing, no display name collides with another,
+# and the value set is unchanged, just permuted. A hardcoded, independently
+# re-typed copy of the whole dict (the same pattern as EXPECTED_EXCLUDE,
+# EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR, and EXPECTED_EDITORCONFIG_EXCLUDE_TYPES
+# above) is what actually catches a swap: dict equality fails the instant one
+# entry's value moves, no matter which other entry it moved to.
+EXPECTED_HOOK_ID_TO_DRY_RUN_NAME = {
     "format section comments": "format section comments",
     "ty check": "ty check",
     "check-executables-have-shebangs": "check that executables have shebangs",
@@ -172,6 +199,19 @@ def test_hook_id_to_dry_run_name_map_is_complete():
     )
 
 
+def test_hook_id_to_dry_run_name_values_are_pinned():
+    """Catches a VALUE swapped between two otherwise-valid entries, which the
+    completeness/uniqueness/coverage checks around this dict cannot see -- see
+    EXPECTED_HOOK_ID_TO_DRY_RUN_NAME's own comment for why they can't and why a
+    hardcoded second copy is what closes the gap.
+    """
+    assert HOOK_ID_TO_DRY_RUN_NAME == EXPECTED_HOOK_ID_TO_DRY_RUN_NAME, (
+        "HOOK_ID_TO_DRY_RUN_NAME no longer matches its independent pin -- if this is a deliberate "
+        "addition/rename, update EXPECTED_HOOK_ID_TO_DRY_RUN_NAME too; if it isn't, a value moved "
+        "to the wrong key"
+    )
+
+
 def test_no_two_hooks_share_a_dry_run_display_name():
     """The identity that actually matters -- prek's dry-run *display* name, via
     `HOOK_ID_TO_DRY_RUN_NAME` -- not prek.toml's own `name`/`id` text.
@@ -263,78 +303,27 @@ def test_editorconfig_checker_exclude_types_is_pinned():
     )
 
 
-# Tracked first-party Python files outside every ty check root, deliberately
-# left uncovered -- tracked as issue #220, not fixed here, because closing
-# the gap means fixing pre-existing, unrelated bugs first (a module-scope-
-# unresolved name in mta/entrypoint.py; provisioner/entrypoint.py importing
-# `postern_mta`, which only exists as `portal/src/postern/mta` COPYed at
-# Docker build time, not as an importable path in the source tree).
-TY_UNCOVERED_PYTHON_FILES = frozenset({"mta/entrypoint.py", "provisioner/entrypoint.py"})
-
-
-def _ty_check_roots() -> list[str]:
-    """Repo-root-relative directory prefixes ty actually scans, parsed from the `ty`
-    hook's `entry` in prek.toml -- not a hand-copied second list, so a root added or
-    removed there is exactly what `test_every_first_party_python_file_is_a_ty_check_target`
-    verifies against, with nothing to keep in sync by hand.
-
-    The entry's positional (non-flag) arguments after `check` are the roots; parsed with
-    a plain `.split()` since prek.toml's `entry` strings are simple space-separated
-    commands with no quoting. They resolve relative to the entry's own CWD (`portal/`,
-    from `--directory portal`), not the repo root.
-    """
-    entry: str = _hook_field("ty", "entry")
-    tokens = entry.split()
-    check_index = tokens.index("check")
-    positional = [token for token in tokens[check_index + 1:] if not token.startswith("-")]
-    roots = []
-    for token in positional:
-        resolved = (REPO_ROOT / "portal" / token).resolve()
-        rel = resolved.relative_to(REPO_ROOT).as_posix()
-        # `Path(".").as_posix()` is the string "." -- truthy -- for a root that
-        # resolves to the repo root itself, so a plain `if rel else ""` never
-        # produces the empty prefix that "every path starts with this" needs;
-        # it would instead produce "./", which no repo-relative path starts
-        # with, silently reporting every tracked Python file as uncovered.
-        roots.append("" if rel == "." else rel + "/")
-    return roots
-
-
-def test_ty_check_roots_normalizes_a_repo_root_target(monkeypatch):
-    """A ty entry naming the repo root itself (e.g. `ty check ..` from portal/, which
-    would widen coverage to include mta/ and provisioner/ per issue #220) must resolve
-    to the empty-string prefix, not the truthy-but-wrong `"./"`, or every tracked
-    first-party Python file would be reported as falling outside every root.
-    """
-    monkeypatch.setattr(
-        sys.modules[__name__], "_hook_field",
-        lambda hook_id, field: "uv run --directory portal --group dev ty check .. --no-respect-ignore-files"
-    )
-    roots = _ty_check_roots()
-    assert roots == [""]
-    assert "portal/src/postern/app.py".startswith(roots[0])
-
-
 def test_every_first_party_python_file_is_a_ty_check_target():
-    """`ty check`'s `pass_filenames = false` decouples what it scans from prek's own
-    file matcher entirely, so nothing else here -- and nothing in
-    `ci_lint_lib.find_dry_run_coverage_gaps`'s union check, satisfied by every OTHER
-    hook matching text files regardless of language -- can see a first-party Python
-    file falling outside every root the `ty` hook's `entry` actually names. Verified
-    live: a tracked `tools/x.py` with a real type error passed the entire lint gate
-    green before this test existed.
+    """Ground-truthed against `ty` itself, not against prek.toml's `entry` text.
+
+    A path-prefix inference from `entry`'s positional roots (the previous version
+    of this test) is blind to two narrowing vectors that live entirely outside
+    prek.toml: a `[tool.ty.src] exclude` in portal/pyproject.toml (`ty` reads its
+    own config; prek's file matcher never sees it), and ty's own built-in default
+    excludes (`**/dist/`, `**/build/`, `**/site-packages/`, ...), which apply even
+    with no `[tool.ty.src]` at all. Both were proven live, each silently passing
+    `prek run ty --all-files` -- and this test, in its previous form -- while a
+    real type error inside the excluded file went undetected.
+
+    `ci_lint_lib.find_ty_coverage_gaps` closes that by asking `ty` itself which
+    files it actually type-checked, via its own `-vv` log -- the only place that
+    information exists, since `pass_filenames = false` means prek's own
+    `--dry-run` output carries no file list for this hook at all (see
+    `ci_lint_lib.find_dry_run_coverage_gaps`'s docstring). Any exclude mechanism
+    ty applies, present or future, is reflected here automatically.
     """
-    roots = _ty_check_roots()
-    tracked_python = [path for path in tracked_files() if path.endswith(".py") and not is_vendored(path)]
-    uncovered = [
-        path for path in tracked_python
-        if path not in TY_UNCOVERED_PYTHON_FILES and not any(path.startswith(root) for root in roots)
-    ]
-    assert not uncovered, (
-        f"these first-party Python files fall outside every ty check root ({roots}): {uncovered}. Either widen "
-        "the `ty` hook's `entry` in prek.toml to cover them, or add them to TY_UNCOVERED_PYTHON_FILES here with "
-        "an issue reference if closing the gap requires fixing unrelated pre-existing bugs first"
-    )
+    problems = find_ty_coverage_gaps(run_ty_verbose(), tracked_files())
+    assert not problems, "; ".join(problems)
 
 
 def test_prek_has_exactly_the_expected_hooks():

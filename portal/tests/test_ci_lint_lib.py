@@ -22,8 +22,10 @@ sys.path.insert(0, str(REPO_ROOT / "scripts"))
 import ci_lint_lib  # noqa: E402
 from ci_lint_lib import assert_no_newline_paths  # noqa: E402
 from ci_lint_lib import find_dry_run_coverage_gaps  # noqa: E402
+from ci_lint_lib import find_ty_coverage_gaps  # noqa: E402
 from ci_lint_lib import is_vendored  # noqa: E402
 from ci_lint_lib import parse_dry_run_hook_files  # noqa: E402
+from ci_lint_lib import parse_ty_verbose_checked_files  # noqa: E402
 from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 from ci_lint_lib import tracked_files  # noqa: E402
 
@@ -379,6 +381,103 @@ def test_find_dry_run_coverage_gaps_on_no_hooks_at_all_reports_install_failure()
 def test_find_dry_run_coverage_gaps_reports_newline_paths_instead_of_raising():
     problems = find_dry_run_coverage_gaps(SAMPLE_LOG, ["a.py", "b\nc.py"], FAKE_TAGS.get)
     assert any("newline" in problem for problem in problems)
+
+
+# parse_ty_verbose_checked_files / find_ty_coverage_gaps ===============================================================
+
+# A trimmed but structurally real `ty check ... -vv` transcript (see
+# ci_lint_lib.run_ty_verbose's docstring for why `-vv` and not prek's own
+# `--dry-run`): noise lines (timestamps, `Adding new file root`, `Invalid
+# __all__ in ...`, `Module X not found`, the `INFO Checking file ... took more
+# than 100ms` slow-file variant, which uses backticks rather than the single
+# quotes this parser keys on) interleaved with real `DEBUG Checking file
+# '<path>'` lines, exactly as ty 0.0.31 emits them on stderr. Absolute paths
+# are rooted at REPO_ROOT so `.resolve().relative_to(REPO_ROOT)` succeeds the
+# same way it would against a real invocation.
+TY_VV_LOG = f"""\
+2026-08-08 04:55:12.601901049 DEBUG Version: 0.0.31
+2026-08-08 04:55:12.603604405 DEBUG Adding new file root '{REPO_ROOT}/portal' of kind Project
+2026-08-08 04:55:12.607923313 INFO Indexed 116 file(s) in 0.004s
+2026-08-08 04:55:12.608450249 DEBUG Checking file '{REPO_ROOT}/portal/src/postern/mta/dkim.py'
+2026-08-08 04:55:12.608489722 DEBUG Checking file '{REPO_ROOT}/portal/tests/test_repo_hygiene.py'
+2026-08-08 04:55:12.626537629 DEBUG Module `__builtins__` not found in search paths
+2026-08-08 04:55:12.879279345 DEBUG Invalid `__all__` in `{REPO_ROOT}/portal/.venv/lib/python3.14/site-packages/yaml/scanner.py`
+2026-08-08 04:55:12.591327803 INFO Checking file `{REPO_ROOT}/portal/src/postern/cli.py` took more than 100ms (267ms)
+2026-08-08 04:55:12.869009156 DEBUG Checking file '{REPO_ROOT}/scripts/format-section-comments.py'
+2026-08-08 04:55:12.913866978 DEBUG Checking file '{REPO_ROOT}/docs/conf.py'
+2026-08-08 04:55:12.926317375 DEBUG Checking all files took 0.318s
+2026-08-08 04:55:12.926395871 DEBUG Exiting main loop
+"""
+
+TY_VV_TRACKED = [
+    "portal/src/postern/mta/dkim.py",
+    "portal/tests/test_repo_hygiene.py",
+    "scripts/format-section-comments.py",
+    "docs/conf.py",
+]
+
+
+def test_parse_ty_verbose_checked_files_extracts_repo_relative_paths():
+    assert parse_ty_verbose_checked_files(TY_VV_LOG) == TY_VV_TRACKED
+
+
+def test_parse_ty_verbose_checked_files_ignores_the_slow_file_backtick_line():
+    """The `INFO ... took more than 100ms` line uses backticks, not single quotes, for
+    portal/src/postern/cli.py -- confirm it is never counted (it isn't in TY_VV_TRACKED
+    above), so a future format where the two variants collide can't double-count or
+    silently swap which quoting style this parser keys on.
+    """
+    assert "portal/src/postern/cli.py" not in parse_ty_verbose_checked_files(TY_VV_LOG)
+
+
+def test_parse_ty_verbose_checked_files_on_empty_log_returns_empty_list():
+    assert parse_ty_verbose_checked_files("") == []
+
+
+def test_find_ty_coverage_gaps_clean_log_reports_nothing():
+    assert find_ty_coverage_gaps(TY_VV_LOG, TY_VV_TRACKED) == []
+
+
+def test_find_ty_coverage_gaps_flags_a_file_ty_never_reported_checking():
+    """The narrowing vector this function exists for: a file ty silently excluded
+    (a `[tool.ty.src] exclude`, or one of ty's own built-in default excludes) never
+    gets a `Checking file` line, even though it's tracked and not vendored.
+    """
+    tracked = [*TY_VV_TRACKED, "portal/src/postern/routes/dashboard.py"]
+    problems = find_ty_coverage_gaps(TY_VV_LOG, tracked)
+
+    assert any("portal/src/postern/routes/dashboard.py" in problem for problem in problems)
+
+
+def test_find_ty_coverage_gaps_does_not_flag_a_vendored_file():
+    tracked = [*TY_VV_TRACKED, "external/shadowsocks-rust/setup.py"]
+    problems = find_ty_coverage_gaps(TY_VV_LOG, tracked)
+
+    assert not any("external/" in problem for problem in problems)
+
+
+def test_find_ty_coverage_gaps_does_not_flag_a_known_uncovered_file():
+    """mta/entrypoint.py and provisioner/entrypoint.py are deliberately outside every ty
+    check root (issue #220) -- ci_lint_lib.TY_UNCOVERED_PYTHON_FILES is the allowlist,
+    not a bug this check should report.
+    """
+    tracked = [*TY_VV_TRACKED, "mta/entrypoint.py", "provisioner/entrypoint.py"]
+    problems = find_ty_coverage_gaps(TY_VV_LOG, tracked)
+
+    assert problems == []
+
+
+def test_find_ty_coverage_gaps_does_not_flag_a_non_python_file():
+    tracked = [*TY_VV_TRACKED, "README.md"]
+    problems = find_ty_coverage_gaps(TY_VV_LOG, tracked)
+
+    assert not any("README.md" in problem for problem in problems)
+
+
+def test_find_ty_coverage_gaps_on_empty_log_reports_invocation_failure():
+    assert find_ty_coverage_gaps("", TY_VV_TRACKED) == [
+        "ty -vv reported checking no files at all -- install/invocation failure?"
+    ]
 
 
 # is_vendored ==========================================================================================================

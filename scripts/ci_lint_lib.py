@@ -23,6 +23,7 @@ import subprocess
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from identify.identify import tags_from_path
 
@@ -42,13 +43,16 @@ def _local_hooks() -> list[dict]:
     return [hook for repo in _prek_config()["repos"] for hook in repo.get("hooks", [])]
 
 
-def _hook_field(hook_id: str, field: str) -> list[str]:
-    """The value of `field` on the prek.toml hook with this `id`.
+def _hook_field(hook_id: str, field: str) -> Any:
+    """The value of `field` on the prek.toml hook with this `id` -- a `list[str]` for
+    `types_or`/`exclude_types`, a `str` for `entry`; `Any` because this one small
+    helper serves both callers rather than needing a type-narrowed variant each
+    (mirrors portal/tests/test_ci_lint_job.py's own private duplicate of this helper).
 
     Used to derive `PER_HOOK_CHECKS` predicates from prek.toml's own
-    `types_or`/`exclude_types` text instead of hand-duplicating the same tag
-    set as a second, driftable copy -- see `PER_HOOK_CHECKS`'s own header
-    comment.
+    `types_or`/`exclude_types` text, and `ty_verbose_command`'s argv from its
+    `entry` text, instead of hand-duplicating either as a second, driftable copy
+    -- see `PER_HOOK_CHECKS`'s own header comment.
     """
     for hook in _local_hooks():
         if hook.get("id") == hook_id:
@@ -168,6 +172,105 @@ def tags_for_first_party_file(path: str) -> frozenset[str] | None:
 def first_party_shell_scripts() -> list[str]:
     """Tracked, non-vendored files identify tags as shell."""
     return [path for path in tracked_files() if (tags := tags_for_first_party_file(path)) and "shell" in tags]
+
+
+# ty coverage: ground truth from the tool, not from prek.toml's `entry` text ===========================================
+
+# Tracked first-party Python files ty's own `entry` roots never reach, left
+# deliberately uncovered -- tracked as issue #220, not fixed here, because
+# closing the gap means fixing pre-existing, unrelated bugs first (a
+# module-scope-unresolved name in mta/entrypoint.py; provisioner/entrypoint.py
+# importing `postern_mta`, which only exists as `portal/src/postern/mta`
+# COPYed at Docker build time, not as an importable path in the source tree).
+# Lives here, not in portal/tests/test_ci_lint_job.py, for the same reason
+# PER_HOOK_CHECKS does: any future shell-side consumer of `find_ty_coverage_gaps`
+# needs the identical set, and a private test-side copy risks drifting from it
+# with nothing to catch the drift.
+TY_UNCOVERED_PYTHON_FILES = frozenset({"mta/entrypoint.py", "provisioner/entrypoint.py"})
+
+_TY_CHECKING_FILE_RE = re.compile(r"DEBUG Checking file '(.+)'$", re.MULTILINE)
+
+
+def ty_verbose_command() -> list[str]:
+    """argv for the `ty` hook's own prek.toml `entry`, with `-vv` appended.
+
+    Read from prek.toml, not hand-copied, for the same reason `_vendored_pattern`
+    derives from prek.toml's `exclude` instead of a hardcoded prefix -- a copy here
+    could silently drift from what prek actually invokes. `-vv` enables the
+    DEBUG-level `Checking file` log line `parse_ty_verbose_checked_files` depends
+    on -- confirmed empirically to fire once per file ty actually type-checks and
+    never for a site-packages/`.venv`/stdlib file. It is the ONLY ground truth for
+    ty's resolved file set: `pass_filenames = false` means prek's own `--dry-run`
+    output carries no file list for this hook at all (see
+    `find_dry_run_coverage_gaps`'s docstring), and prek.toml's text alone cannot
+    reveal a narrowing `[tool.ty.src] exclude` or one of ty's own built-in default
+    excludes (`**/dist/`, `**/build/`, `**/site-packages/`, ...) in
+    portal/pyproject.toml -- both proven live to pass the whole lint gate on a
+    tracked file carrying a real type error.
+    """
+    return _hook_field("ty", "entry").split() + ["-vv"]
+
+
+def run_ty_verbose() -> str:
+    """Run the real `ty` command and return its combined stdout+stderr.
+
+    `-vv`'s `DEBUG Checking file` lines land on stderr (measured against ty
+    0.0.31); both streams are captured and concatenated anyway so a future ty
+    version moving or interleaving them doesn't silently blind
+    `parse_ty_verbose_checked_files`.
+    """
+    proc = subprocess.run(ty_verbose_command(), cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    return proc.stdout + proc.stderr
+
+
+def parse_ty_verbose_checked_files(log: str) -> list[str]:
+    """Repo-root-relative POSIX paths of every file a `ty ... -vv` log reports checking.
+
+    Each match is ty's own absolute path for a file it actually type-checked.
+    `Path.resolve()` normalizes it the same way for a REPO_ROOT that itself
+    involves a symlink (e.g. a worktree under a symlinked parent), so a
+    resolved comparison against `REPO_ROOT` (also produced by `.resolve()`-style
+    normalization at import time -- see this module's own `REPO_ROOT`) doesn't
+    spuriously mismatch.
+    """
+    paths = []
+    for raw in _TY_CHECKING_FILE_RE.findall(log):
+        try:
+            paths.append(Path(raw).resolve().relative_to(REPO_ROOT).as_posix())
+        except ValueError:
+            continue  # outside the repo -- not expected for a first-party check; skip defensively
+    return paths
+
+
+def find_ty_coverage_gaps(vv_log: str, tracked: list[str]) -> list[str]:
+    """Compare ty's own resolved `-vv` file set against the tracked, first-party
+    Python tree -- the ty analogue of `find_dry_run_coverage_gaps`, kept as a
+    separate function because `pass_filenames = false` puts ty's checked-file set
+    entirely outside prek's own dry-run output (see `ty_verbose_command`'s
+    docstring) rather than inside it like every other hook `PER_HOOK_CHECKS` covers.
+
+    Ground-truthed against the tool directly, so it is immune to `[tool.ty.src]
+    exclude` narrowing in portal/pyproject.toml and to ty's own built-in default
+    excludes -- neither of which is visible to a check that only reads prek.toml's
+    `entry` text (the mistake the previous version of this check made).
+
+    Returns a list of human-readable problem descriptions; empty means clean.
+    """
+    checked = set(parse_ty_verbose_checked_files(vv_log))
+    if not checked:
+        return ["ty -vv reported checking no files at all -- install/invocation failure?"]
+
+    tracked_python = [
+        path for path in tracked
+        if path.endswith(".py") and not is_vendored(path) and path not in TY_UNCOVERED_PYTHON_FILES
+    ]
+    uncovered = [path for path in tracked_python if path not in checked]
+    if uncovered:
+        return [
+            "ty's own -vv log never reported checking these first-party tracked Python files -- a "
+            f"[tool.ty.src] exclude or one of ty's built-in default excludes may have dropped them: {uncovered}"
+        ]
+    return []
 
 
 # Per-hook dry-run coverage checks =====================================================================================

@@ -16,6 +16,7 @@ import pytest
 
 from ._helpers import run
 from ._mta_helpers import (
+    PRODUCTION_MTA_SUBMIT_SUBNET,
     docker_inspect,
     get_container_id,
     get_provisioner_state,
@@ -209,15 +210,39 @@ def test_mta_listens_on_smtp_and_submission_ports(mta_e2e_stack):
     assert status == "healthy", f"mta container is {status!r}, expected 'healthy'"
 
 
+def _mta_submit_cidr_from_container() -> str:
+    """The MTA_SUBMIT_CIDR the running mta was started with -- the exact value
+    main.cf's `mynetworks` and opendkim's TrustedHosts were rendered from."""
+    env = docker_inspect(get_container_id("mta"), "{{range .Config.Env}}{{println .}}{{end}}").splitlines()
+    values = [line.split("=", 1)[1] for line in env if line.startswith("MTA_SUBMIT_CIDR=")]
+    assert len(values) == 1, f"expected exactly one MTA_SUBMIT_CIDR in the mta container env, got {values!r}"
+    return values[0]
+
+
 def test_mta_submit_network_is_internal(mta_e2e_stack):
-    """`mta-submit` is internal: true with the fixed /29 subnet (architectural
+    """`mta-submit` is internal: true with a pinned /29 subnet (architectural
     invariant in CLAUDE.md). A "simplification" that drops `internal: true`
-    would let any service relay through mta unauthenticated."""
+    would let any service relay through mta unauthenticated.
+
+    The expected subnet is read back off the running container rather than
+    written here as a literal: the live network and the value Postfix renders
+    `mynetworks` from must be the same string, and comparing them directly is
+    what that pins. The subnet must also differ from production's, or this
+    stack cannot come up on a host that already runs one.
+    """
     info = network_inspect("mta-submit-mta-e2e")
     assert info.get("Internal") is True, f"network not internal: Internal={info.get('Internal')!r}"
     cfgs = (info.get("IPAM", {}) or {}).get("Config", []) or []
     subnets = [c.get("Subnet") for c in cfgs]
-    assert "172.30.42.0/29" in subnets, f"expected /29 subnet 172.30.42.0/29, got {subnets!r}"
+    expected = _mta_submit_cidr_from_container()
+    assert subnets == [expected], (
+        f"mta-submit network subnets {subnets!r} != the mta container's MTA_SUBMIT_CIDR {expected!r}; "
+        "mynetworks is rendered from the latter, so a mismatch rejects submission with 554 5.7.1"
+    )
+    assert expected != PRODUCTION_MTA_SUBMIT_SUBNET, (
+        f"the e2e mta-submit network is on production's subnet ({PRODUCTION_MTA_SUBMIT_SUBNET}); Docker "
+        "refuses overlapping subnets, so this stack cannot start on a host that already runs production"
+    )
 
 
 def test_opendkim_runs_as_uid_gid_110(mta_e2e_stack, active_selector):

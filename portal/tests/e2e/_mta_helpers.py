@@ -17,8 +17,9 @@ import subprocess
 import time
 from pathlib import Path
 
+from .._compose import load_compose
 from . import _helpers
-from ._helpers import TESTS_E2E_DIR, run
+from ._helpers import PROJECT_ROOT, TESTS_E2E_DIR, run
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,23 @@ COMPOSE_FILES_MTA: tuple[Path, ...] = (
 # Refuse to silently use the wrong project. If a future refactor makes these match
 # the base e2e project, fixtures targeting different stacks would collide.
 assert PROJECT_MTA != _helpers.PROJECT, ("PROJECT_MTA must differ from _helpers.PROJECT to keep stacks isolated")
+
+
+# Production values the e2e stack must NOT collide with ================================================================
+def _production_mta_submit_subnet() -> str:
+    """Production's IPAM-pinned mta-submit subnet, read from compose.yaml.
+
+    Derived, never hand-typed: the e2e overlay's whole requirement is being a
+    *different* subnet from whatever production currently pins, and a literal
+    copy here would keep comparing against a stale value after production moved.
+    """
+    net = load_compose(PROJECT_ROOT / "compose.yaml")["networks"]["mta-submit"]
+    subnet = net["ipam"]["config"][0]["subnet"]
+    assert isinstance(subnet, str), f"compose.yaml mta-submit subnet is {subnet!r}"
+    return subnet
+
+
+PRODUCTION_MTA_SUBMIT_SUBNET = _production_mta_submit_subnet()
 
 
 # Compose primitives ===================================================================================================

@@ -20,6 +20,10 @@
 ## 127.0.0.1, which has no upstream DNS in CI. The bracketed IP `smtp:[<ip>]`
 ## skips MX and A lookups in Postfix, so Unbound never gets queried. mailpit
 ## is pinned to a static IP via IPAM below.
+##
+## Co-location: this stack pins its own mta-submit subnet (10.234.43.0/29) and
+## publishes only loopback ports, so it can come up on a host that already runs
+## a production stack. See test_compose_submission.py.
 
 services:
   mta:
@@ -35,7 +39,7 @@ services:
       MTA_REQUIRE_DNSSEC: "false"
       DNS_PROVIDER: "none"
       MTA_ADMIN_EMAIL: admin@elsewhere.test
-      MTA_SUBMIT_CIDR: 172.30.42.0/29
+      MTA_SUBMIT_CIDR: 10.234.43.0/29
       SMTP_FROM: noreply@postern.test
       # Two-space-separated postfix transport table. The trailing newline matters:
       # `postmap` builds the lmdb file from this. Both domains route to the
@@ -71,7 +75,7 @@ services:
     # portal -> `mta-submit:587` deterministically resolves to the mta-submit
     # IP. With both networks shared, plain `mta` resolves to BOTH IPs and the
     # client may pick the default-network one -- which fails Postfix's
-    # mynetworks check (mynetworks = 172.30.42.0/29 only).
+    # mynetworks check (mynetworks = 10.234.43.0/29 only).
     networks:
       default:
       mta-submit:
@@ -120,7 +124,7 @@ services:
 
   portal:
     environment:
-      # Use the mta-submit-only alias so the connection comes from 172.30.42.x
+      # Use the mta-submit-only alias so the connection comes from 10.234.43.x
       # (in mynetworks). See the `aliases` block on the mta service above.
       SMTP_HOST: mta-submit
       SMTP_PORT: "587"
@@ -166,9 +170,11 @@ networks:
   mta-submit:
     name: mta-submit-mta-e2e
     internal: true
+    # NOT production's 172.30.42.0/29. Must equal MTA_SUBMIT_CIDR above --
+    # mynetworks is rendered from it.
     ipam:
       config:
-        - subnet: 172.30.42.0/29
+        - subnet: 10.234.43.0/29
 
 volumes:
   postern-e2e-data:

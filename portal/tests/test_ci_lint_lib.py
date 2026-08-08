@@ -10,6 +10,7 @@ run, where a format shift shows up as an opaque exception or a silently wrong
 file list rather than a clear assertion failure.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -27,18 +28,20 @@ from ci_lint_lib import tags_for_first_party_file  # noqa: E402
 from ci_lint_lib import tracked_files  # noqa: E402
 
 # A trimmed but structurally real transcript covering every entry in
-# `PER_HOOK_CHECKS`, plus `ty check` and `shellcheck` -- the two hooks
-# `PER_HOOK_CHECKS` deliberately excludes (see that constant's own header
-# comment for why: `pass_filenames = false` makes ty's own `types`
-# restriction irrelevant, and shellcheck has its own live per-file
-# reachability check in scripts/ci-lint-selftest.sh instead) -- and the two
-# same-id mdformat entries told apart only by their display name. Tracked
-# files are a.py/b.py (python), README.md (non-docs markdown), docs/index.md
-# (docs markdown), run.sh (text+executable+shell, so it also exercises `check
-# that executables have shebangs` and `shellcheck`, whose predicates every
-# OTHER fixture file here fails), and config.yaml (text, not
-# rust/markdown/python, so it also exercises `Check .editorconfig rules`'s
-# predicate).
+# `PER_HOOK_CHECKS` (which includes `shellcheck` -- see that constant's own
+# header comment for why it isn't exempted despite also having a live
+# per-file reachability check in scripts/ci-lint-selftest.sh), plus `ty
+# check` -- the one hook `PER_HOOK_CHECKS` genuinely can't cover, since
+# `pass_filenames = false` decouples what it scans from prek's own file
+# matcher entirely (ty's coverage is pinned separately, in
+# portal/tests/test_ci_lint_job.py's `test_every_first_party_python_file_is_a_ty_check_target`)
+# -- and the two same-id mdformat entries told apart only by their display
+# name. Tracked files are a.py/b.py (python), README.md (non-docs markdown),
+# docs/index.md (docs markdown), run.sh (text+executable+shell, so it also
+# exercises `check that executables have shebangs` and `shellcheck`, whose
+# predicates every OTHER fixture file here fails), and config.yaml (text,
+# not rust/markdown/python, so it also exercises `Check .editorconfig
+# rules`'s predicate).
 SAMPLE_LOG = """\
 format section comments.................................................Dry Run
 - hook id: format-section-comments
@@ -244,6 +247,22 @@ def test_find_dry_run_coverage_gaps_flags_executable_shebang_narrowing():
     assert any("check that executables have shebangs" in problem and "run.sh" in problem for problem in problems)
 
 
+def test_find_dry_run_coverage_gaps_flags_shellcheck_narrowing():
+    """run.sh is the only fixture matching shellcheck's "shell" predicate -- confirm
+    the check actually fires on it. shellcheck also has its own live per-file
+    reachability loop in scripts/ci-lint-selftest.sh, but that's defense-in-depth
+    for the language this whole gate exists to enforce, not a substitute for this
+    cheap, uniform check -- see PER_HOOK_CHECKS's own comment.
+    """
+    log_with_narrowed_hook = SAMPLE_LOG.replace(
+        "\n  `shellcheck` would be run on 1 files:\n  - run.sh\n",
+        "\n",
+    )
+    problems = find_dry_run_coverage_gaps(log_with_narrowed_hook, SAMPLE_TRACKED, FAKE_TAGS.get)
+
+    assert any("shellcheck" in problem and "run.sh" in problem for problem in problems)
+
+
 def test_find_dry_run_coverage_gaps_flags_editorconfig_narrowing():
     """run.sh and config.yaml are the only fixtures matching `Check .editorconfig
     rules`'s text-but-not-{rust,markdown,python} predicate -- confirm the check
@@ -372,6 +391,21 @@ def test_is_vendored_reads_prek_tomls_real_exclude_pattern():
     """
     assert is_vendored("external/shadowsocks-rust/Cargo.toml")
     assert not is_vendored("scripts/ci_lint_lib.py")
+
+
+def test_pattern_excludes_treats_an_empty_pattern_as_excluding_nothing():
+    """`re.compile("").search(x)` always matches -- an absent/empty prek.toml `exclude`
+    (which can't happen against the real, tracked prek.toml, since it always sets one)
+    must not make ci_lint_lib._pattern_excludes -- and therefore is_vendored -- treat
+    every path as vendored.
+    """
+    assert not ci_lint_lib._pattern_excludes(re.compile(""), "any/path/at/all.py")
+
+
+def test_pattern_excludes_applies_a_real_pattern():
+    pattern = re.compile("^external/")
+    assert ci_lint_lib._pattern_excludes(pattern, "external/shadowsocks-rust/Cargo.toml")
+    assert not ci_lint_lib._pattern_excludes(pattern, "scripts/ci_lint_lib.py")
 
 
 # tags_for_first_party_file ============================================================================================

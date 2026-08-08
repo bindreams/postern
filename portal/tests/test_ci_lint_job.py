@@ -291,8 +291,28 @@ def _ty_check_roots() -> list[str]:
     for token in positional:
         resolved = (REPO_ROOT / "portal" / token).resolve()
         rel = resolved.relative_to(REPO_ROOT).as_posix()
-        roots.append(rel + "/" if rel else "")
+        # `Path(".").as_posix()` is the string "." -- truthy -- for a root that
+        # resolves to the repo root itself, so a plain `if rel else ""` never
+        # produces the empty prefix that "every path starts with this" needs;
+        # it would instead produce "./", which no repo-relative path starts
+        # with, silently reporting every tracked Python file as uncovered.
+        roots.append("" if rel == "." else rel + "/")
     return roots
+
+
+def test_ty_check_roots_normalizes_a_repo_root_target(monkeypatch):
+    """A ty entry naming the repo root itself (e.g. `ty check ..` from portal/, which
+    would widen coverage to include mta/ and provisioner/ per issue #220) must resolve
+    to the empty-string prefix, not the truthy-but-wrong `"./"`, or every tracked
+    first-party Python file would be reported as falling outside every root.
+    """
+    monkeypatch.setattr(
+        sys.modules[__name__], "_hook_field",
+        lambda hook_id, field: "uv run --directory portal --group dev ty check .. --no-respect-ignore-files"
+    )
+    roots = _ty_check_roots()
+    assert roots == [""]
+    assert "portal/src/postern/app.py".startswith(roots[0])
 
 
 def test_every_first_party_python_file_is_a_ty_check_target():

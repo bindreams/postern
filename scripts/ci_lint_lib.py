@@ -71,6 +71,21 @@ def _vendored_pattern() -> re.Pattern[str]:
     return re.compile(_prek_config().get("exclude", ""))
 
 
+def _pattern_excludes(pattern: re.Pattern[str], path: str) -> bool:
+    """True if `pattern` is non-empty and matches `path`.
+
+    `re.compile("").search(x)` always matches -- an empty/absent prek.toml
+    `exclude` must mean "nothing is excluded", not "everything is", so the
+    `bool(pattern.pattern) and ...` guard exists specifically to stop that.
+    Split out as its own pure function so the guard can be unit-tested
+    directly against a constructed empty pattern, without needing to fake
+    the whole prek.toml-reading chain to exercise the "no exclude configured"
+    case (something that can't happen against the real, tracked prek.toml,
+    which always sets `exclude`).
+    """
+    return bool(pattern.pattern) and bool(pattern.search(path))
+
+
 def is_vendored(path: str) -> bool:
     """True if prek.toml's top-level `exclude` would drop this path from every hook.
 
@@ -79,8 +94,7 @@ def is_vendored(path: str) -> bool:
     matches with Python's `re`. Today's pattern (`^external/`) is simple
     enough to be dialect-agnostic.
     """
-    pattern = _vendored_pattern()
-    return bool(pattern.pattern) and bool(pattern.search(path))
+    return _pattern_excludes(_vendored_pattern(), path)
 
 
 def tracked_files() -> list[str]:

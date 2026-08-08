@@ -16,8 +16,11 @@ test suite.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_SH = REPO_ROOT / "scripts" / "deploy.sh"
@@ -66,6 +69,21 @@ if [[ "$1 ${2:-}" == "compose run" ]]; then
     printf '%s\n' "${FAKE_PORTAL_SS_IMAGE-local/shadowsocks-server}"
     exit 0
 fi
+if [[ "$*" == *"postern connection tunnels"* ]]; then
+    if [[ -n "${FAKE_DOCKER_FAIL:-}" && "$*" == *"$FAKE_DOCKER_FAIL"* ]]; then
+        exit 1
+    fi
+    # Real portals write warnings to stderr; deploy.sh captures stdout only, and
+    # the shim must exercise that rather than hand it an unnaturally clean stream.
+    echo "fake portal chatter on stderr" >&2
+    if [[ -n "${FAKE_TUNNELS_2:-}" && -f "$DEPLOY_TEST_LOG.counted" ]]; then
+        printf '%s\n' ${FAKE_TUNNELS_2}
+        exit 0
+    fi
+    touch "$DEPLOY_TEST_LOG.counted"
+    printf '%s\n' ${FAKE_TUNNELS-ss-aaa ss-bbb}
+    exit 0
+fi
 if [[ -n "${FAKE_DOCKER_FAIL:-}" && "$*" == *"$FAKE_DOCKER_FAIL"* ]]; then
     exit 1
 fi
@@ -81,6 +99,7 @@ if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --print-revision" ]]; then
     exit "${FAKE_PRINT_REVISION_RC:-0}"
 fi
 if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --tunnels" ]]; then
+    printf 'python3-stdin|%s|%s\n' "$PWD" "$(tr '\n' ' ')" >> "$DEPLOY_TEST_LOG"
     exit "${FAKE_VERIFY_RC:-0}"
 fi
 echo "fake python3: unhandled: $*" >&2
@@ -400,8 +419,9 @@ def test_steps_run_in_order(tmp_path):
     ss_build = pos("docker", lambda a: a.startswith("build "))
     up = pos("docker", lambda a: a == "compose up -d --build")
     reconcile = pos("docker", lambda a: a.startswith("compose exec -T portal postern reconcile --wait"))
+    tunnels = pos("docker", lambda a: a == "compose exec -T portal postern connection tunnels")
     verify = pos("python3", lambda a: a.startswith("scripts/verify-deploy.py --tunnels"))
-    assert resolved < portal_build < query < ss_build < up < reconcile < verify
+    assert resolved < portal_build < query < ss_build < up < reconcile < tunnels < verify
 
 
 def test_a_failed_compose_up_stops_before_reconcile(tmp_path):
@@ -453,7 +473,7 @@ def test_a_broken_compose_config_is_refused_before_anything_is_built(tmp_path):
 def test_verification_runs_last_scoped_to_tunnels(tmp_path):
     _proc, calls = _run(tmp_path)
     python_calls = _args_of(calls, "python3")
-    assert python_calls[-1] == "scripts/verify-deploy.py --tunnels"
+    assert python_calls[-1].startswith("scripts/verify-deploy.py --tunnels")
 
 
 def test_a_clean_verification_reports_success(tmp_path):
@@ -496,9 +516,226 @@ def test_allow_dirty_is_not_forwarded_on_a_clean_deploy(tmp_path):
     assert "--allow-dirty" not in verify_call
 
 
+@pytest.mark.parametrize(
+    "argv, env",
+    [
+        pytest.param([], {}, id="clean"),
+        pytest.param(["--allow-dirty"], {"FAKE_GIT_DIRTY": " M portal/src/postern/cli.py\n"}, id="allow-dirty"),
+    ],
+)
+def test_verification_log_line_quotes_the_command_actually_run(tmp_path, argv, env):
+    """The progress line prints the gate's command in parentheses, and both failure
+    paths below tell the operator to re-run the gate by hand -- so that parenthetical
+    is a paste target, not decoration. A flag dropped from it is not a typo: the
+    weaker `--tunnels`-only form takes verify-deploy's zero-container SKIP branch and
+    exits 0, reporting the half-finished deploy that just failed as fine.
+
+    Both flag paths, because they are the two the function can emit and only one of
+    them used to be covered: `--allow-dirty` reaches the real argv through
+    `${extra[@]}`, so a log line that did not read the same array diverged there and
+    nowhere else.
+
+    Equality after normalizing the producer, not startswith: dropping a flag leaves
+    the logged form a strict PREFIX of the real argv, which is the bug itself and
+    exactly what a prefix check waves through (an earlier draft of this test used
+    startswith and passed with the bug reintroduced). The logged form names a process
+    substitution where the real invocation reads stdin from a heredoc -- the logged
+    one has to be runnable standalone, and bare `-` on a terminal blocks forever."""
+    proc, calls = _run(tmp_path, *argv, **env)
+    assert proc.returncode == 0
+
+    logged = re.search(r"Verifying the deploy actually took \((.+?)\)$", proc.stdout, re.MULTILINE)
+    assert logged, f"no verification progress line in stdout:\n{proc.stdout}"
+    normalized = re.sub(r"--expected-tunnels-from <\(.+?\)", "--expected-tunnels-from -", logged.group(1))
+
+    actual = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
+    assert actual == normalized, (
+        f"deploy.sh logs {logged.group(1)!r} but runs {actual!r} -- an operator copying the logged "
+        "form out of a failed deploy would run a different gate than the one that just failed"
+    )
+
+
+def test_verification_log_line_is_runnable_standalone(tmp_path):
+    """`--expected-tunnels-from -` with no producer blocks on the terminal with no
+    prompt, and Ctrl-D out of that hang reads as an EMPTY expected set -- which
+    condemns every running tunnel as surplus and prints a louder, fabricated failure
+    than the one being investigated. So the advertised form must name its own
+    producer. Process substitution rather than a pipe, so the gate's exit status is
+    the gate's and not the producer's."""
+    proc, _calls = _run(tmp_path)
+    logged = re.search(r"Verifying the deploy actually took \((.+?)\)$", proc.stdout, re.MULTILINE)
+    assert logged, f"no verification progress line in stdout:\n{proc.stdout}"
+
+    advertised = logged.group(1)
+    assert "--expected-tunnels-from <(" in advertised, (
+        f"logged gate command is not runnable standalone: {advertised!r} -- reading stdin with no "
+        "producer hangs, and an empty read condemns every tunnel as surplus"
+    )
+    assert "| scripts/verify-deploy.py" not in advertised, "a pipe would report the producer's exit status, not the gate's"
+
+
 def test_success_line_marks_a_dirty_deploy(tmp_path):
     """--allow-dirty means the built image matches no commit; the closing line must
     not claim a clean SHA without saying so."""
     proc, _calls = _run(tmp_path, "--allow-dirty", FAKE_GIT_DIRTY=" M portal/src/postern/cli.py\n")
     assert proc.returncode == 0
     assert "dirty worktree" in proc.stdout
+
+
+def test_the_expected_tunnel_set_is_read_from_the_portal_and_piped_in(tmp_path):
+    """The portal's DB is the only authority on which tunnels should exist, and
+    scripts/verify-deploy.py deliberately never asks it. stdin rather than argv:
+    container names embed path tokens, and argv is world-readable via `ps`."""
+    _proc, calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa ss-bbb")
+    assert "compose exec -T portal postern connection tunnels" in _args_of(calls, "docker")
+    verify = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
+    assert "--expected-tunnels-from -" in verify
+    assert "ss-aaa" not in verify  # never on the command line
+    piped = _args_of(calls, "python3-stdin")[0]
+    assert piped.split() == ["ss-aaa", "ss-bbb"]
+
+
+def test_an_empty_expected_set_is_still_passed_in(tmp_path):
+    """Zero is a real answer ("this deployment has no connections"), not a
+    missing one: without the flag the gate falls back to the SKIP that lets a
+    converged-to-nothing deploy pass."""
+    _proc, calls = _run(tmp_path, FAKE_TUNNELS="")
+    verify = next(a for a in _args_of(calls, "python3") if a.startswith("scripts/verify-deploy.py --tunnels"))
+    assert "--expected-tunnels-from -" in verify
+    assert _args_of(calls, "python3-stdin")[0].strip() == ""
+
+
+def test_the_expected_set_is_read_after_the_reconcile_pass_finished(tmp_path):
+    """Read after the wait and as late as possible. It does not make the two
+    observations simultaneous -- nothing can -- it only makes the window as
+    small as this script can make it."""
+    _proc, calls = _run(tmp_path)
+    all_calls = [(name, args) for name, _cwd, args in calls]
+
+    def pos(name, predicate):
+        return next(i for i, (n, a) in enumerate(all_calls) if n == name and predicate(a))
+
+    reconcile = pos("docker", lambda a: a.startswith("compose exec -T portal postern reconcile --wait"))
+    read = pos("docker", lambda a: a == "compose exec -T portal postern connection tunnels")
+    verify = pos("python3", lambda a: a.startswith("scripts/verify-deploy.py --tunnels"))
+    assert reconcile < read < verify
+
+
+def test_stderr_from_the_portal_does_not_corrupt_the_expected_set(tmp_path):
+    """The portal writes warnings (an unresolved instance id) to stderr, and
+    `$(...)` captures stdout only. If that stopped holding, the warning text
+    would arrive as a phantom tunnel name."""
+    _proc, calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa")
+    assert _args_of(calls, "python3-stdin")[0].split() == ["ss-aaa"]
+
+
+def test_a_non_tunnel_line_stops_the_deploy_instead_of_weakening_the_gate(tmp_path):
+    """Falling back to a setless run would turn a broken portal into a silently
+    weaker gate."""
+    proc, calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa not-a-tunnel-name")
+    assert proc.returncode != 0
+    assert "usable tunnel list" in (proc.stdout + proc.stderr)
+    assert not any(a.startswith("scripts/verify-deploy.py --tunnels") for a in _args_of(calls, "python3"))
+
+
+def test_a_non_tunnel_line_is_named_in_the_output(tmp_path):
+    """The generic "usable tunnel list" message alone would send the operator
+    to re-run `postern connection tunnels` by hand to find out what was
+    actually wrong; the script already has the offending line and must not
+    discard it."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa not-a-tunnel-name")
+    assert "not-a-tunnel-name" in (proc.stdout + proc.stderr)
+
+
+def test_a_failed_tunnels_query_stops_the_deploy(tmp_path):
+    """`postern connection tunnels` exits non-zero when the portal cannot
+    resolve its instance id -- in which case the reconciler creates nothing and
+    the list is not what will exist."""
+    proc, calls = _run(tmp_path, FAKE_DOCKER_FAIL="postern connection tunnels")
+    assert proc.returncode != 0
+    assert not any(a.startswith("scripts/verify-deploy.py --tunnels") for a in _args_of(calls, "python3"))
+
+
+def test_a_connection_set_that_changed_under_the_gate_is_named_as_such(tmp_path):
+    """The expected set and the container listing are two unsynchronized
+    observations. When verification fails AND the set has since moved, the
+    tunnel rows may be that change rather than the reconciler -- say so instead
+    of sending the operator to hunt the wrong subsystem. The deploy still
+    fails: other rows may be real failures."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="ss-bbb", FAKE_VERIFY_RC="1")
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0
+    assert "changed since this deploy read it" in combined
+    assert "deploy verification failed" in combined
+
+
+def test_a_changed_connection_set_does_not_exonerate_the_reconciler(tmp_path):
+    """The re-read compares a set taken before the gate started against one taken
+    after it exited -- a window that strictly contains the one that decides the
+    rows (up to the gate's own container listing). A mutation landing in the
+    trailing part moved the set without affecting anything the gate printed, so
+    the warn must not name it as THE cause. Concretely: a tunnel genuinely missing
+    because a legacy container squats on its name, plus a connection added after
+    the listing, would otherwise send the operator to re-run a full deploy instead
+    of reading the portal log -- and the re-run fails identically, having dropped
+    every tunnel on the way."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="ss-bbb", FAKE_VERIFY_RC="1")
+    combined = proc.stdout + proc.stderr
+    assert "not the reconciler" not in combined, "the warn must not exonerate the reconciler; the re-read cannot prove that"
+    assert "docker compose logs portal" in combined, "the warn must still point at the reconciler as a live possibility"
+
+
+def test_a_swap_that_keeps_the_count_identical_is_still_detected(tmp_path):
+    """The reason this compares the list and not its length: one connection
+    deleted and another added leaves the count untouched."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa ss-bbb", FAKE_TUNNELS_2="ss-aaa ss-ccc", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0  # the note explains the failure; it does not clear it
+    assert "changed since this deploy read it" in (proc.stdout + proc.stderr)
+
+
+def test_an_emptied_connection_set_is_still_reported_as_a_change(tmp_path):
+    """The case that most needs the note: every connection disabled during
+    verification makes every surviving container surplus, and the gate fails
+    loudly. Inferring "unusable" from an empty re-read would silence exactly
+    this."""
+    # `" "` rather than `""`: the shim reads an unset/empty FAKE_TUNNELS_2 as
+    # "no second answer staged", and a whitespace-only value word-splits to an
+    # empty list.
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2=" ", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0  # the note explains the failure; it does not clear it
+    assert "changed since this deploy read it" in (proc.stdout + proc.stderr)
+
+
+def test_no_change_note_when_the_set_held_still(tmp_path):
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0
+    assert "changed since this deploy read it" not in (proc.stdout + proc.stderr)
+
+
+def test_no_re_read_when_the_gate_could_not_run(tmp_path):
+    """Exit 2 means verify-deploy.py aborted in collect() and printed no tunnel
+    rows at all, so a "the set changed" note would blame a row that does not
+    exist -- and it would spend another Docker round-trip on a stack that may be
+    exactly what is broken. The script's own comment says the 1-vs-2 distinction
+    must not be conflated."""
+    _proc, calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="ss-bbb", FAKE_VERIFY_RC="2")
+    reads = [a for a in _args_of(calls, "docker") if a.endswith("postern connection tunnels")]
+    assert len(reads) == 1
+
+
+def test_the_set_is_not_re_read_when_verification_passed(tmp_path):
+    """The happy path pays nothing for the re-blame machinery."""
+    _proc, calls = _run(tmp_path)
+    reads = [a for a in _args_of(calls, "docker") if a.endswith("postern connection tunnels")]
+    assert len(reads) == 1
+
+
+def test_an_unusable_re_read_does_not_replace_the_verification_verdict(tmp_path):
+    """The re-read is a diagnostic refinement, never a verdict of its own. If it
+    cannot be taken, the operator must still get the original stale-deploy
+    message rather than a complaint about the re-read."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2="not-a-tunnel-name", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0
+    combined = proc.stdout + proc.stderr
+    assert "deploy verification failed" in combined
+    assert "usable tunnel list" not in combined

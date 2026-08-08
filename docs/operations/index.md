@@ -77,6 +77,8 @@ If the portal cannot determine its own instance id at all (neither variable is s
 1. Run `docker compose up -d --build` as usual. Existing tunnels keep running untouched (the reconciler doesn't touch containers it doesn't recognize as its own). Because container names are deterministic (`ss-<path_token>`), the reconciler's create attempt for each already-tunneled connection hits a name conflict against the old, unlabelled container and backs off — it logs an error with `docker rm -f` guidance instead of creating a replacement. Nothing is duplicated; the connection keeps running on the OLD, unlabelled container in the meantime.
 2. For each `ss-*` container that has `postern.managed=true` but no `postern.instance` label (`docker inspect --format '{{.Config.Labels}}' <name>` to check, or grep the reconciler's logs for "already in use by another container"), remove it manually: `docker rm -f <name>`. This interrupts that one tunnel briefly. The reconciler recreates it, correctly labelled, on its next pass (`docker ps --filter label=postern.managed=true --filter label=postern.instance=<your-instance-id>` to confirm).
 3. For any **disabled** connection, or any connection removed via `postern user delete`, both the reconciler's own periodic check and the CLI itself (`connection disable` / `user delete` output) warn if that connection's container is still running and unlabelled — the reconciler will not stop it automatically, since ownership can't be proven. `user delete` cascades the connection row away entirely at the database level, so it checks each connection's container immediately, before the row is gone, rather than relying on the reconciler's periodic check (which needs a surviving row to attribute the warning to).
+
+Until step 2 is done, `scripts/deploy.sh` **hard-fails on every future deploy**, not just the first one: `--expected-tunnels-from` (see [Updates](#updates)) expects a container named `ss-<path_token>` for that connection, but the one actually running it is unlabelled and therefore invisible to the gate's listing, so the row reads as permanently missing. `postern reconcile --wait` cannot fix this — the name conflict backs off every pass — so the fix hint is a dead end until the container is removed by hand.
 ```
 
 ## Updates
@@ -91,7 +93,7 @@ diverged from `origin/main`, stamps the revision it is building into every image
 (`GIT_REVISION`, so a deploy that silently did not happen can be detected
 afterwards), builds `local/shadowsocks-server` from the repo root (compose does not
 build it — the reconciler spawns it at runtime), runs `docker compose up -d --build`,
-blocks on `postern reconcile --wait`, and finally runs `scripts/verify-deploy.py --tunnels` — exiting non-zero if anything is stale.
+blocks on `postern reconcile --wait`, asks the portal which tunnel containers should exist, and finally runs `scripts/verify-deploy.py --tunnels --expected-tunnels-from -` — exiting non-zero if anything is stale or if the tunnels are not the set the enabled connections call for.
 
 Escape hatches, all deliberately explicit: `--allow-dirty`, `--allow-behind`,
 `--allow-branch`, `--no-fetch`. An untracked file counts as dirty — both Dockerfiles
@@ -139,17 +141,31 @@ docker compose up -d --build
 # checks below don't race the reconciler's asynchronous container recreation.
 docker compose exec -T portal postern reconcile --wait
 
+# Ask the portal which tunnels should exist. NOT piped straight into the gate: a
+# pipeline's exit status is the last command's, so the non-zero this command
+# returns when the portal cannot resolve its instance id -- meaning the reconciler
+# creates nothing and the list is not what will exist -- would be discarded.
+expected_tunnels="$(docker compose exec -T portal postern connection tunnels)" || exit 1
+
 # Prove it. Non-zero exit means something did not actually deploy.
-scripts/verify-deploy.py --tunnels
+# --expected-tunnels-from is what makes a missing tunnel a failure rather than an
+# ambiguous SKIP; the portal is the only authority on which tunnels should exist.
+scripts/verify-deploy.py --tunnels --expected-tunnels-from - <<<"$expected_tunnels"
 ```
 
 The [shadowsocks image](https://github.com/bindreams/postern/blob/main/shadowsocks/Dockerfile) must be built from the repo root (it copies from `external/`); `docker build ./shadowsocks/` fails. After a rebuild, the reconciler detects the changed image ID and recreates each tunnel container — path tokens are unchanged, so client configs stay valid; each tunnel just drops briefly.
 
 `scripts/verify-deploy.py` is the gate. For every Compose service it asserts a container exists, is running, is not `unhealthy`, and is on the image its tag currently points at — and, for images this repo builds, carries `org.opencontainers.image.revision` equal to the checkout's `HEAD`. It also reports orphan containers and the tunnel image's revision. It runs on the host and needs nothing but Docker; it deliberately does not go through the portal, because a portal that failed to deploy cannot be trusted to report that it failed to deploy.
 
+With `--expected-tunnels-from FILE` (`-` for stdin) it also asserts that this deployment's `ss-*` containers are exactly the ones its enabled connections call for, naming any that are missing and any that should have been removed. The list comes from `postern connection tunnels` and is passed *in* rather than looked up: the gate never talks to the portal, because a portal that failed to deploy cannot be trusted to report that it failed to deploy. Without the flag, zero tunnel containers is reported as a SKIP — it cannot be told apart from a deployment that has no connections. The flag is only sound after a completed reconcile pass, which is why `deploy.sh` passes it and a bare hand-run does not have to.
+
+The expected set and the container listing are two separate observations and nothing locks either one in between, so: **do not add, disable, or delete a connection while a deploy is running.** The exposure starts when the reconcile pass reads the database — not when `postern reconcile --wait` returns — and ends when the gate has listed containers. A mutation in that window can fail a tunnel row for a connection the awaited pass genuinely never saw, which is a real (if self-correcting) gap, not a false alarm. `deploy.sh` re-reads the list whenever verification fails and warns when it has moved *since deploy.sh itself first read it* — which only covers a mutation after `postern reconcile --wait` returned. A mutation during the pass itself is already reflected in deploy.sh's first read (a fresh query, not the pass's own stale snapshot), so both reads agree and no warning fires; the affected row's own detail text ("...or the connection was added while this ran") is the only signal for that half of the window. In the narrow case where the mutation removes the very connection the reconciler failed on, it can also hide a real failure — that residual is accepted, and re-running the gate afterwards catches it.
+
 Skipping `export GIT_REVISION` builds images with no provenance, and the gate fails with `image carries no revision label`. A dirty checkout also fails: `-dirty` is the same string for any two dirty trees, so matching it proves nothing — commit, or pass `--allow-dirty` to acknowledge.
 
 Per-tunnel checks are opt-in (`--tunnels`) because restarting the portal wipes every `ss-*` container and the reconciler recreates them asynchronously; run `postern reconcile --wait` first (a plain `postern reconcile` only touches the trigger file and returns immediately, without waiting for the pass it triggered — see [The reconciler](#the-reconciler) above). The default run still checks that the tunnel *image* was rebuilt.
+
+A finished pass is still not a converged one: `reconcile()` returns normally when the tunnel image is missing, and per-container failures are logged rather than raised — `--expected-tunnels-from` is the check that catches both.
 
 Because the revision is part of the image, every commit now produces a new image ID and `docker compose up -d --build` recreates every service — which restarts the portal and therefore drops every tunnel, even for a commit that changed nothing a user depends on. It also leaves one dangling image per service behind, so run `docker image prune` periodically.
 

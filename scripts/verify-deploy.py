@@ -21,6 +21,14 @@ Two staleness modes, each with a different fix:
   * stale image ID -- the tag was rebuilt but the container was not recreated,
     OR something else on this host moved the tag (a manual build, a different
     checkout, a restored image).
+  * unconverged tunnels -- the reconcile pass finished, but the ss-* containers
+    are not the set the deployment's enabled connections call for. Only checked
+    when the caller supplies `--expected-tunnels-from`: the answer lives in the
+    portal's database, and asking the portal how the deploy went would cost this
+    script the property in reason 3 above. scripts/deploy.sh supplies it, after
+    blocking on a completed pass. The two observations are not simultaneous and
+    nothing locks either of them -- see docs/operations/index.md for the
+    no-mutation-during-a-deploy assumption that follows.
 
 Plus a liveness check: a container's health status (from its Docker
 HEALTHCHECK, when one is defined) must not be `unhealthy`. This is
@@ -41,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
@@ -343,6 +352,53 @@ def _names(run: Runner, *filters: str) -> list[str]:
     return [n.strip() for n in result.stdout.splitlines() if n.strip()]
 
 
+# A container name, not the token inside it: deliberately NOT `ss-[a-f0-9]{24}`.
+# The token's width lives in three places already (nginx.conf's regex, cli.py's
+# token_hex(12), reconciler.py's _container_name) and CLAUDE.md pins them to each
+# other; a fourth copy here would drift silently. This only has to reject text
+# that is not a container name at all.
+_TUNNEL_NAME = re.compile(r"^ss-\S+$")
+
+
+def read_expected_tunnels(path: str) -> frozenset[str]:
+    """The tunnel container names the caller says should exist, one per line.
+
+    `-` reads stdin, which is how scripts/deploy.sh passes them: a container
+    name embeds its connection's path token, and argv is world-readable through
+    `ps` on the deploy host while `docker ps` is not.
+
+    Blank lines are ignored so an empty input is the empty set -- a real answer
+    (a deployment with no enabled connections), distinct from not passing the
+    flag at all. Anything else that is not a container name raises rather than
+    being skipped: if the portal ever printed a warning on stdout, silently
+    dropping it would be indistinguishable from a shorter expected set.
+    """
+    try:
+        if path == "-":
+            # sys.stdin is None with fd 0 closed (CPython sets it that way), not an
+            # object that raises on .read() -- must be caught before dereferencing.
+            if sys.stdin is None:
+                raise CollectError("cannot read the expected tunnel list: stdin is closed")
+            text = sys.stdin.read()
+        else:
+            text = Path(path).read_text(errors="replace")
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        # UnicodeDecodeError is not an OSError. The file branch cannot raise either
+        # (errors="replace"), but sys.stdin decodes strictly and raises ValueError
+        # on an already-closed stream -- "no failure path produces a traceback"
+        # applies to both halves of this function.
+        raise CollectError(f"cannot read the expected tunnel list: {exc}") from exc
+    names = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if not _TUNNEL_NAME.match(line):
+            raise CollectError(f"expected tunnel list contains something that is not a container name: {line!r}")
+        names.add(line)
+    return frozenset(names)
+
+
 def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels: bool) -> Observation:
     """Gather desired state (compose) and observed state (docker).
 
@@ -437,11 +493,24 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
 # docs/operations/index.md's runbook calls out avoiding.
 _EXPORT = 'GIT_REVISION="$(scripts/verify-deploy.py --print-revision)" && export GIT_REVISION'
 _UP = f"{_EXPORT} && docker compose up -d --build"
-_SS_BUILD = (
-    f"{_EXPORT} && docker build -f shadowsocks/Dockerfile "
-    '--build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .'
-)
+
+
+def _ss_build(ref: str) -> str:
+    """The build command for the tunnel image, tagged as whatever `ref` the
+    portal actually resolved -- not hardcoded to the `local/shadowsocks-server`
+    default. A deployment with a custom SHADOWSOCKS_IMAGE would otherwise get a
+    fix hint that builds a different tag than the one the row says is missing,
+    leaving the check failing on every re-run.
+    """
+    return f'{_EXPORT} && docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t {ref} .'
+
+
 _RECONCILE = "docker compose exec portal postern reconcile"
+# Distinct from _RECONCILE: a set mismatch means the pass FINISHED without
+# converging, so "trigger a pass" alone is not the whole fix -- the operator
+# needs the blocking form. Fix hints must stay copy-pasteable (see the section
+# comment below); the repeats-anyway guidance lives in the check details instead.
+_RECONVERGE = "docker compose exec -T portal postern reconcile --wait"
 
 
 def _short(revision: str) -> str:
@@ -481,14 +550,81 @@ def _check_identity(label: str, container: ContainerState, service: ServiceSpec,
     return Check(label, "fail", detail, fix)
 
 
+def _check_tunnel_set(obs: Observation, expected: frozenset[str] | None) -> list[Check]:
+    """Compare the tunnel containers found against the set the caller supplied
+    (see the module docstring for why the set is an argument).
+
+    By name, never by cardinality: a pass that fails to create one container
+    and fails to remove another has the right count and the wrong state, and
+    the reconciler logs and swallows exactly those per-container failures.
+
+    A concurrent mutation produces these same rows, so the detail names that
+    possibility rather than asserting non-convergence as fact.
+    """
+    label = "tunnels: expected set"
+    observed = {c.name for c in obs.ss_containers}
+    if expected is None:
+        return [
+            Check(
+                label, "skip", f"{len(observed)} found; not verified -- pass --expected-tunnels-from FILE "
+                "(scripts/deploy.sh does) to make this a check"
+            )
+        ]
+    missing = sorted(expected - observed)
+    surplus = sorted(observed - expected)
+    if not missing and not surplus:
+        return [Check(label, "ok", f"all {len(expected)} present")]
+
+    if not obs.tag_ids.get(obs.ss_image):
+        # One row, not one per name -- and it covers surplus as well as missing.
+        # reconcile() short-circuits its ENTIRE container branch when the tunnel
+        # image is absent: it logs, returns, and neither creates nor removes
+        # anything. So every row here is wrong for the identical reason, and
+        # `postern reconcile` is a guaranteed no-op for all of them.
+        return [
+            Check(
+                label, "fail", f"{len(missing)} missing, {len(surplus)} unexpected: image {obs.ss_image} is not "
+                "present locally, so the reconciler neither created nor removed anything", _ss_build(obs.ss_image)
+            )
+        ]
+
+    checks: list[Check] = []
+    for name in missing:
+        checks.append(
+            Check(
+                f"tunnel {name}: exists", "fail",
+                "no container for this connection: the reconcile pass finished without converging, or the "
+                "connection was added while this ran. If a fresh reconcile doesn't fix it, check `docker "
+                "compose logs portal` -- a pre-instance-labelling legacy container squatting on this name "
+                "is a standing cause the reconciler backs off on rather than removes (see "
+                "docs/operations/index.md's post-upgrade migration)", _RECONVERGE
+            )
+        )
+    for name in surplus:
+        checks.append(
+            Check(
+                f"tunnel {name}: not expected", "fail",
+                "no enabled connection for this container: the reconciler did not remove it, or the connection "
+                "was disabled while this ran. If a fresh reconcile doesn't fix it, check `docker compose logs "
+                "portal`", _RECONVERGE
+            )
+        )
+    return checks
+
+
 def evaluate(
     obs: Observation,
     expected_revision: str,
     *,
     allow_dirty: bool = False,
     tunnels: bool = False,
+    expected_tunnels: frozenset[str] | None = None,
 ) -> Report:
-    """Compare desired state against observed state. Pure."""
+    """Compare desired state against observed state. Pure.
+
+    `expected_tunnels` is only consulted when `tunnels` is set; main() rejects
+    the combination rather than silently discarding it.
+    """
     checks: list[Check] = []
 
     # Checkout ---------------------------------------------------------------------------------------------------------
@@ -614,15 +750,19 @@ def evaluate(
     ss_revision = obs.tag_revisions.get(obs.ss_image, "")
     ss_label = "shadowsocks image: revision"
     if not obs.tag_ids.get(obs.ss_image):
-        checks.append(Check(ss_label, "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD))
+        checks.append(Check(ss_label, "fail", f"image {obs.ss_image} is not present locally", _ss_build(obs.ss_image)))
     elif not ss_revision:
         checks.append(
-            Check(ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION", _SS_BUILD)
+            Check(
+                ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION",
+                _ss_build(obs.ss_image)
+            )
         )
     elif ss_revision != expected_revision:
         checks.append(
             Check(
-                ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}", _SS_BUILD
+                ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}",
+                _ss_build(obs.ss_image)
             )
         )
     else:
@@ -637,48 +777,50 @@ def evaluate(
                 "portal restart. Run `postern reconcile`, then re-run with --tunnels"
             )
         )
-    elif not obs.ss_containers:
-        # Not distinguishable from "the reconcile pass this check trusts
-        # already completed hasn't converged yet" -- see --tunnels' own help
-        # text and the CLAUDE.md invariant this check is pinned by. A
-        # deployment can legitimately have zero enabled connections, so this
-        # cannot become a FAIL without an authoritative expected count, which
-        # would mean querying the portal -- exactly the "no portal
-        # dependency" property this script is built around (see the module
-        # docstring's reason 2).
-        checks.append(
-            Check(
-                "tunnels: image identity", "skip", "no tunnel containers for this instance -- either no "
-                "connections are enabled, or the reconcile pass this check trusts has not converged yet"
-            )
-        )
     else:
-        ss_tag_id = obs.tag_ids.get(obs.ss_image, "")
-        if not ss_tag_id:
-            # One row, not one per tunnel: every tunnel is equally "wrong" in
-            # the same way (the tag we'd compare against does not exist
-            # locally), and `postern reconcile` cannot fix that -- _SS_BUILD
-            # can. A per-tunnel loop below would repeat a mismatch message
-            # with a fix that is a guaranteed no-op.
-            checks.append(
-                Check("tunnels: image identity", "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD)
-            )
-        else:
-            for tunnel in obs.ss_containers:
-                if tunnel.state != "running":
-                    checks.append(Check(f"tunnel {tunnel.name}: running", "fail", f"is {tunnel.state}", _RECONCILE))
-                    continue
-                checks.append(Check(f"tunnel {tunnel.name}: running", "ok", tunnel.state))
-                label = f"tunnel {tunnel.name}: image identity"
-                if tunnel.image_id == ss_tag_id:
-                    checks.append(Check(label, "ok", f"on {ss_tag_id[:19]}"))
-                else:
-                    checks.append(
-                        Check(
-                            label, "fail", f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}",
-                            _RECONCILE
-                        )
+        checks.extend(_check_tunnel_set(obs, expected_tunnels))
+        if not obs.ss_containers:
+            if expected_tunnels is None:
+                # Without a caller-supplied set this tool cannot tell "no
+                # connections are enabled" from "the pass finished without
+                # converging" (see the module docstring).
+                checks.append(
+                    Check(
+                        "tunnels: image identity", "skip", "no tunnel containers for this instance -- either no "
+                        "connections are enabled, or the reconcile pass this check trusts has not converged yet"
                     )
+                )
+        else:
+            ss_tag_id = obs.tag_ids.get(obs.ss_image, "")
+            if not ss_tag_id:
+                checks.append(
+                    Check(
+                        "tunnels: image identity", "fail", f"image {obs.ss_image} is not present locally",
+                        _ss_build(obs.ss_image)
+                    )
+                )
+            else:
+                # Surplus containers are skipped here: `_check_tunnel_set` has
+                # already condemned them as containers that should not exist,
+                # and "tunnel X: running ok" underneath that reads as a passing
+                # health check for the very thing the report is failing on.
+                for tunnel in obs.ss_containers:
+                    if expected_tunnels is not None and tunnel.name not in expected_tunnels:
+                        continue
+                    if tunnel.state != "running":
+                        checks.append(Check(f"tunnel {tunnel.name}: running", "fail", f"is {tunnel.state}", _RECONCILE))
+                        continue
+                    checks.append(Check(f"tunnel {tunnel.name}: running", "ok", tunnel.state))
+                    label = f"tunnel {tunnel.name}: image identity"
+                    if tunnel.image_id == ss_tag_id:
+                        checks.append(Check(label, "ok", f"on {ss_tag_id[:19]}"))
+                    else:
+                        checks.append(
+                            Check(
+                                label, "fail",
+                                f"tunnel is on {tunnel.image_id[:19]}, {obs.ss_image} is {ss_tag_id[:19]}", _RECONCILE
+                            )
+                        )
 
     return Report(project=obs.project, revision=expected_revision, checks=checks)
 
@@ -759,7 +901,24 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="store_true",
         help="Also check every ss-* container belonging to this deployment. Run "
         "`postern reconcile` first: the reconciler recreates tunnels asynchronously "
-        "after a portal restart."
+        "after a portal restart. Pass --expected-tunnels-from to also assert exactly "
+        "which ones should exist."
+    )
+    parser.add_argument(
+        "--expected-tunnels-from",
+        # None, not "": an explicitly-supplied empty value (`--expected-tunnels-from
+        # ""`, or an unset variable in a wrapper) must NOT be read as "the flag was
+        # not passed" -- that would silently downgrade the strictest check the tool
+        # has to the weakest, with a green exit code. An empty value falls through to
+        # read_expected_tunnels(""), which fails as an unreadable path: exit 2, loudly.
+        default=None,
+        metavar="FILE",
+        help="File listing the ss-* container names this deployment should have, one per "
+        "line (`-` reads stdin); `postern connection tunnels` produces it. Requires "
+        "--tunnels. Without it, zero tunnels is reported as an honest SKIP, because it "
+        "cannot be told apart from a deployment with no connections. Only sound if a "
+        "reconcile pass has completed since the last restart -- scripts/deploy.sh "
+        "guarantees that with `postern reconcile --wait`."
     )
     return parser.parse_args(list(argv))
 
@@ -775,32 +934,66 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         return 0
 
+    if args.expected_tunnels_from is not None and not args.tunnels:
+        # 2, not 1 -- a usage error is not a verdict (see the flag's own comment
+        # above for why an unset value is never read as "flag not passed").
+        print("verify-deploy: --expected-tunnels-from requires --tunnels", file=sys.stderr)
+        return 2
+
     try:
         expected = args.expected_revision or git_revision(args.repo)
     except RevisionError as exc:
         print(f"verify-deploy: {exc}", file=sys.stderr)
         return 2
-    try:
-        observation = collect(run_command, args.project_dir, args.shadowsocks_image, tunnels=args.tunnels)
-    except CollectError as exc:
+
+    def _collect_error_report(check: Check) -> Report:
         # A broken environment is not a stale deployment. Exit 2 so issue #196's
         # deploy entrypoint can tell "verify-deploy is misconfigured" apart from
         # "the deploy did not take".
-        print(f"verify-deploy: {exc}", file=sys.stderr)
-        report = Report(
+        return Report(
             project="",
             revision=expected,
-            checks=[
-                Check(
-                    "compose: readable", "fail", str(exc),
-                    "run from the deployment's project directory, or pass --project-dir"
-                )
-            ],
+            checks=[check],
             exit_code_override=2,  # a CollectError is "could not run", not "stale" -- keep JSON and $? in agreement
+        )
+
+    expected_tunnels = None
+    if args.expected_tunnels_from is not None:
+        try:
+            expected_tunnels = read_expected_tunnels(args.expected_tunnels_from)
+        except CollectError as exc:
+            # Its own Check, not the compose one below: a bad --expected-tunnels-from
+            # is not a bad --project-dir, and "run from the deployment's project
+            # directory" is not a fix for it.
+            print(f"verify-deploy: {exc}", file=sys.stderr)
+            report = _collect_error_report(
+                Check(
+                    "expected tunnels: readable", "fail", str(exc),
+                    "check the file/pipe named by --expected-tunnels-from, or the `postern connection tunnels` command that produced it"
+                )
+            )
+            print(render_json(report) if args.output_json else render_text(report), end="")
+            return report.exit_code
+
+    try:
+        observation = collect(run_command, args.project_dir, args.shadowsocks_image, tunnels=args.tunnels)
+    except CollectError as exc:
+        print(f"verify-deploy: {exc}", file=sys.stderr)
+        report = _collect_error_report(
+            Check(
+                "compose: readable", "fail", str(exc),
+                "run from the deployment's project directory, or pass --project-dir"
+            )
         )
         print(render_json(report) if args.output_json else render_text(report), end="")
         return report.exit_code
-    report = evaluate(observation, expected, allow_dirty=args.allow_dirty, tunnels=args.tunnels)
+    report = evaluate(
+        observation,
+        expected,
+        allow_dirty=args.allow_dirty,
+        tunnels=args.tunnels,
+        expected_tunnels=expected_tunnels,
+    )
     print(render_json(report) if args.output_json else render_text(report), end="")
     return report.exit_code
 

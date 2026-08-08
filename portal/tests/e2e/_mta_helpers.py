@@ -17,6 +17,8 @@ import subprocess
 import time
 from pathlib import Path
 
+# Re-exported; see portal/tests/_compose.py's production_mta_submit_subnet
+# docstring for why the constant lives there instead of here.
 from .._compose import production_mta_submit_subnet  # noqa: F401
 from . import _helpers
 from ._helpers import TESTS_E2E_DIR, run
@@ -32,9 +34,6 @@ COMPOSE_FILES_MTA: tuple[Path, ...] = (
 # Refuse to silently use the wrong project. If a future refactor makes these match
 # the base e2e project, fixtures targeting different stacks would collide.
 assert PROJECT_MTA != _helpers.PROJECT, ("PROJECT_MTA must differ from _helpers.PROJECT to keep stacks isolated")
-
-# Re-exported from portal/tests/_compose.py -- see that module's docstring
-# for why the constant lives there instead of here.
 
 
 # Compose primitives ===================================================================================================

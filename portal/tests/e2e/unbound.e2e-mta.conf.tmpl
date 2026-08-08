@@ -43,11 +43,11 @@ server:
 
   # postern.test (the sending domain) -- needs MX so reject_unknown_sender_domain passes.
   local-data: "postern.test. IN MX 10 mail.postern.test."
-  local-data: "postern.test. IN A 172.30.99.10"
-  local-data: "mail.postern.test. IN A 172.30.99.10"
-  local-data: "mta-sts.postern.test. IN A 172.30.99.10"
+  local-data: "postern.test. IN A 10.234.45.10"
+  local-data: "mail.postern.test. IN A 10.234.45.10"
+  local-data: "mta-sts.postern.test. IN A 10.234.45.10"
 
   # elsewhere.test (the admin's domain in MTA_ADMIN_EMAIL).
   local-data: "elsewhere.test. IN MX 10 mail.elsewhere.test."
-  local-data: "elsewhere.test. IN A 172.30.99.10"
-  local-data: "mail.elsewhere.test. IN A 172.30.99.10"
+  local-data: "elsewhere.test. IN A 10.234.45.10"
+  local-data: "mail.elsewhere.test. IN A 10.234.45.10"

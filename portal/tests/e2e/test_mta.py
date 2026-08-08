@@ -158,7 +158,7 @@ def test_postmaster_forwards_to_admin_email(mta_e2e_stack, mailpit_mta_client):
     """sendmail postmaster@postern.test (from inside mta) -> mailpit receives a
     message ultimately delivered to admin@elsewhere.test, exercising:
       - virtual_alias_maps (postmaster -> admin)
-      - transport_maps (elsewhere.test -> [172.30.99.10]:1025)
+      - transport_maps (elsewhere.test -> [10.234.45.10]:1025)
       - SRS envelope-sender rewriting (postsrsd via sender_canonical_maps)
 
     The header `To:` is left as `postmaster@postern.test` (mailpit indexes by

@@ -276,7 +276,7 @@ def test_pinned_subnet_inventory_is_complete():
     inventory = {(_rel(p), key, str(net)) for p in ALL_COMPOSE_FILES() for key, _, net in _pinned_subnets(p)}
     assert inventory == {
         ("compose.yaml", "mta-submit", "172.30.42.0/29"),
-        ("portal/tests/e2e/e2e-mta.compose.yaml", "default", "172.30.99.0/24"),
+        ("portal/tests/e2e/e2e-mta.compose.yaml", "default", "10.234.45.0/24"),
         ("portal/tests/e2e/e2e-mta.compose.yaml", "mta-submit", "10.234.43.0/29"),
         ("portal/tests/e2e/e2e-mta-real.compose.yaml", "mta-submit", "10.234.44.0/29"),
     }, f"the set of IPAM-pinned subnets changed: {sorted(inventory)!r}"
@@ -498,10 +498,11 @@ def parse_published_ports(entries: list, *, where: str) -> list[tuple[str | None
                 "A bare container port publishes on an ephemeral 0.0.0.0 host port -- extend this parser"
             )
             host_ip, spec = (None, parts[0]) if len(parts) == 2 else (parts[0], parts[1])
-        # Case-normalized before this check: Compose itself accepts "TCP" and
-        # normalizes it to "tcp" (verified against `docker compose config`), so
-        # comparing raw case would let e.g. "25/tcp" vs "25/TCP" look disjoint
-        # to callers even though they bind the same kernel port namespace.
+        # Case-normalized before this check. Verified against `docker compose
+        # config`: Compose itself lowercases the short form's "TCP" suffix,
+        # but passes a long-form `protocol: TCP` through unchanged -- so this
+        # parser lowercases both, or a long-form "TCP" could look disjoint
+        # from a short-form "tcp" on the same port to a caller comparing them.
         assert protocol in valid_protocols, (
             f"{where}: ports entry {entry!r} has protocol {protocol!r}, expected one of {sorted(valid_protocols)}"
         )
@@ -553,10 +554,12 @@ def test_parse_published_ports_accepts_both_supported_forms():
 
 
 def test_parse_published_ports_normalizes_protocol_case():
-    """Compose itself accepts an uppercase protocol suffix and normalizes it to
-    lowercase (verified against `docker compose config`); this parser must
-    match, or a same-port entry differing only in protocol case would look
-    disjoint to the collision guard when Compose treats it as the same bind."""
+    """Verified against `docker compose config`: Compose lowercases an
+    uppercase short-form protocol suffix ("TCP" -> "tcp") but passes a
+    long-form `protocol:` value through as-is. This parser lowercases both
+    forms, or a long-form "TCP" would look disjoint from a short-form "tcp"
+    on the same port to the collision guard, even though Compose treats them
+    as the same bind."""
     assert parse_published_ports(["25:25/TCP"], where="t") == [(None, 25, "tcp")]
     assert parse_published_ports([{"published": 25, "target": 25, "protocol": "TCP"}], where="t") == \
         [(None, 25, "tcp")]

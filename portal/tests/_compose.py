@@ -10,6 +10,7 @@ first needs it -- not before.
 from __future__ import annotations
 
 import functools
+import re
 from pathlib import Path
 
 import yaml
@@ -27,6 +28,30 @@ class ComposeLoader(yaml.SafeLoader):
 # `!reset X` means "drop the inherited value". These tests read one file at a
 # time and never perform the merge themselves, so resolving it to None is exact.
 ComposeLoader.add_constructor("!reset", lambda loader, node: None)
+
+# PyYAML's built-in `int` resolver follows YAML 1.1, which includes a
+# sexagesimal (base-60) branch: an unquoted short-form port entry like
+# `- 25:25` resolves to the int 1525, not the string "25:25" -- verified
+# against this repo's pinned PyYAML. Docker Compose's own parser (go-yaml.v3,
+# YAML 1.2) has no such branch and reads the identical line as the string
+# "25:25". Every compose file in this repo currently quotes its `ports:`
+# entries, so this has never fired here, but a future unquoted low-numbered
+# port (any host:container pair each under 60, e.g. 25:25 or 53:53) would
+# silently misparse -- and every guard depending on `parse_published_ports`
+# seeing a string would then either miss it entirely or misdiagnose why.
+# Re-registered without the sexagesimal alternative so ComposeLoader agrees
+# with Compose's own YAML 1.2 reading.
+_YAML_1_2_INT_RE = re.compile(
+    r"""^(?:[-+]?0b[0-1_]+
+        |[-+]?0[0-7_]+
+        |[-+]?(?:0|[1-9][0-9_]*)
+        |[-+]?0x[0-9a-fA-F_]+)$""", re.X
+)
+ComposeLoader.yaml_implicit_resolvers = {
+    first_char: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:int"]
+    for first_char, resolvers in ComposeLoader.yaml_implicit_resolvers.items()
+}
+ComposeLoader.add_implicit_resolver("tag:yaml.org,2002:int", _YAML_1_2_INT_RE, list("-+0123456789"))
 
 
 def load_compose(path: Path) -> dict:

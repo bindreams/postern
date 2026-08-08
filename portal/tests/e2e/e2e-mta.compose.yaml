@@ -45,8 +45,8 @@ services:
       # `postmap` builds the lmdb file from this. Both domains route to the
       # IPAM-pinned mailpit IP so Postfix never does a DNS lookup. See file header.
       MTA_E2E_TRANSPORT_OVERRIDE: |
-        postern.test  smtp:[172.30.99.10]:1025
-        elsewhere.test  smtp:[172.30.99.10]:1025
+        postern.test  smtp:[10.234.45.10]:1025
+        elsewhere.test  smtp:[10.234.45.10]:1025
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
     security_opt: ["no-new-privileges:true"]
@@ -155,14 +155,16 @@ services:
   mailpit:
     networks:
       default:
-        ipv4_address: 172.30.99.10
+        ipv4_address: 10.234.45.10
 
 networks:
   default:
     name: postern-e2e-mta-default
+    # NOT inside Docker's default dynamic-allocation pool (172.17.0.0/16-
+    # 172.31.0.0/16) -- see the co-location invariant in CLAUDE.md.
     ipam:
       config:
-        - subnet: 172.30.99.0/24
+        - subnet: 10.234.45.0/24
   e2e-tunnel-entry:
     name: e2e-tunnel-entry-mta
   e2e-shadowsocks:

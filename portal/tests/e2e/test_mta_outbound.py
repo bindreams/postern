@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import ipaddress
 import logging
 import os
 import shutil
@@ -38,6 +39,7 @@ import httpx
 import pytest
 
 from ._helpers import TESTS_E2E_DIR, run
+from ._mta_helpers import docker_inspect, network_inspect, production_mta_submit_subnet
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,42 @@ def outbound_stack(mta_test_outbound_env: dict[str, str], e2e_certs: Path) -> It
         yield
     finally:
         subprocess.run(_compose_outbound("down", "-v", "--timeout", "60"), check=False)
+
+
+# Co-location ==========================================================================================================
+def _get_outbound_container_id(service: str) -> str:
+    cid = run(_compose_outbound("ps", "-aq", service)).stdout.strip()
+    if not cid:
+        raise AssertionError(f"no container for service {service!r} in project {PROJECT_OUTBOUND}")
+    return cid.splitlines()[0]
+
+
+def test_mta_submit_network_is_internal_and_disjoint_from_production(outbound_stack):
+    """Mirrors test_mta.py's test_mta_submit_network_is_internal for the
+    real-mode overlay. This is the one overlay that actually runs co-located
+    with production on a maintainer VPS (per this file's own header), yet
+    was the only one issue #198 left without a live check -- CLAUDE.md's
+    co-location bullet used to note that gap by name."""
+    cid = _get_outbound_container_id("mta")
+    env = docker_inspect(cid, "{{range .Config.Env}}{{println .}}{{end}}").splitlines()
+    values = [line.split("=", 1)[1] for line in env if line.startswith("MTA_SUBMIT_CIDR=")]
+    assert len(values) == 1, f"expected exactly one MTA_SUBMIT_CIDR in the mta container env, got {values!r}"
+    expected = values[0]
+
+    info = network_inspect("mta-submit-mta-real")
+    assert info.get("Internal") is True, f"network not internal: Internal={info.get('Internal')!r}"
+    cfgs = (info.get("IPAM", {}) or {}).get("Config", []) or []
+    subnets = [c.get("Subnet") for c in cfgs]
+    assert subnets == [expected], (
+        f"mta-submit network subnets {subnets!r} != the mta container's MTA_SUBMIT_CIDR {expected!r}; "
+        "mynetworks is rendered from the latter, so a mismatch rejects submission with 554 5.7.1"
+    )
+    production_subnet = production_mta_submit_subnet()
+    assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(production_subnet)), (
+        f"the e2e-mta-real mta-submit network ({expected}) overlaps production's subnet "
+        f"({production_subnet}); Docker refuses overlapping subnets, so this stack cannot "
+        "start on a host that already runs production"
+    )
 
 
 # IMAP poll ============================================================================================================

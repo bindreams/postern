@@ -17,8 +17,7 @@ import subprocess
 import time
 from pathlib import Path
 
-# Re-exported; see portal/tests/_compose.py's production_mta_submit_subnet
-# docstring for why the constant lives there instead of here.
+# Re-exported for e2e callers; see _compose.py's production_mta_submit_subnet docstring.
 from .._compose import production_mta_submit_subnet  # noqa: F401
 from . import _helpers
 from ._helpers import TESTS_E2E_DIR, run

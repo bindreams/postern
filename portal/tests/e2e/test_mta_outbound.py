@@ -88,9 +88,7 @@ def _get_outbound_container_id(service: str) -> str:
 def test_mta_submit_network_is_internal_and_disjoint_from_production(outbound_stack):
     """Mirrors test_mta.py's test_mta_submit_network_is_internal for the
     real-mode overlay. This is the one overlay that actually runs co-located
-    with production on a maintainer VPS (per this file's own header), yet
-    was the only one issue #198 left without a live check -- CLAUDE.md's
-    co-location bullet used to note that gap by name."""
+    with production on a maintainer VPS (per this file's own header)."""
     cid = _get_outbound_container_id("mta")
     env = docker_inspect(cid, "{{range .Config.Env}}{{println .}}{{end}}").splitlines()
     values = [line.split("=", 1)[1] for line in env if line.startswith("MTA_SUBMIT_CIDR=")]

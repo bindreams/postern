@@ -58,12 +58,14 @@ def ALL_COMPOSE_FILES() -> list[Path]:
 
 
 def test_production_mta_submit_subnet_is_the_documented_literal():
-    """Production's /29 is quoted in CLAUDE.md and is mta/entrypoint.py's
-    MTA_SUBMIT_CIDR fallback, so moving it is a cross-repo change, not an edit.
+    """Production's /29 is mta/entrypoint.py's MTA_SUBMIT_CIDR fallback, so
+    moving it is a cross-repo change, not an edit. (CLAUDE.md's and testing.md's
+    own prose copies of this literal are checked separately, in
+    test_docs_quote_the_current_e2e_mta_submit_subnets_and_port.)
 
     Deliberately overlaps test_pinned_subnet_inventory_is_complete, which would
     also red on a change here: that one says "a pinned subnet moved, go look",
-    this one names the two out-of-repo-tree places that have to move with it.
+    this one names the one out-of-repo-tree place that has to move with it.
     The subnet <-> CIDR <-> mynetworks agreement is checked for this file and
     every overlay by test_every_compose_file_agrees_on_its_own_mynetworks_chain.
     """
@@ -652,15 +654,14 @@ def _mta_submit_subnet(path: Path) -> str:
 
 def test_docs_quote_the_current_e2e_mta_submit_subnets_and_port():
     """CLAUDE.md's co-location bullet and docs/development/testing.md both
-    quote the e2e overlays' subnets and the real-mode host port in prose.
-    Nothing else pins those numbers against the compose files: production's
-    literal has its own test (test_production_mta_submit_subnet_is_the_
-    documented_literal), but that pattern was never extended to the three
-    overlay-pinned values, and CLAUDE.md sits outside test_docs.py's
-    MUST_KEEP_CODE scan (DOCS_DIR is docs/ only) regardless of that. Without
-    this, `test_pinned_subnet_inventory_is_complete` would force a future
-    subnet move to update the *test*, but the prose in these two files could
-    still go stale silently."""
+    quote production's and the e2e overlays' subnets, plus the real-mode host
+    port, in prose. Nothing else pins those numbers against the compose
+    files -- CLAUDE.md sits outside test_docs.py's MUST_KEEP_CODE scan
+    (DOCS_DIR is docs/ only). Without this, `test_pinned_subnet_inventory_
+    is_complete` and `test_production_mta_submit_subnet_is_the_documented_
+    literal` would force a future subnet move to update the *tests*, but the
+    prose in these two files could still go stale silently."""
+    production_subnet = production_mta_submit_subnet()
     e2e_mta_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta.compose.yaml")
     e2e_mta_real_subnet = _mta_submit_subnet(E2E_COMPOSE_DIR / "e2e-mta-real.compose.yaml")
     # host_ip is part of the documented literal too, not just the port -- a
@@ -674,6 +675,6 @@ def test_docs_quote_the_current_e2e_mta_submit_subnets_and_port():
 
     claude_md = (REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
     testing_md = (REPO_ROOT / "docs" / "development" / "testing.md").read_text(encoding="utf-8")
-    for literal in (e2e_mta_subnet, e2e_mta_real_subnet, real_mode_port_literal):
+    for literal in (production_subnet, e2e_mta_subnet, e2e_mta_real_subnet, real_mode_port_literal):
         assert literal in claude_md, f"CLAUDE.md no longer quotes {literal!r} -- update its co-location bullet"
         assert literal in testing_md, f"docs/development/testing.md no longer quotes {literal!r}"

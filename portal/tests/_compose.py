@@ -35,10 +35,11 @@ ComposeLoader.add_constructor("!reset", lambda loader, node: None)
 # against this repo's pinned PyYAML. Docker Compose's own parser (go-yaml.v3,
 # YAML 1.2) has no such branch and reads the identical line as the string
 # "25:25". Every compose file in this repo currently quotes its `ports:`
-# entries, so this has never fired here, but a future unquoted low-numbered
-# port (any host:container pair each under 60, e.g. 25:25 or 53:53) would
-# silently misparse -- and every guard depending on `parse_published_ports`
-# seeing a string would then either miss it entirely or misdiagnose why.
+# entries, so this has never fired here, but a future unquoted `HOST:CONTAINER`
+# port would silently misparse whenever the CONTAINER segment is under 60 --
+# the HOST segment is unbounded (verified: `587:25` -> 35245, `8080:53` ->
+# 484853) -- and every guard depending on `parse_published_ports` seeing a
+# string would then either miss it entirely or misdiagnose why.
 # Re-registered without the sexagesimal alternative so ComposeLoader agrees
 # with Compose's own YAML 1.2 reading.
 _YAML_1_2_INT_RE = re.compile(

@@ -24,9 +24,10 @@ def test_load_compose_returns_dict_for_ordinary_file():
 def test_load_compose_reads_unquoted_low_numbered_ports_as_strings():
     """PyYAML's stock int resolver follows YAML 1.1's sexagesimal rule: an
     unquoted `25:25` would otherwise parse as the int 1525 (25*60+25), not the
-    string Docker Compose itself reads. Every compose file in this repo
-    quotes its `ports:` entries today, so this never fires in practice --
-    tested directly against the loader so a future unquoted low port doesn't
-    silently misparse."""
-    data = yaml.load("ports:\n  - 25:25\n  - 53:53\n  - 42\n", Loader=ComposeLoader)
-    assert data["ports"] == ["25:25", "53:53", 42]
+    string Docker Compose itself reads. The HOST segment is unbounded --
+    `8080:53` is just as vulnerable as `25:25`, only the CONTAINER segment
+    needs to be under 60. Every compose file in this repo quotes its `ports:`
+    entries today, so this never fires in practice -- tested directly against
+    the loader so a future unquoted port doesn't silently misparse."""
+    data = yaml.load("ports:\n  - 25:25\n  - 53:53\n  - 8080:53\n  - 42\n", Loader=ComposeLoader)
+    assert data["ports"] == ["25:25", "53:53", "8080:53", 42]

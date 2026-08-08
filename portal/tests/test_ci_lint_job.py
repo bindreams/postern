@@ -34,6 +34,7 @@ here -- see that module's docstring for why.
 import sys
 import tomllib
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PREK_CONFIG = REPO_ROOT / "prek.toml"
@@ -41,6 +42,8 @@ PREK_CONFIG = REPO_ROOT / "prek.toml"
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 from ci_lint_lib import PER_HOOK_CHECKS  # noqa: E402
 from ci_lint_lib import first_party_shell_scripts  # noqa: E402
+from ci_lint_lib import is_vendored  # noqa: E402
+from ci_lint_lib import tracked_files  # noqa: E402
 
 # Hardcoded expectations, NOT derived from prek.toml. `ci_lint_lib.is_vendored`,
 # `_FORMAT_SECTION_COMMENTS_TAGS` and `_EDITORCONFIG_EXCLUDE_TAGS` all derive their
@@ -55,13 +58,13 @@ EXPECTED_EXCLUDE = "^external/"
 EXPECTED_FORMAT_SECTION_COMMENTS_TYPES_OR = ["rust", "python", "toml", "javascript", "ts", "jsx", "tsx", "dockerfile"]
 EXPECTED_EDITORCONFIG_EXCLUDE_TYPES = ["rust", "markdown", "python"]
 
-# Hooks that legitimately need no `ci_lint_lib.PER_HOOK_CHECKS` entry:
-# `shellcheck` has its own dedicated, live per-file reachability check in
-# scripts/ci-lint-selftest.sh (shell is the language this whole gate exists
-# to enforce), and `ty check`'s `pass_filenames = false` makes its own
-# `types = ["python"]` restriction irrelevant to what it actually scans (see
-# ci_lint_lib.py's own comment on `PER_HOOK_CHECKS`).
-HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS = frozenset({"shellcheck", "ty check"})
+# `ty check` is the one hook that legitimately needs no `ci_lint_lib.PER_HOOK_CHECKS`
+# entry: `pass_filenames = false` decouples what it scans from prek's file matcher
+# entirely, so there is no per-file tag predicate to write -- its coverage is instead
+# pinned directly by `test_every_first_party_python_file_is_a_ty_check_target` below.
+# `shellcheck` DOES have a PER_HOOK_CHECKS entry (see that constant's own comment for
+# why it isn't exempted just because it also has a live per-file check).
+HOOKS_EXEMPT_FROM_PER_HOOK_CHECKS = frozenset({"ty check"})
 
 # prek.toml's `id`/`name` (what `_hooks()` below reads) does not always match
 # `PER_HOOK_CHECKS`'s key, which is prek's own dry-run *display* name pulled
@@ -128,8 +131,10 @@ def _hooks() -> list[dict]:
     return [hook for repo in _config()["repos"] for hook in repo.get("hooks", [])]
 
 
-def _hook_field(hook_id: str, field: str) -> list[str]:
-    """The value of `field` on the prek.toml hook with this `id`.
+def _hook_field(hook_id: str, field: str) -> Any:
+    """The value of `field` on the prek.toml hook with this `id` -- a `list[str]` for
+    `types_or`/`exclude_types`, a `str` for `entry`; `Any` because this one small
+    helper serves both callers rather than needing a type-narrowed variant each.
 
     A small, deliberate duplicate of ci_lint_lib._hook_field rather than an
     import of it: that helper is a private (underscore-prefixed) production
@@ -255,6 +260,60 @@ def test_editorconfig_checker_exclude_types_is_pinned():
         f"{EXPECTED_EDITORCONFIG_EXCLUDE_TYPES!r} to {actual!r}. ci_lint_lib.PER_HOOK_CHECKS derives its coverage "
         "predicate for this hook from the same field, so this drift is invisible to every other check -- confirm "
         "the change is deliberate, then update EXPECTED_EDITORCONFIG_EXCLUDE_TYPES"
+    )
+
+
+# Tracked first-party Python files outside every ty check root, deliberately
+# left uncovered -- tracked as issue #220, not fixed here, because closing
+# the gap means fixing pre-existing, unrelated bugs first (a module-scope-
+# unresolved name in mta/entrypoint.py; provisioner/entrypoint.py importing
+# `postern_mta`, which only exists as `portal/src/postern/mta` COPYed at
+# Docker build time, not as an importable path in the source tree).
+TY_UNCOVERED_PYTHON_FILES = frozenset({"mta/entrypoint.py", "provisioner/entrypoint.py"})
+
+
+def _ty_check_roots() -> list[str]:
+    """Repo-root-relative directory prefixes ty actually scans, parsed from the `ty`
+    hook's `entry` in prek.toml -- not a hand-copied second list, so a root added or
+    removed there is exactly what `test_every_first_party_python_file_is_a_ty_check_target`
+    verifies against, with nothing to keep in sync by hand.
+
+    The entry's positional (non-flag) arguments after `check` are the roots; parsed with
+    a plain `.split()` since prek.toml's `entry` strings are simple space-separated
+    commands with no quoting. They resolve relative to the entry's own CWD (`portal/`,
+    from `--directory portal`), not the repo root.
+    """
+    entry: str = _hook_field("ty", "entry")
+    tokens = entry.split()
+    check_index = tokens.index("check")
+    positional = [token for token in tokens[check_index + 1:] if not token.startswith("-")]
+    roots = []
+    for token in positional:
+        resolved = (REPO_ROOT / "portal" / token).resolve()
+        rel = resolved.relative_to(REPO_ROOT).as_posix()
+        roots.append(rel + "/" if rel else "")
+    return roots
+
+
+def test_every_first_party_python_file_is_a_ty_check_target():
+    """`ty check`'s `pass_filenames = false` decouples what it scans from prek's own
+    file matcher entirely, so nothing else here -- and nothing in
+    `ci_lint_lib.find_dry_run_coverage_gaps`'s union check, satisfied by every OTHER
+    hook matching text files regardless of language -- can see a first-party Python
+    file falling outside every root the `ty` hook's `entry` actually names. Verified
+    live: a tracked `tools/x.py` with a real type error passed the entire lint gate
+    green before this test existed.
+    """
+    roots = _ty_check_roots()
+    tracked_python = [path for path in tracked_files() if path.endswith(".py") and not is_vendored(path)]
+    uncovered = [
+        path for path in tracked_python
+        if path not in TY_UNCOVERED_PYTHON_FILES and not any(path.startswith(root) for root in roots)
+    ]
+    assert not uncovered, (
+        f"these first-party Python files fall outside every ty check root ({roots}): {uncovered}. Either widen "
+        "the `ty` hook's `entry` in prek.toml to cover them, or add them to TY_UNCOVERED_PYTHON_FILES here with "
+        "an issue reference if closing the gap requires fixing unrelated pre-existing bugs first"
     )
 
 

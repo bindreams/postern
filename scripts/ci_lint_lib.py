@@ -185,23 +185,37 @@ _EDITORCONFIG_EXCLUDE_TAGS = frozenset(_hook_field("editorconfig-checker", "excl
 # Predicates are read off each hook's own upstream `.pre-commit-hooks.yaml`
 # `types`/`types_or` (AND semantics for `types`).
 #
-# `ty check` is deliberately absent: `pass_filenames = false` makes it scan
-# the whole portal project regardless of its `types = ["python"]` restriction,
-# so no matcher narrowing can reduce what it actually checks. Every other
-# hook -- INCLUDING `format-section-comments`, despite `types_or` already
-# being a key written in prek.toml -- needs its own entry here:
+# `ty check` is the ONE genuinely un-listable hook: `pass_filenames = false`
+# decouples what it scans from prek's file matcher entirely, so there is no
+# per-file tag predicate to write here at all -- what ty actually covers is
+# the hardcoded root list in its own `entry` (prek.toml), which
+# `test_every_first_party_python_file_is_a_ty_check_target` (in
+# portal/tests/test_ci_lint_job.py) pins directly instead. Every other hook
+# gets a real entry here, INCLUDING ones whose narrowing key is already
+# written in prek.toml (`format-section-comments`'s `types_or`) or whose
+# matcher would otherwise seem covered by a separate mechanism
+# (`shellcheck`, which also has a live per-file reachability loop in
+# scripts/ci-lint-selftest.sh -- that loop is a stronger, defense-in-depth
+# proof for the language this whole gate exists to enforce, not a substitute
+# for this cheap, uniform check, which costs nothing extra since the
+# dry-run log this reads is already parsed on every `ci-lint-run.sh` run):
 # `test_no_hook_narrows_its_own_file_set_unexpectedly` only asserts a
 # narrowing KEY is present and allow-listed, never the key's VALUE, so
 # narrowing an already-allow-listed `types_or`/`exclude_types`/etc. in place
 # (e.g. trimming `format-section-comments`'s `types_or` list) is invisible to
 # it -- deriving the predicate from prek.toml (above) closes that specific
-# gap for these two hooks, but the entry itself still needs to exist so the
+# gap for those two hooks, but the entry itself still needs to exist so the
 # union/per-hook checks below actually run it.
 PER_HOOK_CHECKS: list[tuple[str, Callable[[frozenset[str]], bool], Callable[[str], bool]]] = [
     (
         "format section comments",
         # OR semantics (types_or), matching prek.toml's format-section-comments hook.
         lambda tags: bool(_FORMAT_SECTION_COMMENTS_TAGS & tags),
+        lambda path: True,
+    ),
+    (
+        "shellcheck",
+        lambda tags: "shell" in tags,
         lambda path: True,
     ),
     (

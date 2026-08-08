@@ -439,6 +439,27 @@ def test_tags_for_first_party_file_propagates_non_missing_lstat_errors(monkeypat
         tags_for_first_party_file("portal/tests/test_ci_lint_lib.py")
 
 
+def test_tags_for_first_party_file_propagates_original_error_when_file_still_exists(monkeypatch):
+    """The one branch the two tests above don't reach: `tags_from_path` raises, but the
+    disambiguation re-stat SUCCEEDS (the file is genuinely still there) -- neither
+    `except FileNotFoundError: return None` fires (lstat didn't raise) nor does lstat's
+    own exception propagate in its place (there isn't one); control falls through to
+    the bare `raise`, re-raising the ORIGINAL error from `tags_from_path`. A regression
+    collapsing that `raise` into `return None` would silently drop a stable, present,
+    merely-unclassifiable-by-identify file from every coverage check in this module,
+    and the two existing tests (one all-missing, one lstat-also-fails) wouldn't notice.
+    """
+
+    def _raise_value_error(path):
+        raise ValueError("identify's generic re-raise, but the file is genuinely still there")
+
+    monkeypatch.setattr(ci_lint_lib, "tags_from_path", _raise_value_error)
+    # Path.lstat is deliberately left real: portal/tests/test_ci_lint_lib.py exists,
+    # so the re-stat inside the except block succeeds and falls through to the raise.
+    with pytest.raises(ValueError, match="identify's generic re-raise"):
+        tags_for_first_party_file("portal/tests/test_ci_lint_lib.py")
+
+
 # tracked_files ========================================================================================================
 
 

@@ -244,7 +244,7 @@ def test_mta_submit_network_is_internal(mta_e2e_stack):
     # production's /29 (e.g. a typo'd /28) is just as fatal as an exact
     # duplicate -- Docker refuses the overlap either way, and a `!=` string
     # compare would miss it (see the same reasoning in
-    # test_pinned_subnets_are_pairwise_disjoint, test_compose_submission.py).
+    # test_pinned_subnets_are_pairwise_disjoint, test_compose_colocation.py).
     assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(PRODUCTION_MTA_SUBMIT_SUBNET)), (
         f"the e2e mta-submit network ({expected}) overlaps production's subnet "
         f"({PRODUCTION_MTA_SUBMIT_SUBNET}); Docker refuses overlapping subnets, so this stack cannot "

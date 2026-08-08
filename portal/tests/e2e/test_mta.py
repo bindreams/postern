@@ -10,19 +10,17 @@ tests in this file do not declare ``pytestmark``.
 
 from __future__ import annotations
 
-import ipaddress
 import re
 
 import pytest
 
 from ._helpers import run
 from ._mta_helpers import (
+    assert_mta_submit_network_is_internal_and_disjoint,
     docker_inspect,
     get_container_id,
     get_provisioner_state,
     mta_exec,
-    network_inspect,
-    production_mta_submit_subnet,
     read_dkim_volume_file,
 )
 
@@ -211,45 +209,13 @@ def test_mta_listens_on_smtp_and_submission_ports(mta_e2e_stack):
     assert status == "healthy", f"mta container is {status!r}, expected 'healthy'"
 
 
-def _mta_submit_cidr_from_container() -> str:
-    """The MTA_SUBMIT_CIDR the running mta was started with -- the exact value
-    main.cf's `mynetworks` and opendkim's TrustedHosts were rendered from."""
-    env = docker_inspect(get_container_id("mta"), "{{range .Config.Env}}{{println .}}{{end}}").splitlines()
-    values = [line.split("=", 1)[1] for line in env if line.startswith("MTA_SUBMIT_CIDR=")]
-    assert len(values) == 1, f"expected exactly one MTA_SUBMIT_CIDR in the mta container env, got {values!r}"
-    return values[0]
-
-
 def test_mta_submit_network_is_internal(mta_e2e_stack):
-    """`mta-submit` is internal: true with a pinned /29 subnet (architectural
-    invariant in CLAUDE.md). A "simplification" that drops `internal: true`
-    would let any service relay through mta unauthenticated.
-
-    The expected subnet is read back off the running container rather than
-    written here as a literal: the live network and the value Postfix renders
-    `mynetworks` from must be the same string, and comparing them directly is
-    what that pins. The subnet must also differ from production's, or this
-    stack cannot come up on a host that already runs one.
-    """
-    info = network_inspect("mta-submit-mta-e2e")
-    assert info.get("Internal") is True, f"network not internal: Internal={info.get('Internal')!r}"
-    cfgs = (info.get("IPAM", {}) or {}).get("Config", []) or []
-    subnets = [c.get("Subnet") for c in cfgs]
-    expected = _mta_submit_cidr_from_container()
-    assert subnets == [expected], (
-        f"mta-submit network subnets {subnets!r} != the mta container's MTA_SUBMIT_CIDR {expected!r}; "
-        "mynetworks is rendered from the latter, so a mismatch rejects submission with 554 5.7.1"
-    )
-    # Compared as networks, not strings: a range that merely *contains*
-    # production's /29 (e.g. a typo'd /28) is just as fatal as an exact
-    # duplicate -- Docker refuses the overlap either way, and a `!=` string
-    # compare would miss it (see the same reasoning in
-    # test_pinned_subnets_are_pairwise_disjoint, test_compose_colocation.py).
-    production_subnet = production_mta_submit_subnet()
-    assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(production_subnet)), (
-        f"the e2e mta-submit network ({expected}) overlaps production's subnet "
-        f"({production_subnet}); Docker refuses overlapping subnets, so this stack cannot "
-        "start on a host that already runs production"
+    """See _mta_helpers.assert_mta_submit_network_is_internal_and_disjoint for
+    what this pins and why -- shared with test_mta_outbound.py's real-mode
+    equivalent."""
+    assert_mta_submit_network_is_internal_and_disjoint(
+        network_name="mta-submit-mta-e2e",
+        container_id=get_container_id("mta"),
     )
 
 

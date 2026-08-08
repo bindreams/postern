@@ -29,29 +29,71 @@ class ComposeLoader(yaml.SafeLoader):
 # time and never perform the merge themselves, so resolving it to None is exact.
 ComposeLoader.add_constructor("!reset", lambda loader, node: None)
 
+
+def _narrow_implicit_resolver(
+    loader: type[yaml.SafeLoader], tag: str, regexp: re.Pattern[str], first_chars: str
+) -> None:
+    """Replace `loader`'s stock (YAML 1.1) implicit resolver for `tag` with a
+    narrower one, so ComposeLoader's scalar resolution for that tag agrees
+    with Compose's own parser (go-yaml.v3) instead of PyYAML's default. Shared
+    by every tag that needs this narrowing -- see the two call sites below for
+    which ones, and why -- so the next one found is a one-line call instead of
+    a fresh copy of this filter-then-add pattern.
+    """
+    loader.yaml_implicit_resolvers = {
+        first_char: [(t, r) for t, r in resolvers if t != tag]
+        for first_char, resolvers in loader.yaml_implicit_resolvers.items()
+    }
+    loader.add_implicit_resolver(tag, regexp, list(first_chars))
+
+
 # PyYAML's built-in `int` resolver follows YAML 1.1, which includes a
 # sexagesimal (base-60) branch: an unquoted short-form port entry like
-# `- 25:25` resolves to the int 1525, not the string "25:25". Docker
-# Compose's own parser (go-yaml.v3, YAML 1.2) has no such branch and reads
-# the identical line as the string "25:25". Every compose file in this repo
-# currently quotes its `ports:` entries, so this has never fired here, but a
-# future unquoted `HOST:CONTAINER` port would silently misparse whenever the
-# CONTAINER segment is under 60 -- the HOST segment is unbounded, e.g.
-# `587:25` -- and every guard depending on `parse_published_ports` seeing a
-# string would then either miss it entirely or misdiagnose why.
-# Re-registered without the sexagesimal alternative so ComposeLoader agrees
-# with Compose's own YAML 1.2 reading.
+# `- 25:25` resolves to the int 1525, not the string "25:25". Docker Compose's
+# own parser (go-yaml.v3, YAML 1.2) has no such branch and reads the identical
+# line as the string "25:25" -- so this narrowing is safe for both untyped
+# list/map scalars and schema-typed numeric fields. Every compose file in
+# this repo currently quotes its `ports:` entries, so
+# this has never fired here, but a future unquoted `HOST:CONTAINER` port
+# would silently misparse whenever the CONTAINER segment is under 60 -- the
+# HOST segment is unbounded, e.g. `587:25` -- and every guard depending on
+# `parse_published_ports` seeing a string would then either miss it entirely
+# or misdiagnose why. Re-registered without the sexagesimal alternative --
+# every other branch is copied verbatim from PyYAML's own stock regex.
 _YAML_1_2_INT_RE = re.compile(
     r"""^(?:[-+]?0b[0-1_]+
         |[-+]?0[0-7_]+
         |[-+]?(?:0|[1-9][0-9_]*)
         |[-+]?0x[0-9a-fA-F_]+)$""", re.X
 )
-ComposeLoader.yaml_implicit_resolvers = {
-    first_char: [(tag, regexp) for tag, regexp in resolvers if tag != "tag:yaml.org,2002:int"]
-    for first_char, resolvers in ComposeLoader.yaml_implicit_resolvers.items()
-}
-ComposeLoader.add_implicit_resolver("tag:yaml.org,2002:int", _YAML_1_2_INT_RE, list("-+0123456789"))
+_narrow_implicit_resolver(ComposeLoader, "tag:yaml.org,2002:int", _YAML_1_2_INT_RE, "-+0123456789")
+
+# Same defect, same fix, for `float`: PyYAML's stock float resolver carries
+# the identical sexagesimal branch, so an unquoted colon-shaped decimal like
+# `5:30.5` would misparse instead of staying a string. Narrowed the same way:
+# sexagesimal branch dropped, every other branch (decimal, exponent,
+# .inf/.nan) copied verbatim.
+_YAML_1_2_FLOAT_RE = re.compile(
+    r"""^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?
+        |\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?
+        |[-+]?\.(?:inf|Inf|INF)
+        |\.(?:nan|NaN|NAN))$""", re.X
+)
+_narrow_implicit_resolver(ComposeLoader, "tag:yaml.org,2002:float", _YAML_1_2_FLOAT_RE, "-+0123456789.")
+
+# `bool` is deliberately NOT narrowed the same way, despite carrying the same
+# YAML-1.1-vs-1.2 divergence in the abstract (PyYAML resolves yes/no/on/off;
+# a strict YAML-1.2 reading wouldn't). In an untyped context (`environment:`
+# values), an unquoted `TRUSTED: yes` DOES stay the literal string "yes",
+# matching YAML 1.2 -- but in a schema-typed boolean field (`networks.<n>.internal`,
+# `.external`), Compose's own decoder coerces legacy yes/no/on/off spellings
+# to true/false for backwards compatibility, NOT treating them as strings. A
+# single loader-level resolver cannot be right for both contexts at once, and
+# every boolean this test suite actually reads out of ComposeLoader
+# (`internal:`, `external:`) is the schema-typed kind -- so PyYAML's stock
+# (YAML 1.1) bool resolver, which already agrees with that coercion, is the
+# correct default to leave in place. See
+# test_load_compose_reads_legacy_bool_spellings_as_booleans in test__compose.py.
 
 
 def load_compose(path: Path) -> dict:

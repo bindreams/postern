@@ -11,6 +11,7 @@ Tests should import from here; ``_helpers`` stays single-project (the existing
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import subprocess
@@ -105,6 +106,46 @@ def network_inspect(name: str) -> dict:
     if not parsed:
         raise AssertionError(f"docker network {name!r} not found")
     return parsed[0]
+
+
+# Shared live assertions ===============================================================================================
+def assert_mta_submit_network_is_internal_and_disjoint(*, network_name: str, container_id: str) -> None:
+    """`mta-submit` is internal: true with a pinned /29 subnet (architectural
+    invariant in CLAUDE.md). A "simplification" that drops `internal: true`
+    would let any service relay through mta unauthenticated.
+
+    The expected subnet is read back off the running container's own
+    MTA_SUBMIT_CIDR rather than hardcoded: the live network and the value
+    Postfix renders `mynetworks` from must be the same string, and comparing
+    them directly is what that pins. The subnet must also differ from
+    production's, or this stack could not have started on a host that
+    already runs one.
+
+    """
+    env = docker_inspect(container_id, "{{range .Config.Env}}{{println .}}{{end}}").splitlines()
+    values = [line.split("=", 1)[1] for line in env if line.startswith("MTA_SUBMIT_CIDR=")]
+    assert len(values) == 1, f"expected exactly one MTA_SUBMIT_CIDR in the mta container env, got {values!r}"
+    expected = values[0]
+
+    info = network_inspect(network_name)
+    assert info.get("Internal") is True, f"network not internal: Internal={info.get('Internal')!r}"
+    cfgs = (info.get("IPAM", {}) or {}).get("Config", []) or []
+    subnets = [c.get("Subnet") for c in cfgs]
+    assert subnets == [expected], (
+        f"{network_name} subnets {subnets!r} != the mta container's MTA_SUBMIT_CIDR {expected!r}; "
+        "mynetworks is rendered from the latter, so a mismatch rejects submission with 554 5.7.1"
+    )
+    # Compared as networks, not strings: a range that merely *contains*
+    # production's /29 (e.g. a typo'd /28) is just as fatal as an exact
+    # duplicate -- Docker refuses the overlap either way, and a `!=` string
+    # compare would miss it (see the same reasoning in
+    # test_pinned_subnets_are_pairwise_disjoint, test_compose_colocation.py).
+    production_subnet = production_mta_submit_subnet()
+    assert not ipaddress.ip_network(expected).overlaps(ipaddress.ip_network(production_subnet)), (
+        f"the {network_name} network ({expected}) overlaps production's subnet "
+        f"({production_subnet}); Docker refuses overlapping subnets, so this stack cannot "
+        "start on a host that already runs production"
+    )
 
 
 def wait_for_healthy(container_id: str, *, timeout: float = 60.0) -> None:

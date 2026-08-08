@@ -17,10 +17,12 @@
 ##     build
 ##   docker compose -p postern-e2e-mta-real -f ... -f ... up -d --wait
 ##
-## Co-location: the VPS this runs on very likely already has a production stack.
-## This overlay therefore pins its own mta-submit subnet (10.234.44.0/29) and
-## publishes the mta's SMTP listener on 127.0.0.1:2525, not host 25. See
-## test_compose_colocation.py.
+## Co-location: the VPS this runs on very likely already has a production
+## stack. This overlay pins its own mta-submit subnet (10.234.44.0/29) --
+## see test_compose_colocation.py -- but deliberately does NOT move its mta
+## off host port 25. See CLAUDE.md's co-location invariant for why (sender-
+## callout/MX reachability, and which side loses if both stacks come up at
+## once) and issue #223 for a fully hermetic replacement.
 
 services:
   mta:
@@ -58,19 +60,12 @@ services:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
     security_opt: ["no-new-privileges:true"]
-    # Loopback + non-privileged: the suite itself (test_mta_outbound.py) only
-    # exercises outbound delivery and needs no publish at all. Tradeoff:
-    # MTA_VERIFY_DNS still requires this domain's MX to point at mail.<domain>,
-    # but this container no longer answers there. On a host that ALSO runs
-    # production (the case this overlay's port move exists for), production's
-    # own mta still publishes host 25 and answers instead -- not in
-    # mynetworks for MTA_TEST_DOMAIN, so it permanently rejects with 554
-    # 5.7.1 rather than failing to connect. On a bare VPS with no production
-    # stack, a bounce/DSN or sender-callout probe simply fails to connect.
-    # Either way, this domain no longer receives inbound mail. Container-side
-    # stays 25 so main.cf and the healthcheck are unchanged.
+    # Host port 25, all interfaces -- deliberately NOT loopback-bound. See the
+    # file header for why (sender-callout/MX reachability, and the ordering
+    # caveat) and test_compose_colocation.py's allowlisted exception for this
+    # entry.
     ports:
-      - "127.0.0.1:2525:25/tcp"
+      - "25:25/tcp"
     volumes:
       - postern-mta-data:/var/lib/opendkim
       - postern-mta-queue:/var/spool/postfix

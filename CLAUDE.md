@@ -211,8 +211,8 @@ export GIT_REVISION
 docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
 docker compose up -d --build
 docker compose exec -T portal postern reconcile --wait
-docker compose exec -T portal postern connection tunnels > /tmp/expected-tunnels
-scripts/verify-deploy.py --tunnels --expected-tunnels-from /tmp/expected-tunnels
+expected_tunnels="$(docker compose exec -T portal postern connection tunnels)" || exit 1
+scripts/verify-deploy.py --tunnels --expected-tunnels-from - <<<"$expected_tunnels"
 
 # Run the admin CLI
 docker compose exec portal postern user list

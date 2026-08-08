@@ -291,7 +291,16 @@ read_expected_tunnels() {
         # An `[[ ... ]] && continue` one-liner would be a live grenade under
         # `set -e`: the list's status is the test's, so a non-empty line would
         # return 1 and kill the script.
-        [[ "$line" =~ ^ss-[^[:space:]]+$ ]] || return 1
+        if [[ ! "$line" =~ ^ss-[^[:space:]]+$ ]]; then
+            # Diagnose before discarding: the command-failure branch above gets a
+            # real diagnosis for free (docker/the portal's own stderr reaches the
+            # terminal directly), and this is the one other way this function can
+            # fail -- it must not be the one path that leaves the operator to
+            # re-run the query by hand to find out what was actually wrong.
+            printf 'deploy.sh: postern connection tunnels printed something that is not a container name: %s\n' \
+                "$line" >&2
+            return 1
+        fi
     done <<<"$out"
     printf '%s\n' "$out"
 }

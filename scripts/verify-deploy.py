@@ -493,10 +493,18 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
 # docs/operations/index.md's runbook calls out avoiding.
 _EXPORT = 'GIT_REVISION="$(scripts/verify-deploy.py --print-revision)" && export GIT_REVISION'
 _UP = f"{_EXPORT} && docker compose up -d --build"
-_SS_BUILD = (
-    f"{_EXPORT} && docker build -f shadowsocks/Dockerfile "
-    '--build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .'
-)
+
+
+def _ss_build(ref: str) -> str:
+    """The build command for the tunnel image, tagged as whatever `ref` the
+    portal actually resolved -- not hardcoded to the `local/shadowsocks-server`
+    default. A deployment with a custom SHADOWSOCKS_IMAGE would otherwise get a
+    fix hint that builds a different tag than the one the row says is missing,
+    leaving the check failing on every re-run.
+    """
+    return f'{_EXPORT} && docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t {ref} .'
+
+
 _RECONCILE = "docker compose exec portal postern reconcile"
 # Distinct from _RECONCILE: a set mismatch means the pass FINISHED without
 # converging, so "trigger a pass" alone is not the whole fix -- the operator
@@ -578,7 +586,7 @@ def _check_tunnel_set(obs: Observation, expected: frozenset[str] | None) -> list
         return [
             Check(
                 label, "fail", f"{len(missing)} missing, {len(surplus)} unexpected: image {obs.ss_image} is not "
-                "present locally, so the reconciler neither created nor removed anything", _SS_BUILD
+                "present locally, so the reconciler neither created nor removed anything", _ss_build(obs.ss_image)
             )
         ]
 
@@ -744,15 +752,19 @@ def evaluate(
     ss_revision = obs.tag_revisions.get(obs.ss_image, "")
     ss_label = "shadowsocks image: revision"
     if not obs.tag_ids.get(obs.ss_image):
-        checks.append(Check(ss_label, "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD))
+        checks.append(Check(ss_label, "fail", f"image {obs.ss_image} is not present locally", _ss_build(obs.ss_image)))
     elif not ss_revision:
         checks.append(
-            Check(ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION", _SS_BUILD)
+            Check(
+                ss_label, "fail", "image carries no revision label: it was built without GIT_REVISION",
+                _ss_build(obs.ss_image)
+            )
         )
     elif ss_revision != expected_revision:
         checks.append(
             Check(
-                ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}", _SS_BUILD
+                ss_label, "fail", f"image is {_short(ss_revision)}, checkout is {_short(expected_revision)}",
+                _ss_build(obs.ss_image)
             )
         )
     else:
@@ -784,7 +796,10 @@ def evaluate(
             ss_tag_id = obs.tag_ids.get(obs.ss_image, "")
             if not ss_tag_id:
                 checks.append(
-                    Check("tunnels: image identity", "fail", f"image {obs.ss_image} is not present locally", _SS_BUILD)
+                    Check(
+                        "tunnels: image identity", "fail", f"image {obs.ss_image} is not present locally",
+                        _ss_build(obs.ss_image)
+                    )
                 )
             else:
                 # Surplus containers are skipped here: `_check_tunnel_set` has
@@ -932,26 +947,45 @@ def main(argv: Sequence[str] | None = None) -> int:
     except RevisionError as exc:
         print(f"verify-deploy: {exc}", file=sys.stderr)
         return 2
-    try:
-        expected_tunnels = (
-            read_expected_tunnels(args.expected_tunnels_from) if args.expected_tunnels_from is not None else None
-        )
-        observation = collect(run_command, args.project_dir, args.shadowsocks_image, tunnels=args.tunnels)
-    except CollectError as exc:
+
+    def _collect_error_report(check: Check) -> Report:
         # A broken environment is not a stale deployment. Exit 2 so issue #196's
         # deploy entrypoint can tell "verify-deploy is misconfigured" apart from
         # "the deploy did not take".
-        print(f"verify-deploy: {exc}", file=sys.stderr)
-        report = Report(
+        return Report(
             project="",
             revision=expected,
-            checks=[
-                Check(
-                    "compose: readable", "fail", str(exc),
-                    "run from the deployment's project directory, or pass --project-dir"
-                )
-            ],
+            checks=[check],
             exit_code_override=2,  # a CollectError is "could not run", not "stale" -- keep JSON and $? in agreement
+        )
+
+    expected_tunnels = None
+    if args.expected_tunnels_from is not None:
+        try:
+            expected_tunnels = read_expected_tunnels(args.expected_tunnels_from)
+        except CollectError as exc:
+            # Its own Check, not the compose one below: a bad --expected-tunnels-from
+            # is not a bad --project-dir, and "run from the deployment's project
+            # directory" is not a fix for it.
+            print(f"verify-deploy: {exc}", file=sys.stderr)
+            report = _collect_error_report(
+                Check(
+                    "expected tunnels: readable", "fail", str(exc),
+                    "check the file/pipe named by --expected-tunnels-from, or the `postern connection tunnels` command that produced it"
+                )
+            )
+            print(render_json(report) if args.output_json else render_text(report), end="")
+            return report.exit_code
+
+    try:
+        observation = collect(run_command, args.project_dir, args.shadowsocks_image, tunnels=args.tunnels)
+    except CollectError as exc:
+        print(f"verify-deploy: {exc}", file=sys.stderr)
+        report = _collect_error_report(
+            Check(
+                "compose: readable", "fail", str(exc),
+                "run from the deployment's project directory, or pass --project-dir"
+            )
         )
         print(render_json(report) if args.output_json else render_text(report), end="")
         return report.exit_code

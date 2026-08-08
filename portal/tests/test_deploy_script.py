@@ -577,6 +577,15 @@ def test_a_non_tunnel_line_stops_the_deploy_instead_of_weakening_the_gate(tmp_pa
     assert not any(a.startswith("scripts/verify-deploy.py --tunnels") for a in _args_of(calls, "python3"))
 
 
+def test_a_non_tunnel_line_is_named_in_the_output(tmp_path):
+    """The generic "usable tunnel list" message alone would send the operator
+    to re-run `postern connection tunnels` by hand to find out what was
+    actually wrong; the script already has the offending line and must not
+    discard it."""
+    proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa not-a-tunnel-name")
+    assert "not-a-tunnel-name" in (proc.stdout + proc.stderr)
+
+
 def test_a_failed_tunnels_query_stops_the_deploy(tmp_path):
     """`postern connection tunnels` exits non-zero when the portal cannot
     resolve its instance id -- in which case the reconciler creates nothing and
@@ -603,6 +612,7 @@ def test_a_swap_that_keeps_the_count_identical_is_still_detected(tmp_path):
     """The reason this compares the list and not its length: one connection
     deleted and another added leaves the count untouched."""
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa ss-bbb", FAKE_TUNNELS_2="ss-aaa ss-ccc", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0  # the note explains the failure; it does not clear it
     assert "changed during verification" in (proc.stdout + proc.stderr)
 
 
@@ -615,6 +625,7 @@ def test_an_emptied_connection_set_is_still_reported_as_a_change(tmp_path):
     # "no second answer staged", and a whitespace-only value word-splits to an
     # empty list.
     proc, _calls = _run(tmp_path, FAKE_TUNNELS="ss-aaa", FAKE_TUNNELS_2=" ", FAKE_VERIFY_RC="1")
+    assert proc.returncode != 0  # the note explains the failure; it does not clear it
     assert "changed during verification" in (proc.stdout + proc.stderr)
 
 

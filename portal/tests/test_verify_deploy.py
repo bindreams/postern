@@ -724,6 +724,23 @@ def test_stale_shadowsocks_image_fails():
     assert check.status == "fail" and "shadowsocks/Dockerfile" in check.fix
 
 
+def test_shadowsocks_build_hint_tags_the_actual_resolved_image():
+    """SHADOWSOCKS_IMAGE is a supported override (portal/tests/e2e/e2e.compose.yaml
+    sets one), and a fix hint that always builds `local/shadowsocks-server`
+    regardless would tag the wrong ref -- leaving the check failing forever on a
+    deployment that uses a custom name."""
+    custom = "myorg/ss:1"
+    obs = _obs(
+        ss_image=custom,
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", custom: ""},
+        tag_revisions={"local/postern-portal": HEAD, _PROXY_REF: _PROXY_REV, custom: ""},
+    )
+    check = _labels(vd.evaluate(obs, HEAD))["shadowsocks image: revision"]
+    assert check.status == "fail"
+    assert f"-t {custom} ." in check.fix
+    assert "local/shadowsocks-server" not in check.fix
+
+
 def test_tunnel_rows_are_skipped_by_default():
     report = vd.evaluate(_obs(), HEAD)
     assert _labels(report)["tunnels: image identity"].status == "skip"
@@ -813,6 +830,10 @@ def test_zero_tunnels_with_connections_enabled_fails():
     assert labels[f"tunnel {_SS_A}: exists"].status == "fail"
     assert labels[f"tunnel {_SS_B}: exists"].status == "fail"
     assert "postern reconcile" in labels[f"tunnel {_SS_A}: exists"].fix
+    # Not both: with a caller-supplied expected set, "tunnels: image identity"'s
+    # skip/fail is only for the no-set case (see the module docstring) -- a
+    # regression that reintroduced it here would duplicate/confuse the verdict.
+    assert "tunnels: image identity" not in labels
     assert report.exit_code == 1
 
 
@@ -879,6 +900,20 @@ def test_missing_tunnels_with_no_image_locally_are_one_row_pointing_at_the_build
     assert "shadowsocks/Dockerfile" in check.fix
     assert "postern reconcile" not in check.fix
     assert f"tunnel {_SS_A}: exists" not in labels
+
+
+def test_missing_tunnels_build_hint_tags_the_actual_resolved_image():
+    """Same custom-SHADOWSOCKS_IMAGE concern as the shadowsocks-image-revision
+    row, for the tunnel-set row's own build hint."""
+    custom = "myorg/ss:1"
+    obs = _obs(
+        ss_image=custom,
+        ss_containers=(),
+        tag_ids={"local/postern-portal": "sha256:aaa", _PROXY_REF: "sha256:ccc", custom: ""},
+    )
+    check = _labels(vd.evaluate(obs, HEAD, tunnels=True, expected_tunnels=frozenset({_SS_A})))["tunnels: expected set"]
+    assert f"-t {custom} ." in check.fix
+    assert "local/shadowsocks-server" not in check.fix
 
 
 def test_a_missing_image_with_surviving_tunnels_reports_both_questions_once_each():
@@ -1183,7 +1218,12 @@ def test_main_treats_an_explicitly_empty_flag_value_as_an_error_not_as_absence(c
     whose earlier command produced nothing) must not silently downgrade to the
     no-set SKIP and exit 0. It is an unreadable path: exit 2."""
     assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", ""]) == 2
-    assert "Traceback" not in capsys.readouterr().err
+    out = capsys.readouterr()
+    assert "Traceback" not in out.err
+    # Its own row, not the compose-collection one: a bad --expected-tunnels-from
+    # is not a bad --project-dir, and must not send the operator there.
+    assert "expected tunnels: readable" in out.out
+    assert "compose: readable" not in out.out
 
 
 def test_main_reports_an_unreadable_expected_set_as_could_not_run(capsys, isolated, tmp_path):
@@ -1192,6 +1232,8 @@ def test_main_reports_an_unreadable_expected_set_as_could_not_run(capsys, isolat
     assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", str(tmp_path / "nope")]) == 2
     captured = capsys.readouterr()
     assert "Traceback" not in captured.out + captured.err
+    assert "expected tunnels: readable" in captured.out
+    assert "compose: readable" not in captured.out
 
 
 def test_main_reports_closed_stdin_as_could_not_run_not_stale(monkeypatch, capsys, isolated):
@@ -1203,3 +1245,4 @@ def test_main_reports_closed_stdin_as_could_not_run_not_stale(monkeypatch, capsy
     assert vd.main([*isolated, "--tunnels", "--expected-tunnels-from", "-"]) == 2
     captured = capsys.readouterr()
     assert "Traceback" not in captured.out + captured.err
+    assert "expected tunnels: readable" in captured.out

@@ -783,7 +783,11 @@ def test_connection_tunnels_prints_one_container_name_per_enabled_connection(cli
     result = runner.invoke(app, ["connection", "tunnels"])
 
     assert result.exit_code == 0
-    assert result.stdout.split() == sorted(f"ss-{t}" for t in _tokens(cli_env))
+    # splitlines(), not split(): one name per LINE is the documented,
+    # load-bearing contract (deploy.sh's `while IFS= read -r line`,
+    # verify-deploy.py's `text.splitlines()`) -- split() would also accept a
+    # single space-joined line and miss a regression that breaks both readers.
+    assert result.stdout.splitlines() == sorted(f"ss-{t}" for t in _tokens(cli_env))
 
 
 def test_connection_tunnels_output_is_sorted_even_when_insertion_order_is_not(cli_env, monkeypatch):
@@ -800,7 +804,7 @@ def test_connection_tunnels_output_is_sorted_even_when_insertion_order_is_not(cl
 
     result = runner.invoke(app, ["connection", "tunnels"])
 
-    assert result.stdout.split() == [f"ss-{'a' * 24}", f"ss-{'b' * 24}", f"ss-{'c' * 24}"]
+    assert result.stdout.splitlines() == [f"ss-{'a' * 24}", f"ss-{'b' * 24}", f"ss-{'c' * 24}"]
 
 
 def test_connection_tunnels_of_an_empty_deployment_prints_nothing(cli_env):
@@ -830,7 +834,7 @@ def test_connection_tunnels_excludes_disabled_connections(cli_env):
     result = runner.invoke(app, ["connection", "tunnels"])
 
     assert result.exit_code == 0
-    assert result.stdout.split() == [f"ss-{surviving_token}"]
+    assert result.stdout.splitlines() == [f"ss-{surviving_token}"]
 
 
 def test_connection_tunnels_names_match_the_reconcilers_own_naming(cli_env):
@@ -844,7 +848,7 @@ def test_connection_tunnels_names_match_the_reconcilers_own_naming(cli_env):
     runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
     token = _tokens(cli_env)[0]
 
-    listed = runner.invoke(app, ["connection", "tunnels"]).stdout.split()
+    listed = runner.invoke(app, ["connection", "tunnels"]).stdout.splitlines()
 
     assert listed == [_container_name(Connection(user_id="u", path_token=token, label="l", password="p"))]
 
@@ -862,6 +866,6 @@ def test_connection_tunnels_keeps_the_identity_warning_off_stdout(cli_env, monke
     result = runner.invoke(app, ["connection", "tunnels"])
 
     assert result.exit_code == 1
-    assert result.stdout.split() == [f"ss-{_tokens(cli_env)[0]}"]
+    assert result.stdout.splitlines() == [f"ss-{_tokens(cli_env)[0]}"]
     assert "WARNING: could not determine this deployment's instance id" in result.stderr
     assert "WARNING" not in result.stdout

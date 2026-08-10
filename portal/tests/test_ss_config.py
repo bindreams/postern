@@ -138,10 +138,11 @@ def test_connection_rejects_invalid_ech():
 
 # Client config: ECH ===================================================================================================
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
-def test_client_config_ech_never_emits_nothing(plugin_name):
+def test_client_config_ech_never_is_explicit(plugin_name):
     conn = _make_connection().model_copy(update={"plugin": plugin_name, "ech": "never"})
     cfg = client_config(conn, DOMAIN)
-    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
@@ -165,20 +166,30 @@ def test_client_config_never_ignores_available_doh():
     """never means never, even when a DoH URL is configured."""
     conn = _make_connection().model_copy(update={"ech": "never"})
     cfg = client_config(conn, DOMAIN, ech_doh_url="https://cloudflare-dns.com/dns-query")
-    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 
 def test_client_config_never_ignores_malformed_doh():
     """never never touches ech_doh_url, so even a metachar-laden URL must not raise."""
     conn = _make_connection().model_copy(update={"ech": "never"})
     cfg = client_config(conn, DOMAIN, ech_doh_url="https://ex.test/dns;inject=x")
-    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 
 def test_client_config_always_without_doh_raises():
     conn = _make_connection().model_copy(update={"ech": "always"})
     with pytest.raises(ValueError, match="ech_doh_url"):
         client_config(conn, DOMAIN, ech_doh_url="")
+
+
+def test_client_config_rejects_invalid_ech_bypassing_validation():
+    """model_copy(update=...) skips validation (see test_model_validate_rejects_invalid_plugin),
+    so an out-of-domain conn.ech must still fail loudly rather than silently omit ech=."""
+    conn = _make_connection().model_copy(update={"ech": "bogus"})
+    with pytest.raises(AssertionError, match="unreachable"):
+        client_config(conn, DOMAIN)
 
 
 @pytest.mark.parametrize("mode", ["auto", "always"])

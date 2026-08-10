@@ -48,7 +48,7 @@ def client_config(conn: Connection, domain: str, *, ech_doh_url: str = "") -> di
 
     ECH is per-connection (`conn.ech`); ECH is armed by the plugin only when
     ech-doh is set:
-      - "never"  -> append nothing.
+      - "never"  -> ;ech=never (always, regardless of ech_doh_url).
       - "auto"   -> ;ech=auto;ech-doh=<url> if ech_doh_url set, else nothing
                     (opportunistic degrades to plaintext -- not an error).
       - "always" -> ;ech=always;ech-doh=<url>; empty ech_doh_url raises (fail-closed
@@ -76,7 +76,9 @@ def client_config(conn: Connection, domain: str, *, ech_doh_url: str = "") -> di
         SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
     plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
-    if conn.ech in ("auto", "always"):
+    if conn.ech == "never":
+        plugin_opts += ";ech=never"
+    elif conn.ech in ("auto", "always"):
         if not ech_doh_url:
             if conn.ech == "always":
                 raise ValueError("client_config: ech_doh_url must be non-empty for ech=always")
@@ -91,6 +93,8 @@ def client_config(conn: Connection, domain: str, *, ech_doh_url: str = "") -> di
                     "client_config: ech_doh_url must not contain ';', '\\', or whitespace (SIP003 metacharacters)"
                 )
             plugin_opts += f";ech={conn.ech};ech-doh={ech_doh_url}"
+    else:
+        raise AssertionError(f"unreachable: conn.ech={conn.ech!r}")
     server: dict = {
         "address": domain,
         "port": 443,

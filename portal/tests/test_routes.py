@@ -738,7 +738,7 @@ async def _download_opts(tmp_path, *, conn_ech, ech_doh_url=None):
 async def test_download_config_ech_never(tmp_path):
     status, opts, s = await _download_opts(tmp_path, conn_ech="never")
     assert status == 200
-    assert opts == f"tls;fast-open;path=/t/abcdef123456789012345678;host={s.domain}"
+    assert opts == f"tls;fast-open;path=/t/abcdef123456789012345678;host={s.domain};ech=never"
 
 
 @pytest.mark.parametrize("mode", ["auto", "always"])

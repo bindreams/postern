@@ -22,7 +22,7 @@ jobs:
       # on-disk layout of these environments; prek.toml's `rev =` pins are what
       # populates them. The two move independently.
       - name: Cache prek hook environments
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/prek
           key: prek-${{ runner.os }}-${{ hashFiles('prek.toml', 'portal/uv.lock') }}

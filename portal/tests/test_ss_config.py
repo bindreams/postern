@@ -59,10 +59,9 @@ def test_server_config_per_plugin(plugin_name):
 def test_fastopen_is_server_only_bare_key():
     """Regression test for issue #240.
 
-    ex-ray's SIP003 parser reads the presence key `fastOpen` (main.go:
-    parseBoolOption(opts, "fastOpen", fastOpen)); `fast-open` is only the name
-    of ex-ray's own CLI flag (config.go's flag.Bool("fast-open", ...)) and is
-    never looked up by the SIP003 parser, so it was silently discarded.
+    ex-ray's SIP003 parser only reads the bare key `fastOpen`; `fast-open` (with
+    a hyphen) is merely the name of ex-ray's own CLI flag and is never looked
+    up by the SIP003 parser.
 
     The fix is asymmetric by design, not an oversight:
       - server_config emits a bare `fastOpen`: this only makes the listener

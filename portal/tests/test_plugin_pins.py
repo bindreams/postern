@@ -46,9 +46,10 @@ FLOORS: dict[str, dict[str, tuple[Version, str]]] = {
     },
     "GALOSHES_VERSION": {
         "ech": (Version("0.3.0"), ECH_WHY),
-        "mux": (Version("0.4.0"),
-                "galoshes appends `mux=0` to its embedded ex-ray, and `mux` also picks the "
-                "server's dokodemo destination, so both ends must agree"),
+        "mux": (
+            Version("0.4.0"), "galoshes appends `mux=0` to its embedded ex-ray, and `mux` also picks the "
+            "server's dokodemo destination, so both ends must agree"
+        ),
     },
 }
 
@@ -86,8 +87,10 @@ def test_every_floor_names_a_pinned_arg():
     impossible; splitting them into `FLOORS` and `PLUGIN_ARGS` reopened it.
     """
     orphaned = set(FLOORS) - set(PLUGIN_ARGS)
-    assert not orphaned, (f"FLOORS keys {sorted(orphaned)} are not in PLUGIN_ARGS, so their floors are "
-                          f"never checked against any pin.")
+    assert not orphaned, (
+        f"FLOORS keys {sorted(orphaned)} are not in PLUGIN_ARGS, so their floors are "
+        f"never checked against any pin."
+    )
 
 
 def test_every_pinned_file_declares_both_plugins():
@@ -120,8 +123,10 @@ def test_plugin_pins_meet_every_floor():
     for path, line_number, name, value, _ in _all_pins():
         pinned = Version(value.lstrip("v"))
         for slug, (floor, why) in FLOORS[name].items():
-            assert pinned >= floor, (f"{path}:{line_number} pins {name}={value}, below the {slug} floor "
-                                     f"v{floor}: {why}.")
+            assert pinned >= floor, (
+                f"{path}:{line_number} pins {name}={value}, below the {slug} floor "
+                f"v{floor}: {why}."
+            )
 
 
 def test_every_plugin_pin_carries_the_renovate_marker():
@@ -165,4 +170,25 @@ def test_plugin_bumps_do_not_automerge():
             f"{RENOVATE_CONFIG} resolves automerge={resolved} for {dep_name}; expected False. "
             f"These plugins are pre-1.0 and wire-facing, and their users supply their own client "
             f"binary, so a bump can be a flag day (galoshes v0.4.0 was one). A human has to decide."
+        )
+
+
+# The prose each doc must carry, with the mux floor interpolated. Anchored on a
+# phrase rather than the bare version: CLAUDE.md names several versions, so a
+# substring test for "v0.4.0" alone would pass on an unrelated mention and bind
+# nothing. Same precedent as test_docs.py's MUST_KEEP.
+_MUX_FLOOR = FLOORS["GALOSHES_VERSION"]["mux"][0]
+WIRE_FLOOR_PHRASES = {
+    Path("docs/connecting.md"): f"galoshes v{_MUX_FLOOR} or newer",
+    Path("CLAUDE.md"): f"galoshes >= v{_MUX_FLOOR}",
+}
+
+
+def test_docs_state_the_galoshes_wire_floor():
+    """Both docs quote the same floor, so both are bound to it -- one alone leaves the other to drift."""
+    for path, phrase in WIRE_FLOOR_PHRASES.items():
+        assert phrase in (REPO_ROOT / path).read_text(), (
+            f"{path} does not contain {phrase!r}. Clients below the galoshes mux floor cannot connect "
+            f"to a server at or above it, and users supply their own binary, so every doc that states "
+            f"the floor must state the same one."
         )

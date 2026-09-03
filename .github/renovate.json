@@ -31,6 +31,11 @@
       "groupName": "libdns ecosystem"
     },
     {
+      "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one: it turned Mux.Cool off on its embedded ex-ray, and since `mux` also picks the server's dokodemo destination, an older client cannot reach a bumped server (see issue #239). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
+      "matchDepNames": ["bindreams/hole-ex-ray", "bindreams/hole-galoshes"],
+      "automerge": false
+    },
+    {
       "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. Renovate disallows extractVersion on custom managers, so it lives here.",
       "matchDepNames": ["bindreams/hole-ex-ray"],
       "extractVersion": "^releases/ex-ray/(?<version>v\\d+\\.\\d+\\.\\d+(?:-[\\w.]+)?)$"

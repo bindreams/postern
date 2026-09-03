@@ -14,6 +14,7 @@ network:
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -23,6 +24,8 @@ from packaging.version import Version
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Both images install both plugins; they talk to each other, so they must agree.
+RENOVATE_CONFIG = Path(".github/renovate.json")
+
 PINNED_FILES = (
     Path("shadowsocks/Dockerfile"),
     Path("portal/tests/e2e/ssclient.Dockerfile"),
@@ -131,3 +134,35 @@ def test_every_plugin_pin_carries_the_renovate_marker():
         f"These plugin pins lack the Renovate marker comment {RENOVATE_MARKER!r} on the "
         f"line directly above, so Renovate will not bump them:\n" + "\n".join(unmarked)
     )
+
+
+def test_plugin_bumps_do_not_automerge():
+    """A floor only rejects a downgrade; Renovate only ever bumps upward.
+
+    So the floor above cannot catch the case it exists for -- an upstream release
+    that re-splits the wire format, landing in the server image with nobody
+    looking. CI would be green: the e2e job builds client and server from the
+    same bumped pin, so it never stands up a skewed pair.
+    """
+    config = json.loads((REPO_ROOT / RENOVATE_CONFIG).read_text())
+    dep_names = sorted({
+        manager["depNameTemplate"]
+        for manager in config["customManagers"]
+        # Entry 0 captures depName from the file and has no template at all;
+        # entry 1 is Lego, which this rule must not cover.
+        if manager.get("depNameTemplate", "").startswith("bindreams/hole")
+    })
+    assert dep_names, f"{RENOVATE_CONFIG} has no bindreams/hole customManager; this test is watching nothing."
+
+    for dep_name in dep_names:
+        # packageRules are last-match-wins, so a later rule re-enabling automerge
+        # would undo an earlier `false`. Resolve the way Renovate does.
+        resolved = None
+        for rule in config["packageRules"]:
+            if dep_name in rule.get("matchDepNames", []) and "automerge" in rule:
+                resolved = rule["automerge"]
+        assert resolved is False, (
+            f"{RENOVATE_CONFIG} resolves automerge={resolved} for {dep_name}; expected False. "
+            f"These plugins are pre-1.0 and wire-facing, and their users supply their own client "
+            f"binary, so a bump can be a flag day (galoshes v0.4.0 was one). A human has to decide."
+        )

@@ -8,7 +8,7 @@ network:
 
   (a) every ex-ray pin agrees, and every galoshes pin agrees, across all stages
       of both Dockerfiles;
-  (b) every pin meets the ECH floor documented in CLAUDE.md;
+  (b) every pin meets every floor recorded in `FLOORS`;
   (c) every pin carries the Renovate marker comment, so a Renovate bump moves
       all of them together rather than leaving license stages behind.
 """
@@ -28,11 +28,25 @@ PINNED_FILES = (
     Path("portal/tests/e2e/ssclient.Dockerfile"),
 )
 
-# ECH (`ech` / `ech-doh` plugin opts) needs these minimums -- see the "Two plugin
-# binaries ship in the shadowsocks image" invariant in CLAUDE.md.
-ECH_FLOOR = {
-    "EX_RAY_VERSION": Version("0.2.0"),
-    "GALOSHES_VERSION": Version("0.3.0"),
+# The ARG names every pinned file must carry, one per plugin.
+PLUGIN_ARGS = ("EX_RAY_VERSION", "GALOSHES_VERSION")
+
+# ARG name -> slug -> (floor, why). Keyed by slug rather than held in a list so a
+# consumer names the floor it wants instead of picking one out by position or by
+# magnitude -- `FLOORS["GALOSHES_VERSION"]["mux"]` cannot silently become the ECH
+# floor when another is added. See the "Two plugin binaries ship in the
+# shadowsocks image" invariant in CLAUDE.md.
+ECH_WHY = "ECH (`ech`/`ech-doh` plugin opts) is silently ignored below this"
+FLOORS: dict[str, dict[str, tuple[Version, str]]] = {
+    "EX_RAY_VERSION": {
+        "ech": (Version("0.2.0"), ECH_WHY),
+    },
+    "GALOSHES_VERSION": {
+        "ech": (Version("0.3.0"), ECH_WHY),
+        "mux": (Version("0.4.0"),
+                "galoshes appends `mux=0` to its embedded ex-ray, and `mux` also picks the "
+                "server's dokodemo destination, so both ends must agree"),
+    },
 }
 
 # Exactly the comment .github/renovate.json's customManagers match on. Renovate's
@@ -62,17 +76,27 @@ def _all_pins() -> list[tuple[Path, int, str, str, bool]]:
 
 
 # tests ================================================================================================================
+def test_every_floor_names_a_pinned_arg():
+    """A floor keyed under an ARG no file pins is never looked up, so it enforces nothing.
+
+    `ECH_FLOOR` used to be both the floor map and the ARG list, which made this
+    impossible; splitting them into `FLOORS` and `PLUGIN_ARGS` reopened it.
+    """
+    orphaned = set(FLOORS) - set(PLUGIN_ARGS)
+    assert not orphaned, (f"FLOORS keys {sorted(orphaned)} are not in PLUGIN_ARGS, so their floors are "
+                          f"never checked against any pin.")
+
+
 def test_every_pinned_file_declares_both_plugins():
     """A file that stops pinning a plugin would make the agreement tests vacuous."""
     for path in PINNED_FILES:
         names = {name for _, name, _, _ in _pins(path)}
-        assert names == {"EX_RAY_VERSION", "GALOSHES_VERSION"
-                         }, (f"{path} pins {sorted(names)}; expected both EX_RAY_VERSION and GALOSHES_VERSION.")
+        assert names == set(PLUGIN_ARGS), (f"{path} pins {sorted(names)}; expected all of {sorted(PLUGIN_ARGS)}.")
 
 
 def test_plugin_pins_agree_across_stages_and_images():
     """Server and client images -- and every stage within them -- use one version per plugin."""
-    for arg_name in ECH_FLOOR:
+    for arg_name in PLUGIN_ARGS:
         seen: dict[str, list[str]] = {}
         for path, line_number, name, value, _ in _all_pins():
             if name == arg_name:
@@ -83,14 +107,18 @@ def test_plugin_pins_agree_across_stages_and_images():
         )
 
 
-def test_plugin_pins_meet_the_ech_floor():
-    """Below the floor, `ech`/`ech-doh` plugin opts are silently ignored."""
+def test_plugin_pins_meet_every_floor():
+    """Each floor marks a version below which something breaks silently rather than loudly.
+
+    The galoshes `mux` floor is a wire-format one: below it, galoshes leaves
+    Mux.Cool on for its embedded ex-ray, which re-splits the wire format between
+    client and server.
+    """
     for path, line_number, name, value, _ in _all_pins():
-        floor = ECH_FLOOR[name]
-        assert Version(value.lstrip("v")) >= floor, (
-            f"{path}:{line_number} pins {name}={value}, below the ECH floor v{floor}. "
-            f"ECH plugin opts would be silently ignored."
-        )
+        pinned = Version(value.lstrip("v"))
+        for slug, (floor, why) in FLOORS[name].items():
+            assert pinned >= floor, (f"{path}:{line_number} pins {name}={value}, below the {slug} floor "
+                                     f"v{floor}: {why}.")
 
 
 def test_every_plugin_pin_carries_the_renovate_marker():

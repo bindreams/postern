@@ -3,7 +3,7 @@
 FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG EX_RAY_VERSION=v0.2.0
+ARG EX_RAY_VERSION=v0.3.0
 # ex-ray installed under the wire-compatible `v2ray-plugin` name (see
 # shadowsocks/Dockerfile). Raw per-arch binary, not a tarball.
 RUN <<-EOF
@@ -23,7 +23,7 @@ EOF
 FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.3.1
+ARG GALOSHES_VERSION=v0.4.0
 RUN <<-EOF
 	set -eu
 	v="${GALOSHES_VERSION#v}"

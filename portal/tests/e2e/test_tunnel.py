@@ -137,7 +137,7 @@ def test_happy_path_tunnel_routes_traffic(portal_client, mailpit_client, fresh_u
     assert server["address"] == "postern.test"
     assert server["port"] == 443
     assert server["plugin"] == plugin
-    assert server["plugin_opts"].startswith("tls;fast-open;")
+    assert server["plugin_opts"].startswith("tls;path=")
     assert f"path=/t/{path_token}" in server["plugin_opts"]
     assert server["plugin_opts"].endswith(f"host=postern.test")
 

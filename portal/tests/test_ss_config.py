@@ -56,6 +56,42 @@ def test_server_config_per_plugin(plugin_name):
     assert cfg["log"]["level"] == 0
 
 
+def test_fastopen_is_server_only_bare_key():
+    """Regression test for issue #240.
+
+    ex-ray's SIP003 parser reads the presence key `fastOpen` (main.go:
+    parseBoolOption(opts, "fastOpen", fastOpen)); `fast-open` is only the name
+    of ex-ray's own CLI flag (config.go's flag.Bool("fast-open", ...)) and is
+    never looked up by the SIP003 parser, so it was silently discarded.
+
+    The fix is asymmetric by design, not an oversight:
+      - server_config emits a bare `fastOpen`: this only makes the listener
+        willing to accept a fast-open SYN and issue cookies -- purely
+        permissive, and currently inert (ex-ray never sets a nonzero
+        TfoQueueLength), but correct-by-spec and forward-compatible with an
+        upstream fix.
+      - client_config emits neither `fastOpen` nor `fast-open`: on this side
+        the option actively enables TCP_FASTOPEN_CONNECT on the end user's
+        own outbound WAN socket, and Postern authors this config on the
+        user's behalf, so it stays off by omission.
+      - `fastOpen=0`/`fastOpen=false` are FATAL to ex-ray's parser
+        (parseBoolOption rejects any present value other than the literal
+        "1"), so omitting the key is the *only* valid way to express "off" --
+        never "fix" the missing client-side key by adding an explicit
+        off-value.
+    """
+    conn = _make_connection()
+    server_opts = server_config(conn, DOMAIN)["servers"][0]["plugin_opts"]
+    client_opts = client_config(conn, DOMAIN)["servers"][0]["plugin_opts"]
+
+    assert "fastOpen" in server_opts
+    assert "fast-open" not in server_opts
+    assert "fastOpen" not in client_opts
+    assert "fast-open" not in client_opts
+    assert "fastOpen=" not in server_opts
+    assert "fastOpen=" not in client_opts
+
+
 # Client config ========================================================================================================
 @pytest.mark.parametrize("plugin_name", ["v2ray-plugin", "galoshes"])
 def test_client_config_per_plugin(plugin_name):
@@ -141,7 +177,7 @@ def test_connection_rejects_invalid_ech():
 def test_client_config_ech_never_is_explicit(plugin_name):
     conn = _make_connection().model_copy(update={"plugin": plugin_name, "ech": "never"})
     cfg = client_config(conn, DOMAIN)
-    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;path=/t/{conn.path_token};host={DOMAIN}"
     assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 
@@ -151,7 +187,7 @@ def test_client_config_ech_never_is_explicit(plugin_name):
 def test_client_config_ech_auto_always_append_opts(plugin_name, mode, doh_url):
     conn = _make_connection().model_copy(update={"plugin": plugin_name, "ech": mode})
     cfg = client_config(conn, DOMAIN, ech_doh_url=doh_url)
-    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;path=/t/{conn.path_token};host={DOMAIN}"
     assert cfg["servers"][0]["plugin_opts"] == f"{base};ech={mode};ech-doh={doh_url}"
 
 
@@ -159,14 +195,14 @@ def test_client_config_auto_without_doh_emits_nothing():
     """auto is fail-open: no DoH -> no ECH, not an error."""
     conn = _make_connection().model_copy(update={"ech": "auto"})
     cfg = client_config(conn, DOMAIN, ech_doh_url="")
-    assert cfg["servers"][0]["plugin_opts"] == f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    assert cfg["servers"][0]["plugin_opts"] == f"tls;path=/t/{conn.path_token};host={DOMAIN}"
 
 
 def test_client_config_never_ignores_available_doh():
     """never means never, even when a DoH URL is configured."""
     conn = _make_connection().model_copy(update={"ech": "never"})
     cfg = client_config(conn, DOMAIN, ech_doh_url="https://cloudflare-dns.com/dns-query")
-    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;path=/t/{conn.path_token};host={DOMAIN}"
     assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 
@@ -174,7 +210,7 @@ def test_client_config_never_ignores_malformed_doh():
     """never never touches ech_doh_url, so even a metachar-laden URL must not raise."""
     conn = _make_connection().model_copy(update={"ech": "never"})
     cfg = client_config(conn, DOMAIN, ech_doh_url="https://ex.test/dns;inject=x")
-    base = f"tls;fast-open;path=/t/{conn.path_token};host={DOMAIN}"
+    base = f"tls;path=/t/{conn.path_token};host={DOMAIN}"
     assert cfg["servers"][0]["plugin_opts"] == f"{base};ech=never"
 
 

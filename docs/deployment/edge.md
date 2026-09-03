@@ -170,7 +170,9 @@ independent of your front) — the DoH resolver the plugin uses to fetch the ECH
 config at connect time. Postern's part is to rewrite the **downloaded** client
 config's `plugin_opts` with `;ech=<mode>;ech-doh=<url>` so the tunnel plugin
 performs ECH. Requires plugin builds with ECH support (ex-ray ≥ v0.2.0,
-galoshes ≥ v0.3.0). Use `always` only once the front is confirmed serving ECH
+galoshes ≥ v0.3.0). Note the galoshes floor in practice is higher and is not
+about ECH: galoshes ≥ v0.4.0 must match the server image's own galoshes, or the
+tunnel does not come up at all (see [connecting](../connecting.md)). Use `always` only once the front is confirmed serving ECH
 (for Cloudflare: orange-clouded + zone ECH enabled) — otherwise those clients
 never connect.
 

@@ -82,10 +82,7 @@ def _all_pins() -> list[tuple[Path, int, str, str, bool]]:
 # tests ================================================================================================================
 def test_every_floor_names_a_pinned_arg():
     """A floor keyed under an ARG no file pins is never looked up, so it enforces nothing.
-
-    `ECH_FLOOR` used to be both the floor map and the ARG list, which made this
-    impossible; splitting them into `FLOORS` and `PLUGIN_ARGS` reopened it.
-    """
+"""
     orphaned = set(FLOORS) - set(PLUGIN_ARGS)
     assert not orphaned, (
         f"FLOORS keys {sorted(orphaned)} are not in PLUGIN_ARGS, so their floors are "
@@ -144,6 +141,10 @@ def test_every_plugin_pin_carries_the_renovate_marker():
 def test_plugin_bumps_do_not_automerge():
     """A floor only rejects a downgrade; Renovate only ever bumps upward.
 
+    Models `matchDepNames` only -- it does not resolve Renovate's other matchers,
+    nor any rule the `config:recommended` preset contributes. It is written to
+    fail loudly on what it cannot model rather than resolve past it.
+
     So the floor above cannot catch the case it exists for -- an upstream release
     that re-splits the wire format, landing in the server image with nobody
     looking. CI would be green: the e2e job builds client and server from the
@@ -153,24 +154,42 @@ def test_plugin_bumps_do_not_automerge():
     dep_names = sorted({
         manager["depNameTemplate"]
         for manager in config["customManagers"]
-        # Entry 0 captures depName from the file and has no template at all;
-        # entry 1 is Lego, which this rule must not cover.
+        # Excludes the gitrepo and Lego customManagers, which carry no
+        # bindreams/hole depNameTemplate.
         if manager.get("depNameTemplate", "").startswith("bindreams/hole")
     })
     assert dep_names, f"{RENOVATE_CONFIG} has no bindreams/hole customManager; this test is watching nothing."
 
+    rules = config["packageRules"]
     for dep_name in dep_names:
-        # packageRules are last-match-wins, so a later rule re-enabling automerge
-        # would undo an earlier `false`. Resolve the way Renovate does.
-        resolved = None
-        for rule in config["packageRules"]:
-            if dep_name in rule.get("matchDepNames", []) and "automerge" in rule:
-                resolved = rule["automerge"]
-        assert resolved is False, (
-            f"{RENOVATE_CONFIG} resolves automerge={resolved} for {dep_name}; expected False. "
-            f"These plugins are pre-1.0 and wire-facing, and their users supply their own client "
-            f"binary, so a bump can be a flag day (galoshes v0.4.0 was one). A human has to decide."
+        guards = [
+            index for index, rule in enumerate(rules)
+            if dep_name in rule.get("matchDepNames", []) and rule.get("automerge") is False
+        ]
+        assert guards, (
+            f"{RENOVATE_CONFIG} has no packageRule setting automerge=false for {dep_name}. These "
+            f"plugins are pre-1.0 and wire-facing, and their users supply their own client binary, "
+            f"so a bump can be a flag day (galoshes v0.4.0 was one). A human has to decide."
         )
+
+        # packageRules are last-match-wins, and a rule can select these deps through
+        # matchers this test does not model -- matchPackageNames (both managers set
+        # packageNameTemplate "bindreams/hole"), matchManagers, matchFileNames, or a
+        # rule the `extends` preset contributes. Rather than resolve as though those
+        # cannot exist, fail on any later automerge-setting rule not PROVABLY unable
+        # to match: Renovate ANDs the matchers within one rule, so a matchDepNames
+        # omitting this dep proves exclusion, and nothing else available here does.
+        for index, rule in enumerate(rules[guards[-1] + 1:], start=guards[-1] + 1):
+            if "automerge" not in rule:
+                continue
+            proven_excluded = "matchDepNames" in rule and dep_name not in rule["matchDepNames"]
+            assert proven_excluded, (
+                f"{RENOVATE_CONFIG} packageRules[{index}] sets automerge, comes after the "
+                f"automerge=false guard for {dep_name}, and this test cannot prove it does not match "
+                f"that dep. Renovate is last-match-wins, so it may silently restore unattended "
+                f"merging of a wire-breaking bump. Give it a matchDepNames omitting {dep_name}, or "
+                f"move it above the guard."
+            )
 
 
 # The prose each doc must carry, with the mux floor interpolated. Anchored on a
@@ -179,16 +198,19 @@ def test_plugin_bumps_do_not_automerge():
 # nothing. Same precedent as test_docs.py's MUST_KEEP.
 _MUX_FLOOR = FLOORS["GALOSHES_VERSION"]["mux"][0]
 WIRE_FLOOR_PHRASES = {
-    Path("docs/connecting.md"): f"galoshes v{_MUX_FLOOR} or newer",
+    Path("docs/connecting.md"): f"galoshes v{_MUX_FLOOR} changed how it frames traffic",
+    Path("docs/operations/cli.md"): f"galoshes v{_MUX_FLOOR} changed its framing",
+    Path("docs/development/architecture.md"): f"galoshes v{_MUX_FLOOR} and v0.3.x cannot interoperate",
+    Path("docs/deployment/edge.md"): f"galoshes ≥ v{_MUX_FLOOR} must match",
     Path("CLAUDE.md"): f"galoshes >= v{_MUX_FLOOR}",
 }
 
 
 def test_docs_state_the_galoshes_wire_floor():
-    """Both docs quote the same floor, so both are bound to it -- one alone leaves the other to drift."""
+    """Every doc quoting the floor is bound to it -- one left loose is one free to drift."""
     for path, phrase in WIRE_FLOOR_PHRASES.items():
         assert phrase in (REPO_ROOT / path).read_text(), (
-            f"{path} does not contain {phrase!r}. Clients below the galoshes mux floor cannot connect "
-            f"to a server at or above it, and users supply their own binary, so every doc that states "
-            f"the floor must state the same one."
+            f"{path} does not contain {phrase!r}. galoshes at or above the mux floor and galoshes "
+            f"below it cannot interoperate in EITHER direction, and users supply their own binary, so "
+            f"every doc naming that boundary must name the same one."
         )

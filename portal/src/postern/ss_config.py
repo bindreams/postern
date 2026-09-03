@@ -23,7 +23,7 @@ def generate_password() -> str:
 
 def server_config(conn: Connection, domain: str) -> dict:
     """Generate a shadowsocks server config for a connection."""
-    plugin_opts = f"server;fast-open;path=/t/{conn.path_token};host={domain}"
+    plugin_opts = f"server;fastOpen;path=/t/{conn.path_token};host={domain}"
 
     return {
         "servers": [{
@@ -75,7 +75,7 @@ def client_config(conn: Connection, domain: str, *, ech_doh_url: str = "") -> di
         local plugin socket. SIP003 plugins are TCP-only by spec; this is the
         SIP003u extension that lets galoshes carry UDP over its yamux transport.
     """
-    plugin_opts = f"tls;fast-open;path=/t/{conn.path_token};host={domain}"
+    plugin_opts = f"tls;path=/t/{conn.path_token};host={domain}"
     if conn.ech == "never":
         plugin_opts += ";ech=never"
     elif conn.ech in ("auto", "always"):

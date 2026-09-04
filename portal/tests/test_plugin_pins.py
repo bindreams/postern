@@ -8,12 +8,13 @@ network:
 
   (a) every ex-ray pin agrees, and every galoshes pin agrees, across all stages
       of both Dockerfiles;
-  (b) every pin meets the ECH floor documented in CLAUDE.md;
+  (b) every pin meets every floor recorded in `FLOORS`;
   (c) every pin carries the Renovate marker comment, so a Renovate bump moves
       all of them together rather than leaving license stages behind.
 """
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -23,16 +24,33 @@ from packaging.version import Version
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # Both images install both plugins; they talk to each other, so they must agree.
+RENOVATE_CONFIG = Path(".github/renovate.json")
+
 PINNED_FILES = (
     Path("shadowsocks/Dockerfile"),
     Path("portal/tests/e2e/ssclient.Dockerfile"),
 )
 
-# ECH (`ech` / `ech-doh` plugin opts) needs these minimums -- see the "Two plugin
-# binaries ship in the shadowsocks image" invariant in CLAUDE.md.
-ECH_FLOOR = {
-    "EX_RAY_VERSION": Version("0.2.0"),
-    "GALOSHES_VERSION": Version("0.3.0"),
+# The ARG names every pinned file must carry, one per plugin.
+PLUGIN_ARGS = ("EX_RAY_VERSION", "GALOSHES_VERSION")
+
+# ARG name -> slug -> (floor, why). Keyed by slug rather than held in a list so a
+# consumer names the floor it wants instead of picking one out by position or by
+# magnitude -- `FLOORS["GALOSHES_VERSION"]["mux"]` cannot silently become the ECH
+# floor when another is added. See the "Two plugin binaries ship in the
+# shadowsocks image" invariant in CLAUDE.md.
+ECH_WHY = "ECH (`ech`/`ech-doh` plugin opts) is silently ignored below this"
+FLOORS: dict[str, dict[str, tuple[Version, str]]] = {
+    "EX_RAY_VERSION": {
+        "ech": (Version("0.2.0"), ECH_WHY),
+    },
+    "GALOSHES_VERSION": {
+        "ech": (Version("0.3.0"), ECH_WHY),
+        "mux": (
+            Version("0.4.0"), "galoshes appends `mux=0` to its embedded ex-ray, and `mux` also picks the "
+            "server's dokodemo destination, so both ends must agree"
+        ),
+    },
 }
 
 # Exactly the comment .github/renovate.json's customManagers match on. Renovate's
@@ -62,17 +80,26 @@ def _all_pins() -> list[tuple[Path, int, str, str, bool]]:
 
 
 # tests ================================================================================================================
+def test_every_floor_names_a_pinned_arg():
+    """A floor keyed under an ARG no file pins is never looked up, so it enforces nothing.
+"""
+    orphaned = set(FLOORS) - set(PLUGIN_ARGS)
+    assert not orphaned, (
+        f"FLOORS keys {sorted(orphaned)} are not in PLUGIN_ARGS, so their floors are "
+        f"never checked against any pin."
+    )
+
+
 def test_every_pinned_file_declares_both_plugins():
     """A file that stops pinning a plugin would make the agreement tests vacuous."""
     for path in PINNED_FILES:
         names = {name for _, name, _, _ in _pins(path)}
-        assert names == {"EX_RAY_VERSION", "GALOSHES_VERSION"
-                         }, (f"{path} pins {sorted(names)}; expected both EX_RAY_VERSION and GALOSHES_VERSION.")
+        assert names == set(PLUGIN_ARGS), (f"{path} pins {sorted(names)}; expected all of {sorted(PLUGIN_ARGS)}.")
 
 
 def test_plugin_pins_agree_across_stages_and_images():
     """Server and client images -- and every stage within them -- use one version per plugin."""
-    for arg_name in ECH_FLOOR:
+    for arg_name in PLUGIN_ARGS:
         seen: dict[str, list[str]] = {}
         for path, line_number, name, value, _ in _all_pins():
             if name == arg_name:
@@ -83,14 +110,20 @@ def test_plugin_pins_agree_across_stages_and_images():
         )
 
 
-def test_plugin_pins_meet_the_ech_floor():
-    """Below the floor, `ech`/`ech-doh` plugin opts are silently ignored."""
+def test_plugin_pins_meet_every_floor():
+    """Each floor marks a version below which something breaks silently rather than loudly.
+
+    The galoshes `mux` floor is a wire-format one: below it, galoshes leaves
+    Mux.Cool on for its embedded ex-ray, which re-splits the wire format between
+    client and server.
+    """
     for path, line_number, name, value, _ in _all_pins():
-        floor = ECH_FLOOR[name]
-        assert Version(value.lstrip("v")) >= floor, (
-            f"{path}:{line_number} pins {name}={value}, below the ECH floor v{floor}. "
-            f"ECH plugin opts would be silently ignored."
-        )
+        pinned = Version(value.lstrip("v"))
+        for slug, (floor, why) in FLOORS[name].items():
+            assert pinned >= floor, (
+                f"{path}:{line_number} pins {name}={value}, below the {slug} floor "
+                f"v{floor}: {why}."
+            )
 
 
 def test_every_plugin_pin_carries_the_renovate_marker():
@@ -103,3 +136,81 @@ def test_every_plugin_pin_carries_the_renovate_marker():
         f"These plugin pins lack the Renovate marker comment {RENOVATE_MARKER!r} on the "
         f"line directly above, so Renovate will not bump them:\n" + "\n".join(unmarked)
     )
+
+
+def test_plugin_bumps_do_not_automerge():
+    """A floor only rejects a downgrade; Renovate only ever bumps upward.
+
+    Models `matchDepNames` only -- it does not resolve Renovate's other matchers,
+    nor any rule the `config:recommended` preset contributes. It is written to
+    fail loudly on what it cannot model rather than resolve past it.
+
+    So the floor above cannot catch the case it exists for -- an upstream release
+    that re-splits the wire format, landing in the server image with nobody
+    looking. CI would be green: the e2e job builds client and server from the
+    same bumped pin, so it never stands up a skewed pair.
+    """
+    config = json.loads((REPO_ROOT / RENOVATE_CONFIG).read_text())
+    dep_names = sorted({
+        manager["depNameTemplate"]
+        for manager in config["customManagers"]
+        # Excludes the gitrepo and Lego customManagers, which carry no
+        # bindreams/hole depNameTemplate.
+        if manager.get("depNameTemplate", "").startswith("bindreams/hole")
+    })
+    assert dep_names, f"{RENOVATE_CONFIG} has no bindreams/hole customManager; this test is watching nothing."
+
+    rules = config["packageRules"]
+    for dep_name in dep_names:
+        guards = [
+            index for index, rule in enumerate(rules)
+            if dep_name in rule.get("matchDepNames", []) and rule.get("automerge") is False
+        ]
+        assert guards, (
+            f"{RENOVATE_CONFIG} has no packageRule setting automerge=false for {dep_name}. These "
+            f"plugins are pre-1.0 and wire-facing, and their users supply their own client binary, "
+            f"so a bump can be a flag day (galoshes v0.4.0 was one). A human has to decide."
+        )
+
+        # packageRules are last-match-wins, and a rule can select these deps through
+        # matchers this test does not model -- matchPackageNames (both managers set
+        # packageNameTemplate "bindreams/hole"), matchManagers, matchFileNames, or a
+        # rule the `extends` preset contributes. Rather than resolve as though those
+        # cannot exist, fail on any later automerge-setting rule not PROVABLY unable
+        # to match: Renovate ANDs the matchers within one rule, so a matchDepNames
+        # omitting this dep proves exclusion, and nothing else available here does.
+        for index, rule in enumerate(rules[guards[-1] + 1:], start=guards[-1] + 1):
+            if "automerge" not in rule:
+                continue
+            proven_excluded = "matchDepNames" in rule and dep_name not in rule["matchDepNames"]
+            assert proven_excluded, (
+                f"{RENOVATE_CONFIG} packageRules[{index}] sets automerge, comes after the "
+                f"automerge=false guard for {dep_name}, and this test cannot prove it does not match "
+                f"that dep. Renovate is last-match-wins, so it may silently restore unattended "
+                f"merging of a wire-breaking bump. Give it a matchDepNames omitting {dep_name}, or "
+                f"move it above the guard."
+            )
+
+
+# The prose each doc must carry, with the mux floor interpolated. Anchored on a
+# phrase rather than the bare version: CLAUDE.md names several versions, so a
+# substring test for "v0.4.0" alone would pass on an unrelated mention and bind
+# nothing. Same precedent as test_docs.py's MUST_KEEP.
+_MUX_FLOOR = FLOORS["GALOSHES_VERSION"]["mux"][0]
+WIRE_FLOOR_PHRASES = {
+    Path("docs/connecting.md"): f"galoshes v{_MUX_FLOOR} changed how it frames traffic",
+    Path("docs/operations/cli.md"): f"galoshes v{_MUX_FLOOR} changed its framing",
+    Path("docs/development/architecture.md"): f"galoshes v{_MUX_FLOOR} and v0.3.x cannot interoperate",
+    Path("docs/deployment/edge.md"): f"galoshes ≥ v{_MUX_FLOOR} must match",
+    Path("CLAUDE.md"): f"galoshes >= v{_MUX_FLOOR}",
+}
+
+
+def test_docs_state_the_galoshes_wire_floor():
+    """Every doc quoting the floor is bound to it -- one left loose is one free to drift."""
+    for path, phrase in WIRE_FLOOR_PHRASES.items():
+        assert phrase in (REPO_ROOT / path).read_text(), (
+            f"{path} does not contain {phrase!r}. galoshes at or above the mux floor and galoshes "
+            f"below it cannot interoperate in EITHER direction, and users supply their own binary, so "
+            f"every doc naming that boundary must name the same one."
+        )

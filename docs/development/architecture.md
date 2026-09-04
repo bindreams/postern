@@ -136,7 +136,7 @@ Schema changes are append-only migrations. A migration is immutable once shipped
 The shadowsocks image ships two SIP003 plugin binaries, both downloaded at build time from [bindreams/hole](https://github.com/bindreams/hole) release assets and verified against pinned SHA256 checksums:
 
 - **ex-ray**, installed at `/usr/local/bin/v2ray-plugin`. It is a wire-compatible v2ray-core SIP003 shim published under the historical `v2ray-plugin` name, so existing client configs keep working unchanged.
-- **galoshes**, installed at `/usr/local/bin/galoshes`. It adds UDP transport via yamux multiplexing and vendors ex-ray internally, so it accepts the same `plugin_opts` string.
+- **galoshes**, installed at `/usr/local/bin/galoshes`. It adds UDP transport via yamux multiplexing and vendors ex-ray internally, so it accepts the same `plugin_opts` string Postern renders for `v2ray-plugin`. It does not forward that string untouched, though: it appends `mux=0` before handing it to the embedded ex-ray. `mux` also selects the server's dokodemo destination, so both ends must agree — galoshes v0.4.0 and v0.3.x cannot interoperate in either direction.
 
 Each connection stores a `plugin` field (`v2ray-plugin` or `galoshes`, chosen at `postern connection add --plugin ...`); `ssserver` looks the binary up by that name from the rendered `SS_CONFIG` JSON. Removing either binary from the image breaks every connection that selected it.
 

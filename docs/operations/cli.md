@@ -36,7 +36,7 @@ Each connection is one tunnel: a 24-hex-character path token, a random password,
 
 `postern connection add USER_EMAIL LABEL` — creates a connection for an existing user (exits 1 if the email is unknown), generating the path token and password. Triggers a reconcile, which starts the tunnel container.
 
-`--plugin` selects the SIP003 plugin: `v2ray-plugin` (default) or `galoshes`, which adds UDP support via yamux:
+`--plugin` selects the SIP003 plugin: `v2ray-plugin` (default) or `galoshes`, which adds UDP support via yamux. galoshes v0.4.0 changed its framing and the two sides must match, so upgrade the server image first, then tell users to upgrade — not the other way round (see [connecting](../connecting.md)):
 
 ```bash
 docker compose exec portal postern connection add alice@example.com "phone" --plugin galoshes

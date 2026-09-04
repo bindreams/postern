@@ -35,7 +35,7 @@ The file works with **sslocal**, the client program from the [shadowsocks-rust](
 Your operator chose one of two plugins for each connection. Ask them which one yours uses:
 
 - **v2ray-plugin** — works with the standard [v2ray-plugin](https://github.com/shadowsocks/v2ray-plugin) binary, which also ships inside many Shadowsocks client bundles.
-- **galoshes** — download the galoshes binary from [bindreams/hole releases](https://github.com/bindreams/hole/releases). Unlike v2ray-plugin, galoshes also carries UDP traffic, which some apps and games need.
+- **galoshes** — download the galoshes binary from [bindreams/hole releases](https://github.com/bindreams/hole/releases). Unlike v2ray-plugin, galoshes also carries UDP traffic, which some apps and games need. Your copy has to match your server: galoshes v0.4.0 changed how it frames traffic, and the two sides cannot talk to each other across that change — in either direction. So a newer binary is not automatically the safer choice. If your tunnel works today, leave it alone until your operator tells you they have upgraded; if it stopped working right after you replaced the binary, you are on the wrong side of that change.
 ```
 
 Put the plugin program somewhere your system searches for programs (on `PATH`), or simply in the same folder as sslocal.

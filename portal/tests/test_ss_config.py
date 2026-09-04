@@ -57,27 +57,11 @@ def test_server_config_per_plugin(plugin_name):
 
 
 def test_fastopen_is_server_only_bare_key():
-    """Regression test for issue #240.
+    """`fastOpen` is spelled bare and emitted server-side only; the client omits it
+    entirely -- see CLAUDE.md's `ss_config.py` invariants bullet for why.
 
-    ex-ray's SIP003 parser only reads the bare key `fastOpen`; `fast-open` (with
-    a hyphen) is merely the name of ex-ray's own CLI flag and is never looked
-    up by the SIP003 parser.
-
-    The fix is asymmetric by design, not an oversight:
-      - server_config emits a bare `fastOpen`: this only makes the listener
-        willing to accept a fast-open SYN and issue cookies -- purely
-        permissive, and currently inert (ex-ray never sets a nonzero
-        TfoQueueLength), but correct-by-spec and forward-compatible with an
-        upstream fix.
-      - client_config emits neither `fastOpen` nor `fast-open`: on this side
-        the option actively enables TCP_FASTOPEN_CONNECT on the end user's
-        own outbound WAN socket, and Postern authors this config on the
-        user's behalf, so it stays off by omission.
-      - `fastOpen=0`/`fastOpen=false` are FATAL to ex-ray's parser
-        (parseBoolOption rejects any present value other than the literal
-        "1"), so omitting the key is the *only* valid way to express "off" --
-        never "fix" the missing client-side key by adding an explicit
-        off-value.
+    Do not "fix" the absent client key with `fastOpen=0`/`false`: ex-ray's parser
+    treats any present value but the literal "1" as fatal, not as off.
     """
     conn = _make_connection()
     server_opts = server_config(conn, DOMAIN)["servers"][0]["plugin_opts"]

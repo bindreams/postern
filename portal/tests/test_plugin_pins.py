@@ -138,6 +138,25 @@ def test_every_plugin_pin_carries_the_renovate_marker():
     )
 
 
+def _matchdepnames_verdict(entries: list[str], dep_name: str) -> str:
+    """Classify what `matchDepNames` entries prove about `dep_name`.
+
+    Renovate's matchDepNames is not a list of exact strings: an entry may be a
+    glob (`bindreams/hole-*`), a `/regex/`, or a `!`-negation, and glob matching
+    is case-insensitive. Treating entries as Python literals silently mis-resolves
+    every one of those forms, so anything not provably literal is "unknown" and
+    the caller must fail rather than resolve past it.
+
+    Returns "covers", "excludes", or "unknown".
+    """
+    literals = []
+    for entry in entries:
+        if "*" in entry or entry.startswith("!") or (entry.startswith("/") and entry.endswith("/")):
+            return "unknown"
+        literals.append(entry.casefold())
+    return "covers" if dep_name.casefold() in literals else "excludes"
+
+
 def test_plugin_bumps_do_not_automerge():
     """A floor only rejects a downgrade; Renovate only ever bumps upward.
 
@@ -163,8 +182,8 @@ def test_plugin_bumps_do_not_automerge():
     rules = config["packageRules"]
     for dep_name in dep_names:
         guards = [
-            index for index, rule in enumerate(rules)
-            if dep_name in rule.get("matchDepNames", []) and rule.get("automerge") is False
+            index for index, rule in enumerate(rules) if rule.get("automerge") is False
+            and _matchdepnames_verdict(rule.get("matchDepNames", []), dep_name) != "excludes"
         ]
         assert guards, (
             f"{RENOVATE_CONFIG} has no packageRule setting automerge=false for {dep_name}. These "
@@ -182,7 +201,9 @@ def test_plugin_bumps_do_not_automerge():
         for index, rule in enumerate(rules[guards[-1] + 1:], start=guards[-1] + 1):
             if "automerge" not in rule:
                 continue
-            proven_excluded = "matchDepNames" in rule and dep_name not in rule["matchDepNames"]
+            proven_excluded = (
+                "matchDepNames" in rule and _matchdepnames_verdict(rule["matchDepNames"], dep_name) == "excludes"
+            )
             assert proven_excluded, (
                 f"{RENOVATE_CONFIG} packageRules[{index}] sets automerge, comes after the "
                 f"automerge=false guard for {dep_name}, and this test cannot prove it does not match "

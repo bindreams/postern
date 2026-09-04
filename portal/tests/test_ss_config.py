@@ -87,6 +87,10 @@ def test_fastopen_is_server_only_bare_key():
     assert "fast-open" not in server_opts
     assert "fastOpen" not in client_opts
     assert "fast-open" not in client_opts
+    # Pin the BARE form specifically. `fastOpen=true` would satisfy the presence
+    # assertion above and still abort ex-ray at startup, since parseBoolOption
+    # rejects every present value but the literal "1".
+    assert ";fastOpen;" in server_opts
     assert "fastOpen=" not in server_opts
     assert "fastOpen=" not in client_opts
 

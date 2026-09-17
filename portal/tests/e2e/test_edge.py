@@ -28,7 +28,7 @@ from __future__ import annotations
 import socket
 import ssl
 
-from ._edge_helpers import EDGE_BASE_URL
+from ._edge_helpers import EDGE_BASE_URL, hard_restart_nginx
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
 _CF_HEADER = "CF-Connecting-IP"
@@ -89,6 +89,43 @@ def test_real_ip_recovered_with_seeded_ranges(e2e_certs, edge_stack, edge_client
         f"set_real_ip_from 0.0.0.0/0; "
         f"body excerpt: {r.text[:600]!r}"
     )
+
+
+# Restart-path tests ===================================================================================================
+
+
+def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
+    e2e_certs, edge_stack, edge_client_certs, seeded_edge_ranges
+):
+    """A pidfile left by a killed container must not take the next one down (issue #245).
+
+    ``seeded_edge_ranges`` is load-bearing, not incidental: the entrypoint's edge
+    reconcile only ran when ``$EDGE_DIR/*.conf`` existed, so an empty volume takes
+    the warn branch and never reaches the code this guards.
+
+    The container is SIGKILLed rather than ``docker restart``ed because a graceful
+    stop lets nginx unlink its own pidfile -- the state that made this bug
+    invisible to every restart the suite already did.  With the pidfile left
+    behind, ``nginx -s reload`` would SIGHUP the pid it names, which through
+    ``exec nginx`` is the entrypoint shell's own, killing the container 129.
+    """
+    import httpx
+
+    stale_pid = hard_restart_nginx()
+    # Doubles as the only observation anywhere that nginx really writes the path the
+    # entrypoint clears: a unit test can only compare two string literals.
+    assert stale_pid.isdigit(), (
+        f"precondition failed: the killed container left no usable /run/nginx.pid "
+        f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
+        f"that nginx still writes the pidfile the entrypoint clears"
+    )
+
+    # Healthy only proves the container is up; prove it is actually serving TLS.
+    client_cert, client_key = edge_client_certs
+    ctx = _make_ssl_ctx(e2e_certs, client_cert, client_key)
+    with httpx.Client(base_url=EDGE_BASE_URL, verify=ctx, follow_redirects=False) as client:
+        r = client.get("/login")
+    assert r.status_code == 200, f"expected 200 from /login after restart; got {r.status_code}"
 
 
 # mTLS enforcement tests ===============================================================================================

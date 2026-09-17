@@ -155,6 +155,8 @@ def hard_restart_nginx(*, timeout: float = 60.0) -> str:
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline and _container_state()[0] != "exited":
         time.sleep(0.2)
+    status, _ = _container_state()
+    assert status == "exited", f"container did not stop after SIGKILL (status={status!r})"
 
     stale_pid = _read_stale_pidfile()
     run(["docker", "start", EDGE_NGINX_CONTAINER])
@@ -171,16 +173,35 @@ def hard_restart_nginx(*, timeout: float = 60.0) -> str:
 
 
 def current_master_pid() -> str:
-    """The pid nginx recorded for itself in the running container.
+    """The pid nginx recorded for itself in the running container, or "" if absent.
 
     Because the entrypoint ends in ``exec nginx``, this is also the pid the
     entrypoint SHELL held. Comparing it against the pid a killed container left
     behind is what proves a restart actually re-collides -- without that, an
     ungraceful-restart test only proves some file survived, and would pass against
     a broken build on any runtime whose pid numbering happens not to line up.
+
+    Deliberately NOT ``check=True``: a missing pidfile is the exact symptom of the
+    regression these tests exist to catch, and raising CalledProcessError here would
+    replace the caller's diagnostic with ``cat: can't open``.
     """
-    result = run(["docker", "exec", EDGE_NGINX_CONTAINER, "cat", "/run/nginx.pid"])
-    return result.stdout.strip()
+    result = subprocess.run(
+        ["docker", "exec", EDGE_NGINX_CONTAINER, "cat", "/run/nginx.pid"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def logs_since_last_start() -> str:
+    """Container logs from the current run only, so a restart's output is isolated."""
+    started = run(["docker", "inspect", "--format", "{{.State.StartedAt}}", EDGE_NGINX_CONTAINER])
+    result = subprocess.run(
+        ["docker", "logs", "--since", started.stdout.strip(), EDGE_NGINX_CONTAINER],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout + result.stderr
 
 
 def remove_edge_ranges() -> None:

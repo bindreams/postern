@@ -14,39 +14,51 @@ set -eu
 # shellcheck source=/dev/null  # installed in the image at build time; not resolvable at lint time
 . /usr/local/bin/render.sh
 # shellcheck source=/dev/null
+. /usr/local/bin/pidfile.sh
+# shellcheck source=/dev/null
 . /usr/local/bin/edge.sh
+
+# Refuse to run a second time inside a container that is already serving. Every
+# step below assumes it owns the container: it re-renders /etc/nginx underneath the
+# live master, starts a SECOND reload loop and arms a SECOND inotifyd (both of which
+# outlive this script and double every subsequent reload), and clears the pidfile
+# the running master depends on -- after which nginx keeps serving and keeps
+# reporting healthy while every `nginx -s reload` fails open(), so the next Let's
+# Encrypt rotation silently never lands. `docker compose exec nginx
+# /usr/local/bin/nginx-entrypoint.sh` is an ordinary way to debug a render problem,
+# and it used to be harmless. Exit 0: nginx is running, which is the state the
+# caller wanted; the message says why nothing happened.
+running_master="$(nginx_master_pid || :)"
+if [ -n "$running_master" ]; then
+	echo "entrypoint: nginx master already running as pid $running_master; refusing to re-run inside a live container (nothing was changed)" >&2
+	exit 0
+fi
 
 # render_templates returns non-zero on missing DOMAIN; set -e makes that fatal
 # (intended -- nginx must not start with an unrendered config). Do not add `|| true`.
 render_templates
 
-# /run is the image's writable layer, not a tmpfs, so a pidfile left behind by an
-# ungraceful stop is still here naming a pid -- and the `exec` below made that pid
-# this script's own, which a restarted container hands back to the new entrypoint.
-# A reload racing nginx's startup then SIGHUPs THIS shell and kills the container
-# 129 (#245; full mechanism in edge.sh's comment on the watch arm).
+# Past the guard above, any pidfile here is stale by definition. See pidfile.sh for
+# why it outlives the container and why clearing it is what keeps a reload racing
+# nginx's startup from SIGHUPing this shell (#245).
 #
-# Skipped when that pid is a live nginx MASTER, which means this script is being
-# re-run inside an already-serving container (an operator debugging by hand).
-# Removing the file there orphans the running master: it keeps serving and keeps
-# reporting healthy, while BOTH reload paths -- the edge watcher and the 6h
-# cert-renewal loop above -- fail open() forever, so the next Let's Encrypt
-# rotation silently never lands. Liveness alone is the WRONG test: at a genuine
-# boot the stale pid is this very shell, and is very much alive. Only "is that pid
-# an nginx master" separates the two, hence the cmdline probe.
-#
-# Best-effort otherwise: absence is hygiene, not a startup precondition, and nginx
-# rewrites the file anyway -- an unlink failure (an unwritable /run after a uid
-# change, say) must not become the new reason nginx never boots.
-# Residual: a reload landing between nginx's config read and its pidfile write now
-# fails ENOENT instead of succeeding by accident, deferring that one range publish
-# to the 6h loop. The pre-`exec` half of that same window was fatal.
-stale_pid="$(cat /run/nginx.pid 2>/dev/null || :)"
-if [ -z "$stale_pid" ] || ! grep -qsa 'master process' "/proc/$stale_pid/cmdline"; then
-	rm -f /run/nginx.pid 2>/dev/null || :
-fi
+# Residual: nginx calls ngx_create_pidfile() before it rewrites its argv to
+# `nginx: master process ...`, so there is a sub-millisecond window at master
+# startup where the pidfile exists but the probe above cannot recognise the owner.
+# A re-run landing inside it would clear a live master's pidfile. Measured at 0 hits
+# in 120 launches against a hot-spin sampler -- below shell resolution -- so it is
+# recorded, not defended.
+clear_stale_pidfile
 
-(while true; do sleep 21600; nginx -s reload; done) &
+# `|| true` is load-bearing: `set -e` applies inside this subshell, so without it a
+# single failed reload terminates the loop for the life of the container, silently.
+# That would strand the TLS cert renewal this loop exists for, and would also void
+# the "6h loop is the bounded backstop" promise edge.sh makes for a rejected edge
+# config. Verified: `set -eu` kills the subshell on its first failing iteration.
+(while true; do
+	sleep 21600
+	nginx -s reload || echo "entrypoint: 6h reload failed; retrying in 6h" >&2
+done) &
 
 # Edge real-IP / Cloudflare origin-pull watcher. No-op unless EDGE_PROFILE=
 # cloudflare; FATAL (exit 1) under that profile if the image lacks inotifyd, so a

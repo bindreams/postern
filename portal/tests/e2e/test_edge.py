@@ -33,6 +33,7 @@ from ._edge_helpers import (
     EDGE_NGINX_CONTAINER,
     current_master_pid,
     hard_restart_nginx,
+    logs_since_last_start,
 )
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
@@ -102,17 +103,19 @@ def test_real_ip_recovered_with_seeded_ranges(e2e_certs, edge_stack, edge_client
 def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     e2e_certs, edge_stack, edge_client_certs, seeded_edge_ranges
 ):
-    """A pidfile left by a killed container must not take the next one down (issue #245).
+    """A pidfile left by a killed container must not take the next one down (#245).
 
-    ``seeded_edge_ranges`` is load-bearing, not incidental: the entrypoint's edge
-    reconcile only ran when ``$EDGE_DIR/*.conf`` existed, so an empty volume takes
-    the warn branch and never reaches the code this guards.
+    SIGKILL rather than ``docker restart``: a graceful stop lets nginx unlink its
+    own pidfile, which is why every restart this suite already did stayed green
+    through the bug.
 
-    The container is SIGKILLed rather than ``docker restart``ed because a graceful
-    stop lets nginx unlink its own pidfile -- the state that made this bug
-    invisible to every restart the suite already did.  With the pidfile left
-    behind, ``nginx -s reload`` would SIGHUP the pid it names, which through
-    ``exec nginx`` is the entrypoint shell's own, killing the container 129.
+    Coming back healthy is necessary but NOT sufficient, and asserting only that
+    is how this test was vacuous at first: with the boot reconcile gone, nothing
+    signals during a quiet restart, so a build with the clear deleted also comes
+    back fine.  What makes the clear observable is the entrypoint reporting which
+    arm it took -- asserted below.  That is deterministic; the alternative is
+    racing a range publisher against startup, which reproduces the crash only
+    about one restart in twenty.
     """
     import httpx
 
@@ -127,10 +130,20 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     # Surviving is only meaningful if the stale pid is the one the new entrypoint
     # actually takes. If pid numbering ever stops colliding, this test would pass
     # against a broken build, so assert the collision rather than assume it.
-    assert stale_pid == current_master_pid(), (
+    master_pid = current_master_pid()
+    assert stale_pid == master_pid, (
         f"precondition failed: stale pid {stale_pid!r} is not the pid this runtime "
-        f"hands the new entrypoint ({current_master_pid()!r}), so a restart no longer "
+        f"hands the new entrypoint ({master_pid!r}), so a restart no longer "
         f"reproduces issue #245 here and this test proves nothing"
+    )
+
+    # The assertion that actually pins the fix: the entrypoint must report having
+    # cleared the pidfile the killed container left. Without this the test passes
+    # against a build with the clear removed entirely.
+    assert "cleared stale" in logs_since_last_start(), (
+        "the entrypoint did not report clearing the stale pidfile on this boot, so "
+        "the pidfile left by the killed container was carried into the new one -- "
+        "a reload racing startup would SIGHUP the entrypoint (issue #245)"
     )
 
     # Healthy only proves the container is up; prove it is actually serving TLS.
@@ -160,11 +173,19 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
     pid_before = current_master_pid()
     assert pid_before.isdigit(), f"no live pidfile to begin with: {pid_before!r}"
 
-    # Expected to fail at bind(); what matters is what it does to /run/nginx.pid.
-    subprocess.run(
+    result = subprocess.run(
         ["docker", "exec", EDGE_NGINX_CONTAINER, "/usr/local/bin/nginx-entrypoint.sh"],
         capture_output=True,
         text=True,
+        timeout=60,
+    )
+
+    # Prove the guard was actually reached. Without this the test passes when the
+    # script aborts earlier -- render_templates is a `set -e` abort point -- which
+    # would leave the branch under test never executed and the suite still green.
+    assert "already running" in result.stderr, (
+        f"the entrypoint did not reach its already-running guard; it exited "
+        f"{result.returncode} with stderr: {result.stderr[:400]!r}"
     )
 
     assert current_master_pid() == pid_before, (
@@ -172,6 +193,17 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
         "master's pidfile; nginx still serves but every reload path (edge watcher "
         "and the 6h cert-renewal loop) is silently dead from here on"
     )
+
+    # The guard should also have stopped the re-run before it could double the
+    # reload machinery. Two inotifyd watchers means every future range publish
+    # fires two reloads, and the duplicates outlive this test's container.
+    procs = subprocess.run(
+        ["docker", "exec", EDGE_NGINX_CONTAINER, "sh", "-c", "ps -eo args"],
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert procs.count("inotifyd") <= 1, f"re-run leaked a second watcher:\n{procs}"
+    assert procs.count("sleep 21600") <= 1, f"re-run leaked a second reload loop:\n{procs}"
 
 
 # mTLS enforcement tests ===============================================================================================

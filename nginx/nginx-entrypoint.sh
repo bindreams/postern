@@ -20,16 +20,18 @@ set -eu
 # (intended -- nginx must not start with an unrendered config). Do not add `|| true`.
 render_templates
 
-# nginx's pidfile sits in the container's WRITABLE LAYER, not on a tmpfs, so a
-# pidfile the previous container process left behind (host reboot, SIGKILL --
-# a graceful stop unlinks it) is still here and still names a pid. Worse, the
-# `exec` below makes the master's pid this script's own, and a restarted
-# container's fresh pid namespace hands that same number back to the new
-# entrypoint -- so any `nginx -s reload` issued before nginx writes a fresh
-# pidfile SIGHUPs THIS shell, which has no trap, killing the container 129.
-# Clearing it makes the container's state self-consistent on restart whoever
-# holds that pid now; nginx writes its own the moment it starts. See issue #245.
-rm -f /run/nginx.pid
+# /run is the image's writable layer, not a tmpfs, so a pidfile left behind by an
+# ungraceful stop is still here naming a pid -- and the `exec` below made that pid
+# this script's own, which a restarted container hands back to the new entrypoint.
+# A reload racing nginx's startup then SIGHUPs THIS shell and kills the container
+# 129 (#245; full mechanism in edge.sh's comment on the watch arm).
+# Best-effort by design: absence is hygiene, not a startup precondition, and nginx
+# rewrites the file anyway -- an unlink failure (an unwritable /run after a uid
+# change, say) must not become the new reason nginx never boots.
+# Residual: a reload landing between nginx's config read and its pidfile write now
+# fails ENOENT instead of succeeding by accident, deferring that one range publish
+# to the 6h loop. The pre-`exec` half of that same window was fatal.
+rm -f /run/nginx.pid 2>/dev/null || :
 
 (while true; do sleep 21600; nginx -s reload; done) &
 

@@ -39,8 +39,10 @@ edge_reload() {
 	return 0
 }
 
-# edge_start_watcher: arm the inotifyd watch + run one initial reconcile. The
-# entrypoint calls it as `edge_start_watcher || exit 1`.
+# edge_start_watcher: arm the inotifyd watch. Does NOT reconcile what is already
+# on disk -- nginx's own startup config read applies that; see the comment at the
+# bottom of this function for why reloading here is fatal rather than redundant.
+# The entrypoint calls it as `edge_start_watcher || exit 1`.
 edge_start_watcher() {
 	[ "${EDGE_PROFILE:-none}" = "cloudflare" ] || return 0
 

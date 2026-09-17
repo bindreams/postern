@@ -108,14 +108,12 @@ def test_edge_initial_reconcile_does_not_reload_a_not_yet_started_nginx(tmp_path
 
 
 def test_edge_initial_reconcile_does_not_signal_the_stale_pidfile(tmp_path):
-    """A reconcile that reloads at entrypoint time SIGHUPs the entrypoint itself (issue #245).
+    """A reconcile that reloads at entrypoint time SIGHUPs the entrypoint itself (#245).
 
-    `nginx -s reload` is a blind kill(SIGHUP) on whatever pid /run/nginx.pid names.
-    That file lives in the container's writable layer, so it outlives the container
-    process; and because the entrypoint ends in `exec nginx`, the pid it records is
-    the entrypoint SHELL's own. A restarted container's fresh pid namespace hands
-    that same number back to the new shell, so the reload kills the shell -- which
-    has no SIGHUP trap -- and docker-init reports 128+1=129 forever.
+    Drives the real failure rather than asserting the absence of a call: the pidfile
+    is seeded with the driver shell's own pid, which is the state `exec nginx` leaves
+    behind for the next container. See edge.sh's comment on the watch arm for the
+    pid-namespace mechanism.
     """
     edge_dir = tmp_path / "edge"
     edge_dir.mkdir()
@@ -208,6 +206,14 @@ def test_entrypoint_clears_the_stale_pidfile_before_anything_can_signal_it():
     # makes that harmless whoever holds the pid now.
     ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
     assert "rm -f /run/nginx.pid" in ep
+    # A clear that names a different file than nginx writes is a silent no-op, and
+    # the base image's compile-time --pid-path resolves through a /var/run symlink.
+    # Pin both sides to one literal so a base-image bump cannot decouple them.
+    conf_tmpl = (_REPO_ROOT / "nginx" / "etc" / "nginx.conf.tmpl").read_text()
+    assert "pid /run/nginx.pid;" in conf_tmpl, (
+        "nginx.conf.tmpl must state the pidfile path the entrypoint clears; "
+        "without it the path is the base image's default and the clear can miss"
+    )
     reload_loop = "(while true; do sleep 21600; nginx -s reload; done) &"  # anchor on the code, not prose
     assert reload_loop in ep
     assert ep.index("rm -f /run/nginx.pid") < ep.index(reload_loop)

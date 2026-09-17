@@ -28,7 +28,12 @@ from __future__ import annotations
 import socket
 import ssl
 
-from ._edge_helpers import EDGE_BASE_URL, hard_restart_nginx
+from ._edge_helpers import (
+    EDGE_BASE_URL,
+    EDGE_NGINX_CONTAINER,
+    current_master_pid,
+    hard_restart_nginx,
+)
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
 _CF_HEADER = "CF-Connecting-IP"
@@ -119,6 +124,14 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
         f"that nginx still writes the pidfile the entrypoint clears"
     )
+    # Surviving is only meaningful if the stale pid is the one the new entrypoint
+    # actually takes. If pid numbering ever stops colliding, this test would pass
+    # against a broken build, so assert the collision rather than assume it.
+    assert stale_pid == current_master_pid(), (
+        f"precondition failed: stale pid {stale_pid!r} is not the pid this runtime "
+        f"hands the new entrypoint ({current_master_pid()!r}), so a restart no longer "
+        f"reproduces issue #245 here and this test proves nothing"
+    )
 
     # Healthy only proves the container is up; prove it is actually serving TLS.
     client_cert, client_key = edge_client_certs
@@ -126,6 +139,39 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     with httpx.Client(base_url=EDGE_BASE_URL, verify=ctx, follow_redirects=False) as client:
         r = client.get("/login")
     assert r.status_code == 200, f"expected 200 from /login after restart; got {r.status_code}"
+
+
+def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
+    """Clearing the stale pidfile must not fire against an nginx that is already up.
+
+    An operator debugging by hand (``docker compose exec nginx
+    /usr/local/bin/nginx-entrypoint.sh``) re-runs this script inside a serving
+    container. It fails at ``bind()``, which looks harmless -- but if the clear ran
+    it would unlink the live master's pidfile. nginx keeps serving and keeps
+    reporting healthy, while every ``nginx -s reload`` afterwards fails open(): the
+    edge watcher AND the 6h loop that picks up renewed TLS certs. The symptom would
+    be an expired certificate weeks later, with nothing linking it back.
+
+    Liveness alone cannot gate the clear -- at a real boot the stale pid is the
+    entrypoint shell itself -- so the guard probes for an nginx master specifically.
+    """
+    import subprocess
+
+    pid_before = current_master_pid()
+    assert pid_before.isdigit(), f"no live pidfile to begin with: {pid_before!r}"
+
+    # Expected to fail at bind(); what matters is what it does to /run/nginx.pid.
+    subprocess.run(
+        ["docker", "exec", EDGE_NGINX_CONTAINER, "/usr/local/bin/nginx-entrypoint.sh"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert current_master_pid() == pid_before, (
+        "re-running the entrypoint inside a live container removed the running "
+        "master's pidfile; nginx still serves but every reload path (edge watcher "
+        "and the 6h cert-renewal loop) is silently dead from here on"
+    )
 
 
 # mTLS enforcement tests ===============================================================================================

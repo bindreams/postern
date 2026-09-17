@@ -170,6 +170,19 @@ def hard_restart_nginx(*, timeout: float = 60.0) -> str:
     return stale_pid
 
 
+def current_master_pid() -> str:
+    """The pid nginx recorded for itself in the running container.
+
+    Because the entrypoint ends in ``exec nginx``, this is also the pid the
+    entrypoint SHELL held. Comparing it against the pid a killed container left
+    behind is what proves a restart actually re-collides -- without that, an
+    ungraceful-restart test only proves some file survived, and would pass against
+    a broken build on any runtime whose pid numbering happens not to line up.
+    """
+    result = run(["docker", "exec", EDGE_NGINX_CONTAINER, "cat", "/run/nginx.pid"])
+    return result.stdout.strip()
+
+
 def remove_edge_ranges() -> None:
     """Remove the seeded ranges file and restart nginx (fixture teardown)."""
     run([

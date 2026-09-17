@@ -81,7 +81,10 @@ edge_start_watcher() {
 	# and `exec nginx` makes the recorded pid the entrypoint SHELL's own -- which a
 	# restarted container's fresh pid namespace hands back to the new shell. The
 	# reload then SIGHUPs the entrypoint, which has no trap, so the container dies
-	# 128+1=129 and restart-loops until the pid lottery misses. See issue #245.
+	# 128+1=129 and restart-loops. Assume that loop is TERMINAL: nginx never gets
+	# to start, so nothing ever rewrites the pidfile, and a fresh pid namespace
+	# hands the same number back every time. A restart budget does not drain it;
+	# an operator has to. See issue #245.
 	# If no ranges exist yet, warn -- nginx runs without recovered client IPs until
 	# the provisioner publishes ranges and this watcher reloads.
 	if ! ls "$EDGE_DIR"/*.conf >/dev/null 2>&1; then

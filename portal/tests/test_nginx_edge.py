@@ -214,10 +214,13 @@ def test_entrypoint_clears_the_stale_pidfile_before_anything_can_signal_it():
         "nginx.conf.tmpl must state the pidfile path the entrypoint clears; "
         "without it the path is the base image's default and the clear can miss"
     )
-    reload_loop = "(while true; do sleep 21600; nginx -s reload; done) &"  # anchor on the code, not prose
-    assert reload_loop in ep
-    assert ep.index("rm -f /run/nginx.pid") < ep.index(reload_loop)
-    assert ep.index("rm -f /run/nginx.pid") < ep.index("edge_start_watcher || exit 1")
+    # Strip comments before checking order: the surrounding prose names both
+    # `nginx -s reload` and `exec nginx`, and matching those would anchor this test
+    # to comment wording. Anchoring on the loop line verbatim was worse still -- it
+    # coupled the ordering check to the reload interval.
+    code = "\n".join(ln for ln in ep.splitlines() if not ln.lstrip().startswith("#"))
+    assert code.index("rm -f /run/nginx.pid") < code.index("nginx -s reload")  # the 6h loop
+    assert code.index("rm -f /run/nginx.pid") < code.index("edge_start_watcher")
 
 
 def test_dockerfile_ships_edge_sh():

@@ -25,13 +25,26 @@ render_templates
 # this script's own, which a restarted container hands back to the new entrypoint.
 # A reload racing nginx's startup then SIGHUPs THIS shell and kills the container
 # 129 (#245; full mechanism in edge.sh's comment on the watch arm).
-# Best-effort by design: absence is hygiene, not a startup precondition, and nginx
+#
+# Skipped when that pid is a live nginx MASTER, which means this script is being
+# re-run inside an already-serving container (an operator debugging by hand).
+# Removing the file there orphans the running master: it keeps serving and keeps
+# reporting healthy, while BOTH reload paths -- the edge watcher and the 6h
+# cert-renewal loop above -- fail open() forever, so the next Let's Encrypt
+# rotation silently never lands. Liveness alone is the WRONG test: at a genuine
+# boot the stale pid is this very shell, and is very much alive. Only "is that pid
+# an nginx master" separates the two, hence the cmdline probe.
+#
+# Best-effort otherwise: absence is hygiene, not a startup precondition, and nginx
 # rewrites the file anyway -- an unlink failure (an unwritable /run after a uid
 # change, say) must not become the new reason nginx never boots.
 # Residual: a reload landing between nginx's config read and its pidfile write now
 # fails ENOENT instead of succeeding by accident, deferring that one range publish
 # to the 6h loop. The pre-`exec` half of that same window was fatal.
-rm -f /run/nginx.pid 2>/dev/null || :
+stale_pid="$(cat /run/nginx.pid 2>/dev/null || :)"
+if [ -z "$stale_pid" ] || ! grep -qsa 'master process' "/proc/$stale_pid/cmdline"; then
+	rm -f /run/nginx.pid 2>/dev/null || :
+fi
 
 (while true; do sleep 21600; nginx -s reload; done) &
 

@@ -39,8 +39,10 @@ edge_reload() {
 	return 0
 }
 
-# edge_start_watcher: arm the inotifyd watch + run one initial reconcile. The
-# entrypoint calls it as `edge_start_watcher || exit 1`.
+# edge_start_watcher: arm the inotifyd watch. Does NOT reconcile what is already
+# on disk -- nginx's own startup config read applies that; see the comment at the
+# bottom of this function for why reloading here is fatal rather than redundant.
+# The entrypoint calls it as `edge_start_watcher || exit 1`.
 edge_start_watcher() {
 	[ "${EDGE_PROFILE:-none}" = "cloudflare" ] || return 0
 
@@ -71,13 +73,21 @@ edge_start_watcher() {
 	# would be sync-via-time (forbidden). Deploy-time failure modes are covered
 	# above; a mid-life crash is an accepted residual (nginx keeps last-loaded ranges).
 
-	# INITIAL RECONCILE: a *.conf may have landed before the watch was armed.
-	# Apply it once, now, deterministically (no sleep/poll). If none exists yet,
-	# warn -- nginx runs without recovered client IPs until the provisioner
-	# publishes ranges and this watcher reloads.
-	if ls "$EDGE_DIR"/*.conf >/dev/null 2>&1; then
-		edge_reload
-	else
+	# A *.conf may have landed before the watch was armed -- but nginx has not
+	# started yet (the entrypoint execs it the moment this returns) and its own
+	# startup config read picks that file up, so there is nothing to apply here.
+	# Do NOT call edge_reload: `nginx -s reload` is a blind kill(SIGHUP) on
+	# whatever pid /run/nginx.pid names, that file outlives the container process,
+	# and `exec nginx` makes the recorded pid the entrypoint SHELL's own -- which a
+	# restarted container's fresh pid namespace hands back to the new shell. The
+	# reload then SIGHUPs the entrypoint, which has no trap, so the container dies
+	# 128+1=129 and restart-loops. Assume that loop is TERMINAL: nginx never gets
+	# to start, so nothing ever rewrites the pidfile, and a fresh pid namespace
+	# hands the same number back every time. A restart budget does not drain it;
+	# an operator has to. See issue #245.
+	# If no ranges exist yet, warn -- nginx runs without recovered client IPs until
+	# the provisioner publishes ranges and this watcher reloads.
+	if ! ls "$EDGE_DIR"/*.conf >/dev/null 2>&1; then
 		echo "edge: WARNING EDGE_PROFILE=cloudflare but no range files in $EDGE_DIR yet; real client IPs are NOT recovered until the provisioner publishes Cloudflare ranges and this watcher reloads." >&2
 	fi
 	return 0

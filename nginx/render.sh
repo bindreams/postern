@@ -165,6 +165,13 @@ _write_edge_conf() {
 				echo "real_ip_recursive on;"
 				# Provisioner writes one set_real_ip_from per Cloudflare range here.
 				# A wildcard include that matches nothing is not an error in nginx.
+				# KEEP THIS A GLOB, resolved by nginx at startup. edge.sh's watcher
+				# deliberately does not reconcile pre-existing ranges at boot (it
+				# cannot signal safely before nginx is up -- see its comment on the
+				# watch arm), so nginx's own startup read of this line is what picks
+				# up a file that landed after render_templates. Materialising the
+				# range list here instead -- concatenating it, or enumerating files
+				# to validate them -- silently reopens that gap.
 				echo "include /var/lib/postern-edge/*.conf;"
 				if [ "$aop" = 1 ]; then
 					echo "ssl_client_certificate /etc/nginx/cloudflare-origin-pull-ca.pem;"

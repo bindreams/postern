@@ -10,12 +10,14 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.x509.oid import NameOID
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _EDGE_SH = _REPO_ROOT / "nginx" / "edge.sh"
+_PIDFILE_SH = _REPO_ROOT / "nginx" / "pidfile.sh"
 _CF_CA = _REPO_ROOT / "nginx" / "etc" / "cloudflare-origin-pull-ca.pem"
 
 # Pins captured from a live fetch of Cloudflare's published origin-pull CA,
@@ -80,7 +82,11 @@ def test_edge_missing_inotifyd_under_cloudflare_is_fatal(tmp_path):
     assert "FATAL inotifyd missing" in r.stderr
 
 
-def test_edge_initial_reconcile_applies_preexisting_conf(tmp_path):
+def test_edge_initial_reconcile_does_not_reload_a_not_yet_started_nginx(tmp_path):
+    # The entrypoint execs nginx the moment edge_start_watcher returns, and nginx's
+    # own startup config read picks up a pre-existing *.conf -- so the reconcile has
+    # nothing to apply and must not signal. See the self-SIGHUP test below for why
+    # signalling here is not merely useless but fatal (issue #245).
     edge_dir = tmp_path / "edge"
     edge_dir.mkdir()
     bindir = tmp_path / "bin"
@@ -99,7 +105,51 @@ def test_edge_initial_reconcile_applies_preexisting_conf(tmp_path):
     )
     r = subprocess.run(["sh", "-c", driver], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert nginx_log.read_text().splitlines() == ["-t", "-s reload"]  # validated then reloaded
+    assert not nginx_log.exists() or nginx_log.read_text() == ""  # nginx not invoked at all
+    assert "no range files" not in r.stderr  # the conf WAS seen; it just needs no reload
+
+
+def test_edge_initial_reconcile_does_not_signal_the_stale_pidfile(tmp_path):
+    """A reconcile that reloads at entrypoint time SIGHUPs the entrypoint itself (#245).
+
+    Drives the real failure rather than asserting the absence of a call: the pidfile
+    is seeded with the driver shell's own pid, which is the state `exec nginx` leaves
+    behind for the next container. See edge.sh's comment on the watch arm for the
+    pid-namespace mechanism.
+    """
+    edge_dir = tmp_path / "edge"
+    edge_dir.mkdir()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    pidfile = tmp_path / "nginx.pid"
+    (edge_dir / "cf-ranges.conf").write_text("set_real_ip_from 173.245.48.0/20;\n")
+    # Unlike the logging fake above, this nginx models the part that bites: `-s reload`
+    # signals the pidfile's pid rather than being an inert no-op.
+    _write_exec(
+        bindir / "nginx", f'#!/bin/sh\ncase "$*" in\n'
+        f'\t"-s reload") exec kill -HUP "$(cat "{pidfile}")" ;;\n'
+        f'esac\nexit 0\n'
+    )
+    _write_exec(bindir / "inotifyd", "#!/bin/sh\nexit 0\n")
+    # The driver stands in for nginx-entrypoint.sh: it is the process that would go on
+    # to `exec nginx`, so seeding the pidfile with its own pid is exactly the state a
+    # restarted container starts in.
+    driver = (
+        f'set -eu\n. "{_EDGE_SH}"\n'
+        f'echo $$ > "{pidfile}"\n'
+        f'edge_start_watcher || exit 1\n'
+        f'echo REACHED-EXEC-NGINX\n'
+    )
+    env = _edge_env(
+        EDGE_PROFILE="cloudflare",
+        EDGE_DIR=str(edge_dir),
+        EDGE_SELF=str(_EDGE_SH),
+        EDGE_NGINX=str(bindir / "nginx"),
+        EDGE_INOTIFYD=str(bindir / "inotifyd")
+    )
+    r = subprocess.run(["sh", "-c", driver], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, f"entrypoint died (rc={r.returncode}); SIGHUP is rc -1 / 129"
+    assert "REACHED-EXEC-NGINX" in r.stdout  # survived to the exec
 
 
 def test_edge_real_event_triggers_reload(tmp_path):
@@ -147,8 +197,135 @@ def test_entrypoint_sources_and_gates_edge_watcher():
     ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
     assert ". /usr/local/bin/edge.sh" in ep
     assert "edge_start_watcher || exit 1" in ep
+    # Comment-stripped: the prose mentions `docker compose exec nginx ...`, and
+    # matching that instead of the real exec would make this test's verdict depend
+    # on comment wording.
+    code = "\n".join(ln for ln in ep.splitlines() if not ln.lstrip().startswith("#"))
     # watcher armed before the exec so its inotifyd child (like the 6h loop) survives it
-    assert ep.index("edge_start_watcher || exit 1") < ep.index("exec nginx")
+    assert code.index("edge_start_watcher || exit 1") < code.index("exec nginx")
+
+
+# pidfile guard ========================================================================================================
+def _pidfile_driver(tmp_path, pidfile_contents, cmdline_by_pid: dict[str, bytes]):
+    """Run pidfile.sh's two entry points against a fabricated /proc and pidfile.
+
+    PROC_DIR/PIDFILE are the same injection idiom as edge.sh's EDGE_NGINX and
+    render.sh's TEMPLATE_DIR, so both arms of the guard are exercised on the host
+    without docker -- the arm that must NOT fire has no other coverage anywhere.
+    """
+    proc_dir = tmp_path / "proc"
+    for pid, cmdline in cmdline_by_pid.items():
+        (proc_dir / pid).mkdir(parents=True)
+        (proc_dir / pid / "cmdline").write_bytes(cmdline)
+    pidfile = tmp_path / "nginx.pid"
+    if pidfile_contents is not None:
+        pidfile.write_text(pidfile_contents)
+    driver = (
+        f'set -eu\n. "{_PIDFILE_SH}"\n'
+        f'if master="$(nginx_master_pid || :)"; [ -n "$master" ]; then echo "KEEP $master"; else\n'
+        f'  clear_stale_pidfile; echo "CLEARED"\n'
+        f'fi\n'
+    )
+    env = _edge_env(PIDFILE=str(pidfile), PROC_DIR=str(proc_dir))
+    r = subprocess.run(["sh", "-c", driver], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr  # set -eu must survive every input
+    return r, pidfile
+
+
+# nginx rewrites its argv at startup; this is the byte shape /proc exposes for it.
+_MASTER_CMDLINE = b"nginx: master process nginx -g daemon off;\x00\x00"
+_SHELL_CMDLINE = b"/bin/sh\x00/usr/local/bin/nginx-entrypoint.sh\x00"
+
+
+def test_pidfile_guard_clears_when_the_pid_is_this_entrypoint_shell(tmp_path):
+    # The #245 boot case: the recorded pid is alive, but it is the SHELL, not nginx.
+    # A liveness test would keep the file here and re-arm the crash loop.
+    r, pidfile = _pidfile_driver(tmp_path, "6", {"6": _SHELL_CMDLINE})
+    assert "CLEARED" in r.stdout
+    assert not pidfile.exists()
+
+
+def test_pidfile_guard_keeps_a_live_nginx_masters_pidfile(tmp_path):
+    # The re-run case: clearing here orphans a serving master and kills every
+    # reload path, including the 6h TLS-cert loop.
+    r, pidfile = _pidfile_driver(tmp_path, "6", {"6": _MASTER_CMDLINE})
+    assert "KEEP 6" in r.stdout
+    assert pidfile.read_text() == "6"
+
+
+@pytest.mark.parametrize(
+    "contents",
+    [
+        "",
+        "\n",
+        "   ",
+        "abc",
+        "-1",
+        "0x6",
+        "6 6",
+        "9" * 24,
+        "../../etc/passwd",
+        "self",  # a real /proc entry whose cmdline is grep's OWN argv -- must not self-match
+        "thread-self",
+    ]
+)
+def test_pidfile_guard_treats_garbage_as_stale(tmp_path, contents):
+    # Every unexpected input must fail toward CLEARING. Failing toward keeping
+    # silently restores #245, so this direction is the one worth parametrizing.
+    r, pidfile = _pidfile_driver(tmp_path, contents, {"6": _MASTER_CMDLINE})
+    assert "CLEARED" in r.stdout, f"{contents!r} did not clear: {r.stdout!r} {r.stderr!r}"
+    assert not pidfile.exists()
+
+
+def test_pidfile_guard_reports_which_arm_it_took(tmp_path):
+    # The entrypoint had no diagnostic at all when #245 was investigated; the exit
+    # code was the only signal. Both arms now say what happened.
+    r, _ = _pidfile_driver(tmp_path, "6", {"6": _SHELL_CMDLINE})
+    assert "cleared stale" in r.stderr
+
+
+def test_entrypoint_refuses_to_run_inside_a_live_container():
+    ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
+    code = "\n".join(ln for ln in ep.splitlines() if not ln.lstrip().startswith("#"))
+    # The guard must gate the whole script, not just the clear: a re-run also
+    # re-renders under the live master and doubles the reload loop and the watcher.
+    assert code.index("nginx_master_pid") < code.index("render_templates")
+    assert code.index("nginx_master_pid") < code.index("clear_stale_pidfile")
+    assert code.index("nginx_master_pid") < code.index("edge_start_watcher")
+
+
+def test_periodic_reload_loop_survives_a_failed_reload():
+    ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
+    code = "\n".join(ln for ln in ep.splitlines() if not ln.lstrip().startswith("#"))
+    loop = code[code.index("while true"):]
+    # `set -eu` applies inside the backgrounded subshell, so a bare `nginx -s reload`
+    # ends the loop permanently on its first failure -- stranding TLS cert renewal
+    # and voiding the backstop edge.sh promises for a rejected edge config.
+    assert "nginx -s reload ||" in loop, "the 6h reload must not be able to kill its own loop"
+
+
+def test_entrypoint_and_nginx_agree_on_the_pidfile_path():
+    # A clear that names a file nginx doesn't write is a silent no-op, and the path
+    # would otherwise be the base image's own default. State it in the config and
+    # pin both sides to one literal, so a base-image bump cannot decouple them
+    # behind a green suite.
+    conf_tmpl = (_REPO_ROOT / "nginx" / "etc" / "nginx.conf.tmpl").read_text()
+    assert "pid /run/nginx.pid;" in conf_tmpl
+    assert 'PIDFILE="${PIDFILE:-/run/nginx.pid}"' in _PIDFILE_SH.read_text()
+
+
+def test_entrypoint_clears_the_stale_pidfile_before_anything_can_signal_it():
+    # Strip comments before checking order: the prose names both `nginx -s reload`
+    # and `exec nginx`, and matching those would anchor the verdict to comment
+    # wording. Anchoring on the loop line verbatim was worse still -- it coupled
+    # this check to the reload interval.
+    ep = (_REPO_ROOT / "nginx" / "nginx-entrypoint.sh").read_text()
+    code = "\n".join(ln for ln in ep.splitlines() if not ln.lstrip().startswith("#"))
+    assert "clear_stale_pidfile" in code
+    # inotifyd is armed BEFORE nginx starts, so a range file landing in that window
+    # reaches `nginx -s reload` while the pidfile is still stale.
+    assert code.index("clear_stale_pidfile") < code.index("nginx -s reload")
+    assert code.index("clear_stale_pidfile") < code.index("edge_start_watcher")
 
 
 def test_dockerfile_ships_edge_sh():

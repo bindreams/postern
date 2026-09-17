@@ -10,6 +10,7 @@ Tests import from here; ``_helpers`` stays single-project (the base e2e stack).
 from __future__ import annotations
 
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -101,6 +102,106 @@ def seed_edge_ranges(*, ranges_conf: str = "set_real_ip_from 0.0.0.0/0;\n") -> N
     # stale-config read is impossible; worst case is a loud connection error.
     run(["docker", "restart", EDGE_NGINX_CONTAINER])
     _wait_nginx_healthy()
+
+
+# Ungraceful-restart helpers ===========================================================================================
+def _container_state() -> tuple[str, int]:
+    """(status, last exit code) for the edge nginx container."""
+    result = run(["docker", "inspect", "--format", "{{.State.Status}} {{.State.ExitCode}}", EDGE_NGINX_CONTAINER])
+    status, _, exit_code = result.stdout.strip().partition(" ")
+    return status, int(exit_code)
+
+
+def _read_stale_pidfile() -> str:
+    """Read /run/nginx.pid out of the STOPPED container's writable layer.
+
+    ``docker cp`` rather than ``docker exec``: the container is not running, and
+    the point is to observe the file the dead process left behind.  Returns ""
+    when no pidfile is present.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dest = Path(tmpdir) / "nginx.pid"
+        result = subprocess.run(
+            ["docker", "cp", f"{EDGE_NGINX_CONTAINER}:/run/nginx.pid",
+             str(dest)],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or not dest.exists():
+            return ""
+        return dest.read_text().strip()
+
+
+def hard_restart_nginx(*, timeout: float = 60.0) -> str:
+    """SIGKILL the edge nginx, then start it again; return the pid it left behind.
+
+    This is the host-reboot path, and it is NOT what ``seed_edge_ranges`` does.
+    ``docker restart`` is graceful: nginx catches SIGTERM and unlinks its own
+    pidfile, so the container comes back with clean ``/run`` state.  That is why
+    every restart this suite already performs stays green regardless of issue
+    #245 -- and why the bug survived in production for twelve weeks.  Only an
+    ungraceful death (host reboot, SIGKILL, the daemon going down under the
+    container) leaves ``/run/nginx.pid`` behind, because it lives in the
+    container's writable layer rather than on a tmpfs.
+
+    The returned pid is the caller's precondition check: restarting a container
+    that left no pidfile exercises none of this and would pass vacuously.
+
+    Raises with the exit code in the message rather than a bare health timeout --
+    128+1=129 is the signature of the entrypoint being SIGHUPed by its own stale
+    pidfile, and a test that only reported "never became healthy" would bury it.
+    """
+    run(["docker", "kill", "--signal=KILL", EDGE_NGINX_CONTAINER])
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and _container_state()[0] != "exited":
+        time.sleep(0.2)
+    status, _ = _container_state()
+    assert status == "exited", f"container did not stop after SIGKILL (status={status!r})"
+
+    stale_pid = _read_stale_pidfile()
+    run(["docker", "start", EDGE_NGINX_CONTAINER])
+    try:
+        _wait_nginx_healthy(timeout=timeout)
+    except AssertionError:
+        status, exit_code = _container_state()
+        signal_note = " (128+1: killed by SIGHUP -- see issue #245)" if exit_code == 129 else ""
+        raise AssertionError(
+            f"edge nginx did not come back after an ungraceful restart: status={status!r} "
+            f"exit={exit_code}{signal_note}; stale /run/nginx.pid held {stale_pid!r}"
+        ) from None
+    return stale_pid
+
+
+def current_master_pid() -> str:
+    """The pid nginx recorded for itself in the running container, or "" if absent.
+
+    Because the entrypoint ends in ``exec nginx``, this is also the pid the
+    entrypoint SHELL held. Comparing it against the pid a killed container left
+    behind is what proves a restart actually re-collides -- without that, an
+    ungraceful-restart test only proves some file survived, and would pass against
+    a broken build on any runtime whose pid numbering happens not to line up.
+
+    Deliberately NOT ``check=True``: a missing pidfile is the exact symptom of the
+    regression these tests exist to catch, and raising CalledProcessError here would
+    replace the caller's diagnostic with ``cat: can't open``.
+    """
+    result = subprocess.run(
+        ["docker", "exec", EDGE_NGINX_CONTAINER, "cat", "/run/nginx.pid"],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def logs_since_last_start() -> str:
+    """Container logs from the current run only, so a restart's output is isolated."""
+    started = run(["docker", "inspect", "--format", "{{.State.StartedAt}}", EDGE_NGINX_CONTAINER])
+    result = subprocess.run(
+        ["docker", "logs", "--since", started.stdout.strip(), EDGE_NGINX_CONTAINER],
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout + result.stderr
 
 
 def remove_edge_ranges() -> None:

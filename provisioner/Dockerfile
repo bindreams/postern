@@ -29,7 +29,7 @@ RUN mkdir -p /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
 	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
-	&& apk add --no-cache python3 py3-pip py3-dnspython py3-cryptography opendkim-utils 'ca-certificates>=20261020-r0' tzdata
+	&& apk add --no-cache python3 py3-dnspython py3-cryptography opendkim-utils 'ca-certificates>=20261020-r0' tzdata
 
 FROM dhi.io/alpine-base:3.23-dev
 

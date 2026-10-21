@@ -30,6 +30,7 @@ PROJECT = "postern-e2e"
 E2E_SHADOWSOCKS_IMAGE = "local/shadowsocks-server-test"
 E2E_NGINX_IMAGE = "local/nginx-test"
 E2E_PROVISIONER_IMAGE = "local/postern-provisioner-test"
+E2E_MTA_IMAGE = "local/postern-mta-test"
 
 PORTAL_BASE_URL = "https://postern.test:8443"
 MAILPIT_BASE_URL = "http://localhost:8025"

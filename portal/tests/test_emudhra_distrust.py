@@ -67,12 +67,12 @@ def test_go_build_stage_pins_local_toolchain():
 
 
 def test_pip_installs_verify_against_system_bundle():
-    """pip verifies against its vendored certifi, not the floored system bundle; the
-    one Alpine 3.23 ships still trusts the chain."""
+    """pip 26.2.1 adds its vendored certifi, which still trusts the chain, to every
+    connection and ignores --cert. legacy-certs makes --cert the only trust anchor."""
     for dockerfile in DOCKERFILES:
-        commands = re.findall(r"pip install[^\n]*", (REPO_ROOT / dockerfile).read_text().replace("\\\n", " "))
+        commands = re.findall(r"pip install[^\n&]*", (REPO_ROOT / dockerfile).read_text().replace("\\\n", " "))
         for command in commands:
-            assert "--cert /etc/ssl/certs/ca-certificates.crt" in command, f"{dockerfile}: {command}"
+            assert "--use-deprecated=legacy-certs --cert /etc/ssl/certs/ca-certificates.crt" in command, f"{dockerfile}: {command}"
 
 
 def _apk_adds(text: str) -> list[str]:

@@ -235,14 +235,14 @@ def test_builds_the_tag_the_portal_reports(tmp_path):
     assert len(build) == 1
     cwd, args = build[0]
     assert cwd == str(REPO_ROOT)
-    assert args.startswith("build -f shadowsocks/Dockerfile ")
+    assert args.startswith("build --pull -f shadowsocks/Dockerfile ")
     assert args.endswith("-t local/ss-from-portal .")
 
 
 def test_default_tag_when_the_portal_reports_the_default(tmp_path):
     _proc, calls = _run(tmp_path)
     assert any(
-        a.startswith("build -f shadowsocks/Dockerfile ") and a.endswith("-t local/shadowsocks-server .")
+        a.startswith("build --pull -f shadowsocks/Dockerfile ") and a.endswith("-t local/shadowsocks-server .")
         for a in _args_of(calls, "docker")
     )
 
@@ -286,7 +286,7 @@ def test_a_failed_portal_build_stops_the_deploy(tmp_path):
 
 
 def test_a_failed_shadowsocks_build_stops_the_deploy(tmp_path):
-    proc, calls = _run(tmp_path, FAKE_DOCKER_FAIL="build -f shadowsocks/Dockerfile")
+    proc, calls = _run(tmp_path, FAKE_DOCKER_FAIL="build --pull -f shadowsocks/Dockerfile")
     assert proc.returncode != 0
     assert not any(a.startswith("compose up") for a in _args_of(calls, "docker"))
 
@@ -299,6 +299,14 @@ def test_resolves_and_stamps_the_git_revision_before_building(tmp_path):
 
     build = next(a for a in _args_of(calls, "docker") if a.startswith("build "))
     assert "--build-arg GIT_REVISION=deadbeef-fake" in build
+
+
+def test_shadowsocks_build_pulls_base_images(tmp_path):
+    """compose.yaml sets `build.pull` for the images compose builds; this one is
+    built outside compose and needs its own --pull (issue #254)."""
+    _proc, calls = _run(tmp_path)
+    build = next(a for a in _args_of(calls, "docker") if a.startswith("build "))
+    assert "--pull" in build.split()
 
 
 def test_revision_is_resolved_before_the_shadowsocks_build(tmp_path):

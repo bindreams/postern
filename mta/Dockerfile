@@ -7,6 +7,7 @@ FROM dhi.io/alpine-base:3.23-dev AS build
 # opendkim home directory exist when we COPY across to the runtime stage.
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
 # `unbound-anchor` package exists in Alpine 3.23.
+# ca-certificates floor: first release distrusting the compromised eMudhra chain (#254).
 RUN mkdir -p /var/lib/opendkim \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
@@ -14,7 +15,7 @@ RUN mkdir -p /var/lib/opendkim \
 	&& apk add --no-cache \
 		postfix postfix-doc \
 		opendkim opendkim-utils \
-		ca-certificates tzdata \
+		'ca-certificates>=20261020-r0' tzdata \
 		python3 py3-pip py3-dnspython \
 		unbound \
 		postsrsd \

@@ -132,7 +132,7 @@ export GIT_REVISION
 
 # Rebuild the per-connection tunnel image. Compose does NOT build this one --
 # the reconciler spawns it at runtime.
-docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
+docker build --pull -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
 
 # Rebuild and restart the rest of the stack
 docker compose up -d --build

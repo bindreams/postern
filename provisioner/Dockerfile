@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
 FROM dhi.io/golang:1-alpine3.23-dev AS go-build
+# go.mod's `go` line is then the floor for both binaries; under `auto`, `go install
+# lego@...` would take its toolchain from lego's go.mod instead.
+ENV GOTOOLCHAIN=local
 WORKDIR /src/postern-dns
 # go.sum is committed alongside go.mod so the build is deterministic and the
 # Go toolchain validates downloads against the recorded hashes (not just

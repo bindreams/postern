@@ -8,6 +8,7 @@ FROM dhi.io/alpine-base:3.23-dev AS build
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
 # `unbound-anchor` package exists in Alpine 3.23.
 # ca-certificates floor: first release distrusting the compromised eMudhra chain (#254).
+# pip --cert: pip otherwise verifies against its vendored certifi, which still trusts it.
 RUN mkdir -p /var/lib/opendkim \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
@@ -20,7 +21,7 @@ RUN mkdir -p /var/lib/opendkim \
 		unbound \
 		postsrsd \
 		netcat-openbsd \
-	&& pip install --break-system-packages postfix-mta-sts-resolver
+	&& pip install --cert /etc/ssl/certs/ca-certificates.crt --break-system-packages postfix-mta-sts-resolver
 
 # Runtime stage: locked-down DHI image. Postfix's master needs root; the compose
 # file leaves USER unset so the container runs as the image default. Capabilities

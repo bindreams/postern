@@ -50,18 +50,34 @@ def test_certifi_bundle_excludes_compromised_chain_roots():
 
 
 def test_go_directive_meets_floor():
-    """The golang image sets GOTOOLCHAIN=local, so the `go` line is the build-time
-    floor: a stale cached image fails `go mod download` instead of linking
-    postern-dns and lego against a vulnerable crypto/x509."""
+    """With GOTOOLCHAIN=local the `go` line is the build-time floor: a stale cached
+    image fails `go mod download` instead of linking postern-dns and lego against a
+    vulnerable crypto/x509."""
     go_mod = (REPO_ROOT / "provisioner/postern-dns/go.mod").read_text()
     match = re.search(r"^go (\S+)$", go_mod, re.M)
     assert match is not None
     assert Version(match[1]) >= GO_FLOOR
 
 
+def test_go_build_stage_pins_local_toolchain():
+    """Under GOTOOLCHAIN=auto, `go install lego@...` picks its toolchain from lego's
+    go.mod, not ours, and would build with whatever Go the image has."""
+    _base, body = _stages((REPO_ROOT / "provisioner/Dockerfile").read_text())["go-build"]
+    assert re.search(r"^ENV GOTOOLCHAIN=local$", body, re.M)
+
+
+def test_pip_installs_verify_against_system_bundle():
+    """pip verifies against its vendored certifi, not the floored system bundle; the
+    one Alpine 3.23 ships still trusts the chain."""
+    for dockerfile in DOCKERFILES:
+        commands = re.findall(r"pip install[^\n]*", (REPO_ROOT / dockerfile).read_text().replace("\\\n", " "))
+        for command in commands:
+            assert "--cert /etc/ssl/certs/ca-certificates.crt" in command, f"{dockerfile}: {command}"
+
+
 def _apk_adds(text: str) -> list[str]:
     """Each `apk add` command, backslash continuations included."""
-    return re.findall(r"apk add[^\n]*", text.replace("\\\n", " "))
+    return re.findall(r"apk add[^\n&]*", text.replace("\\\n", " "))
 
 
 def _stages(text: str) -> dict[str, tuple[str, str]]:

@@ -11,6 +11,7 @@ tests in this file do not declare ``pytestmark``.
 from __future__ import annotations
 
 import re
+import subprocess
 
 import pytest
 
@@ -253,9 +254,10 @@ def test_opendkim_table_signs_with_latest_selector(mta_e2e_stack, active_selecto
 def test_image_ships_no_pip(mta_e2e_stack, image):
     """pip verifies against its vendored certifi, which still trusts the compromised
     eMudhra chain (#254). Nothing runs pip after the build, so it must not ship."""
-    result = run(
+    result = subprocess.run(
         ["docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", image, "-c", "import pip"],
-        check=False,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode != 0, f"{image} still ships pip"
     assert "No module named 'pip'" in result.stderr, result.stderr

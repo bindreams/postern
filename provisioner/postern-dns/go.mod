@@ -1,8 +1,8 @@
 module github.com/bindreams/postern/provisioner/postern-dns
 
-go 1.25.0
-
-toolchain go1.27.1
+// 1.27.3: first Go whose crypto/x509 distrusts the compromised eMudhra intermediates
+// (#254). provisioner/Dockerfile sets GOTOOLCHAIN=local, so this is also lego's floor.
+go 1.27.3
 
 require (
 	github.com/libdns/cloudflare v0.2.2

@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 
-FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray
+# Download stages verify TLS against this bundle; the base image's trusts the
+# compromised eMudhra chain (#254).
+FROM dhi.io/alpine-base:3.23-dev AS fetch
+RUN apk add --no-cache 'ca-certificates>=20261020-r0'
+
+FROM fetch AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
 ARG EX_RAY_VERSION=v0.3.0
@@ -25,7 +30,7 @@ RUN <<-EOF
 	test -x /ex-ray
 EOF
 
-FROM dhi.io/alpine-base:3.23-dev AS download-ex-ray-license
+FROM fetch AS download-ex-ray-license
 # renovate: datasource=github-tags depName=bindreams/hole
 ARG EX_RAY_VERSION=v0.3.0
 # ex-ray is Apache-2.0; NOTICES.md carries the MIT attribution for the
@@ -37,7 +42,7 @@ RUN <<-EOF
 	wget -q -O /NOTICES.md "${base}/NOTICES.md"
 EOF
 
-FROM dhi.io/alpine-base:3.23-dev AS download-galoshes
+FROM fetch AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
 ARG GALOSHES_VERSION=v0.4.0
@@ -55,7 +60,7 @@ RUN <<-EOF
 	install -m 0755 "${asset}" /galoshes
 EOF
 
-FROM dhi.io/alpine-base:3.23-dev AS download-galoshes-license
+FROM fetch AS download-galoshes-license
 # renovate: datasource=github-tags depName=bindreams/hole
 ARG GALOSHES_VERSION=v0.4.0
 RUN wget -q -O /LICENSE.md \
@@ -64,6 +69,13 @@ RUN wget -q -O /LICENSE.md \
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
+# hickory's DNS-over-HTTPS/TLS client: these are the first releases distrusting the
+# compromised eMudhra chain (#254). Drop once the vendored Cargo.lock reaches them.
+RUN <<-EOF
+	set -eu
+	cargo update -p rustls-webpki@0.103.8 --precise 0.103.16
+	cargo update -p webpki-roots@1.0.7 --precise 1.0.10
+EOF
 RUN cargo build --release --bin ssserver
 
 # Runtime is dhi.io/debian-base:trixie (glibc 2.41) -- NOT alpine-base. The

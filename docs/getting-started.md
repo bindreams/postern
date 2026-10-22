@@ -64,7 +64,7 @@ This page takes you from an empty server to a verified working tunnel: install t
    ```bash
    GIT_REVISION="$(scripts/verify-deploy.py --print-revision)"
    export GIT_REVISION
-   docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
+   docker build --pull -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t local/shadowsocks-server .
    ```
 
 1. Build and start the rest of the stack:

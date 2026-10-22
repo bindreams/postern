@@ -244,7 +244,7 @@ build_shadowsocks_image() {
     local image
     image="$(resolve_shadowsocks_image)"
     log "Building ${image} (compose does not build this one; context is the repo root)"
-    docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t "$image" .
+    docker build --pull -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t "$image" .
 }
 
 # Deploy steps =========================================================================================================

@@ -11,10 +11,11 @@ tests in this file do not declare ``pytestmark``.
 from __future__ import annotations
 
 import re
+import subprocess
 
 import pytest
 
-from ._helpers import run
+from ._helpers import E2E_MTA_IMAGE, E2E_PROVISIONER_IMAGE, run
 from ._mta_helpers import (
     assert_mta_submit_network_is_internal_and_disjoint,
     docker_inspect,
@@ -247,6 +248,19 @@ def test_opendkim_table_signs_with_latest_selector(mta_e2e_stack, active_selecto
         f"postern.test:{active_selector}:/var/lib/opendkim/{active_selector}.private"
     )
     assert expected_key in keytable, (f"KeyTable does not contain {expected_key!r}; got:\n{keytable!r}")
+
+
+@pytest.mark.parametrize("image", [E2E_MTA_IMAGE, E2E_PROVISIONER_IMAGE])
+def test_image_ships_no_pip(mta_e2e_stack, image):
+    """pip's vendored certifi still trusts the compromised eMudhra chain (#254);
+    nothing runs pip after the build."""
+    result = subprocess.run(
+        ["docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", image, "-c", "import pip"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0, f"{image} still ships pip"
+    assert "No module named 'pip'" in result.stderr, result.stderr
 
 
 def test_smtp_tls_cafile_set_for_mta_sts_secure_policy(mta_e2e_stack):

@@ -633,7 +633,7 @@ def _ss_build(ref: str) -> str:
     fix hint that builds a different tag than the one the row says is missing,
     leaving the check failing on every re-run.
     """
-    return f'{_EXPORT} && docker build -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t {ref} .'
+    return f'{_EXPORT} && docker build --pull -f shadowsocks/Dockerfile --build-arg GIT_REVISION="$GIT_REVISION" -t {ref} .'
 
 
 _RECONCILE = "docker compose exec portal postern reconcile"

@@ -11,6 +11,8 @@ services:
       context: ./nginx
       args:
         GIT_REVISION: ${GIT_REVISION:-}
+      # Refresh the base image: a cached one keeps a stale CA bundle and toolchain (#254).
+      pull: true
     image: local/nginx
     container_name: nginx
     environment:
@@ -61,6 +63,7 @@ services:
       dockerfile: portal/Dockerfile
       args:
         GIT_REVISION: ${GIT_REVISION:-}
+      pull: true
     image: local/postern-portal
     container_name: portal
     env_file: .env
@@ -113,6 +116,7 @@ services:
       dockerfile: mta/Dockerfile
       args:
         GIT_REVISION: ${GIT_REVISION:-}
+      pull: true
     image: local/postern-mta
     container_name: mta
     profiles: [with-mta]
@@ -158,6 +162,7 @@ services:
       dockerfile: provisioner/Dockerfile
       args:
         GIT_REVISION: ${GIT_REVISION:-}
+      pull: true
     image: local/postern-provisioner
     container_name: provisioner
     # Multiple profiles -- a service starts when ANY listed profile is active.

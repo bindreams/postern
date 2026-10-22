@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Download stages verify TLS against this bundle; the base image's predates the
-# eMudhra distrust (#254).
+# Download stages verify TLS against this bundle; the base image's trusts the
+# compromised eMudhra chain (#254).
 FROM dhi.io/alpine-base:3.23-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 

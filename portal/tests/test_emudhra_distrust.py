@@ -20,7 +20,7 @@ from tests._compose import load_compose
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # SHA-256 of the roots that issue or cross-sign the compromised intermediates (the
-# advisory's roots.json). certifi 2026.2.25 still carried `emSign ECC Root CA - G3`.
+# advisory's roots.json).
 COMPROMISED_CHAIN_ROOTS = {
     "7DD78D5F4F13459A83DFF9ABBBA62EDBAF6F2D102BF257FD712F4D9F2746ED8D": "emSign Root TLS CA - G3",
     "F2EDAAFF3D9B701FB4D14C9F285F8C0BAD90FC3BCC1FA07D47F4718EDABA34A5": "emSign Root CS CA - G3",
@@ -31,6 +31,8 @@ COMPROMISED_CHAIN_ROOTS = {
 # crypto/x509.Verify drops chains through the intermediates from these releases on.
 GO_FLOOR = Version("1.27.3")
 FLOORED_CA_CERTIFICATES = "'ca-certificates>=20261020-r0'"
+# Bases whose stock bundle is already 20250419+deb13u1, which rejects the chain.
+PATCHED_DEBIAN_BASES = ("dhi.io/debian-base:trixie-dev", "dhi.io/rust:1-debian13-dev")
 UV_FLOOR = Version("0.13.4")
 
 DOCKERFILES = (
@@ -66,13 +68,22 @@ def test_go_build_stage_pins_local_toolchain():
     assert re.search(r"^ENV GOTOOLCHAIN=local$", body, re.M)
 
 
-def test_pip_installs_verify_against_system_bundle():
-    """pip 26.2.1 adds its vendored certifi, which still trusts the chain, to every
-    connection and ignores --cert. legacy-certs makes --cert the only trust anchor."""
-    for dockerfile in DOCKERFILES:
-        commands = re.findall(r"pip install[^\n&]*", (REPO_ROOT / dockerfile).read_text().replace("\\\n", " "))
-        for command in commands:
-            assert "--use-deprecated=legacy-certs --cert /etc/ssl/certs/ca-certificates.crt" in command, f"{dockerfile}: {command}"
+def test_mta_pip_verifies_against_system_bundle():
+    """pip adds its vendored certifi, which still trusts the chain, to every connection
+    and ignores --cert. legacy-certs makes the system bundle the only anchor; as
+    environment variables both reach pip's isolated build-env subprocess too."""
+    text = (REPO_ROOT / "mta/Dockerfile").read_text().replace("\\\n", " ")
+    assert text.count("pip install") == 1
+    match = re.search(
+        r"PIP_USE_DEPRECATED=legacy-certs PIP_CERT=/etc/ssl/certs/ca-certificates\.crt pip install ", text
+    )
+    assert match is not None
+    assert "apk del --no-cache py3-pip" in text[match.end():]
+
+
+def test_no_other_dockerfile_runs_pip():
+    for dockerfile in DOCKERFILES[1:]:
+        assert not re.search(r"\bpip3? install", (REPO_ROOT / dockerfile).read_text()), dockerfile
 
 
 def _apk_adds(text: str) -> list[str]:
@@ -91,8 +102,8 @@ def _stages(text: str) -> dict[str, tuple[str, str]]:
 
 
 def test_apk_ca_certificates_meets_floor():
-    """The constraint also changes the RUN line, so a cached layer holding the old
-    bundle is rebuilt rather than reused."""
+    """Every apk add pins ca-certificates to the floor; the changed RUN line also
+    busts stale layer caches."""
     for dockerfile in DOCKERFILES:
         packages = [
             token for cmd in _apk_adds((REPO_ROOT / dockerfile).read_text()) for token in cmd.split()
@@ -102,9 +113,9 @@ def test_apk_ca_certificates_meets_floor():
 
 
 def test_alpine_download_stages_use_floored_bundle():
-    """dhi.io/alpine-base:3.23-dev ships ca-certificates-bundle 20260909-r0, which
-    trusts the chain. A download stage fetches the binary and its SHA256SUMS from
-    the same origin, so the checksum does not cover a forged certificate."""
+    """dhi.io/alpine-base:3.23-dev's stock bundle trusts the chain. A download stage
+    fetches the binary and its SHA256SUMS from the same origin, so the checksum does
+    not cover a forged certificate."""
     for dockerfile in DOCKERFILES:
         stages = _stages((REPO_ROOT / dockerfile).read_text())
         for name, (_base, body) in stages.items():
@@ -116,6 +127,8 @@ def test_alpine_download_stages_use_floored_bundle():
                 stage = stages[stage][0]
             if stage.startswith("dhi.io/alpine-base:"):
                 assert floored, f"{dockerfile}: stage {name} downloads without a floored CA bundle"
+            else:
+                assert stage in PATCHED_DEBIAN_BASES, f"{dockerfile}: stage {name} downloads on unvetted base {stage}"
 
 
 def test_uv_image_meets_floor():
@@ -135,8 +148,8 @@ def test_compose_builds_pull_base_images():
     assert {name: build.get("pull") for name, build in built.items()} == {name: True for name in built}
 
 
-# The ssserver build's TLS client (hickory DNS-over-HTTPS/TLS). Postern never sets a
-# `dns` key, but the code ships.
+# The ssserver build's TLS client (hickory DNS-over-HTTPS/TLS). webpki-roots 0.26.x
+# is a shim re-exporting the 1.x roots, so only same-major versions are checked.
 RUST_CRATE_FLOORS = {"rustls-webpki": Version("0.103.16"), "webpki-roots": Version("1.0.10")}
 
 
@@ -158,6 +171,6 @@ def test_ssserver_build_overrides_stale_rust_crates():
             assert override is not None, f"{crate} {stale} is below {floor}"
             assert override.start() < build_at
             assert Version(override[2]) >= floor
-            assert override[1] in (None, f"@{stale[0]}")
+            assert override[1] == f"@{stale[0]}", "qualify the crate: a second locked version makes the spec ambiguous"
         else:
             assert override is None, f"Cargo.lock now meets {crate} {floor}; drop the override"

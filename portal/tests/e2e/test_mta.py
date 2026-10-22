@@ -252,8 +252,8 @@ def test_opendkim_table_signs_with_latest_selector(mta_e2e_stack, active_selecto
 
 @pytest.mark.parametrize("image", [E2E_MTA_IMAGE, E2E_PROVISIONER_IMAGE])
 def test_image_ships_no_pip(mta_e2e_stack, image):
-    """pip verifies against its vendored certifi, which still trusts the compromised
-    eMudhra chain (#254). Nothing runs pip after the build, so it must not ship."""
+    """pip's vendored certifi still trusts the compromised eMudhra chain (#254);
+    nothing runs pip after the build."""
     result = subprocess.run(
         ["docker", "run", "--rm", "--network", "none", "--entrypoint", "python3", image, "-c", "import pip"],
         capture_output=True,

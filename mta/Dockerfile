@@ -8,9 +8,9 @@ FROM dhi.io/alpine-base:3.23-dev AS build
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
 # `unbound-anchor` package exists in Alpine 3.23.
 # ca-certificates floor: first release distrusting the compromised eMudhra chain (#254).
-# pip adds its vendored certifi, which still trusts that chain, to every connection and
-# ignores --cert; legacy-certs makes --cert the only trust anchor. Nothing runs pip at
-# runtime, so it is removed rather than shipped with that bundle.
+# pip's vendored certifi still trusts that chain and overrides --cert; legacy-certs makes
+# PIP_CERT the only anchor, and as env vars both reach pip's build-env subprocess.
+# pip is removed after the install.
 RUN mkdir -p /var/lib/opendkim \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
@@ -23,7 +23,7 @@ RUN mkdir -p /var/lib/opendkim \
 		unbound \
 		postsrsd \
 		netcat-openbsd \
-	&& pip install --use-deprecated=legacy-certs --cert /etc/ssl/certs/ca-certificates.crt \
+	&& PIP_USE_DEPRECATED=legacy-certs PIP_CERT=/etc/ssl/certs/ca-certificates.crt pip install \
 		--break-system-packages postfix-mta-sts-resolver \
 	&& apk del --no-cache py3-pip
 

@@ -1,7 +1,7 @@
 module github.com/bindreams/postern/provisioner/postern-dns
 
-// 1.27.3: crypto/x509 distrusts the compromised eMudhra intermediates (#254). The
-// golang image sets GOTOOLCHAIN=local, so this is also lego's build-time floor.
+// 1.27.3: first Go whose crypto/x509 distrusts the compromised eMudhra intermediates
+// (#254). provisioner/Dockerfile sets GOTOOLCHAIN=local, so this is also lego's floor.
 go 1.27.3
 
 require (

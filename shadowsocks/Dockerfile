@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# Download stages verify TLS against this bundle; the base image's predates the
-# eMudhra distrust (#254).
+# Download stages verify TLS against this bundle; the base image's trusts the
+# compromised eMudhra chain (#254).
 FROM dhi.io/alpine-base:3.23-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 
@@ -73,7 +73,7 @@ COPY external/shadowsocks-rust/ .
 # compromised eMudhra chain (#254). Drop once the vendored Cargo.lock reaches them.
 RUN <<-EOF
 	set -eu
-	cargo update -p rustls-webpki --precise 0.103.16
+	cargo update -p rustls-webpki@0.103.8 --precise 0.103.16
 	cargo update -p webpki-roots@1.0.7 --precise 1.0.10
 EOF
 RUN cargo build --release --bin ssserver

@@ -129,12 +129,15 @@ services:
     init: true
 
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    # Same allow-list as docker-proxy in the root compose.yaml.
+    image: ghcr.io/linuxserver/socket-proxy:3.4.7-r0-ls104@sha256:4e5e59efd3338205561c54262581992036e5a36ccca97d487b1d4ec41f9adc58
     environment:
       CONTAINERS: 1
       NETWORKS: 1
       IMAGES: 1
       POST: 1
+      LIBPOD_PING: 0
+      LIBPOD_VERSION: 0
     volumes:
       - type: bind
         read_only: true
@@ -142,7 +145,7 @@ services:
         target: /var/run/docker.sock
     networks: [default]
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2375/_ping"]
       interval: 3s
       timeout: 2s
       retries: 6

@@ -153,7 +153,7 @@ _CONFIG_JSON = """
 {"name": "postern", "services": {
   "portal": {"image": "local/postern-portal", "build": {"context": "."}},
   "nginx": {"image": "local/nginx", "build": {"context": "./nginx"}},
-  "docker-proxy": {"image": "tecnativa/docker-socket-proxy:v0.4.2"}
+  "docker-proxy": {"image": "ghcr.io/linuxserver/socket-proxy:3.4.7-r0-ls104@sha256:4e5e59efd3338205561c54262581992036e5a36ccca97d487b1d4ec41f9adc58"}
 }}
 """
 
@@ -983,10 +983,10 @@ def _cs(service, name, image_id, revision, health="", *, state="running", exit_c
     )
 
 
-_PROXY_REF = "tecnativa/docker-socket-proxy:v0.4.2"
-# Third-party images ship their OWN project's revision label; docker-socket-proxy
+_PROXY_REF = "ghcr.io/linuxserver/socket-proxy:3.4.7-r0-ls104@sha256:4e5e59efd3338205561c54262581992036e5a36ccca97d487b1d4ec41f9adc58"
+# Third-party images ship their OWN project's revision label; linuxserver/socket-proxy
 # really does (verified on the deploy host).
-_PROXY_REV = "2f04313b042c1bf4dfbd039475dfc42db79bde7a"
+_PROXY_REV = "d906b09b77c5d5c794946e830d3fd1f5d2465011"
 
 
 def _obs(**overrides):

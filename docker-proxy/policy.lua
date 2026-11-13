@@ -20,6 +20,11 @@ M.SS_MEMORY_BYTES = 536870912
 M.SS_PIDS_LIMIT = 1024
 M.SS_TMPFS = {["/tmp"] = "", ["/home/nonroot/.cache"] = "exec"}
 
+-- The instance ids this proxy accepts, as a regular expression. Lua patterns cannot state `{0,62}`, so
+-- config_from_env checks the same thing by hand; reconciler.INSTANCE_ID_PATTERN states it again and
+-- tests/test_compose_docker_proxy.py pins the two strings equal.
+M.INSTANCE_ID_REGEX = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"
+
 M.MAX_BODY = 8192
 local MAX_REPLY = 1048576
 

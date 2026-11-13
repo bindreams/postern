@@ -673,7 +673,7 @@ eq("config: image verbatim", env_cfg{SHADOWSOCKS_IMAGE = "x/y:z"}.image, "x/y:z"
 eq("config: image unset", env_cfg{}.image, "")
 eq("config: network verbatim", env_cfg{SHADOWSOCKS_NETWORK = "n"}.network, "n")
 eq("config: network unset", env_cfg{}.network, "")
-for _, bad in ipairs({"-a", ".a", "_a", "a b", "a\"b", "a,b", "a/b", "a\\b", "a%b", "a&b", "a=b", "a\nb", string.rep("a", 64), "é"}) do
+for _, bad in ipairs({"prod:eu", "-a", ".a", "_a", "a b", "a\"b", "a,b", "a/b", "a\\b", "a%b", "a&b", "a=b", "a\nb", string.rep("a", 64), "é", "\194\160a", "a\194\160"}) do
   eq("config: instance " .. bad:gsub("%c", "?"), env_cfg{INSTANCE_ID = bad}.instance, nil)
 end
 eq("config: instance of 63 characters", env_cfg{INSTANCE_ID = string.rep("a", 63)}.instance, string.rep("a", 63))

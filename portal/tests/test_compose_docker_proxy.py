@@ -104,6 +104,14 @@ def test_the_policy_constants_equal_the_reconcilers():
     assert dict(re.findall(r'\["([^"]+)"\] = "([^"]*)"', tmpfs.group(1))) == reconciler.SS_TMPFS
 
 
+def test_the_instance_id_pattern_equals_the_reconcilers():
+    """The portal must not accept an instance id the proxy refuses; both sides state the same regex."""
+    policy = (PROXY_DIR / "policy.lua").read_text(encoding="utf-8")
+    stated = re.search(r'^M\.INSTANCE_ID_REGEX = "([^"]+)"$', policy, re.M)
+    assert stated, "policy.lua no longer states the pattern on a single `M.INSTANCE_ID_REGEX` line"
+    assert stated.group(1) == reconciler.INSTANCE_ID_PATTERN.pattern
+
+
 # Per file =============================================================================================================
 def test_every_stack_defines_the_proxy_from_the_same_context():
     defining = _files_defining_the_proxy()

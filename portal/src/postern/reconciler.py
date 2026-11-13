@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import re
 import threading
 from dataclasses import dataclass
 
@@ -29,6 +30,11 @@ logger = logging.getLogger(__name__)
 MANAGED_LABEL = "postern.managed"
 MANAGED_VALUE = "true"
 INSTANCE_LABEL = "postern.instance"
+
+# The only instance ids the docker-proxy accepts (it pastes the id into a daemon filter). docker-proxy/policy.lua
+# states the same pattern; tests/test_compose_docker_proxy.py pins the copies equal.
+_ASCII_WHITESPACE = " \t\n\v\f\r"
+INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
 # What every tunnel container is created with. The docker-proxy's allow-list (docker-proxy/policy.lua) repeats these
 # three and refuses a create body that differs; tests/test_compose_docker_proxy.py pins the copies equal.
@@ -254,6 +260,13 @@ def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
 
+def configured_instance_id(settings: Settings) -> str:
+    """The id `resolve_instance_id` validates: the INSTANCE_ID override, else the compose project name, else "".
+    Stripped of ASCII whitespace only, as the docker-proxy does (Python's own `strip()` also drops Unicode spaces,
+    which would let the portal accept an id the proxy refuses)."""
+    return settings.instance_id.strip(_ASCII_WHITESPACE) or settings.compose_project_name.strip(_ASCII_WHITESPACE)
+
+
 def resolve_instance_id(settings: Settings) -> str | None:
     """Resolve this portal's instance id from configuration alone -- no live
     Docker API call.
@@ -266,17 +279,25 @@ def resolve_instance_id(settings: Settings) -> str | None:
     inputs come from `Settings`, constructed once at process startup, so
     this returns the identical value for the entire life of the process.
 
-    Returns None only when NEITHER is set -- the portal wasn't started via
-    an up-to-date `docker compose` invocation at all. Callers must treat
-    None as "unknown" and skip every destructive container operation.
+    Returns None when NEITHER is set -- the portal wasn't started via an
+    up-to-date `docker compose` invocation at all -- or when the id in use
+    does not match INSTANCE_ID_PATTERN (the docker-proxy would refuse every
+    request carrying it; an invalid override does not fall back to the
+    project name, matching the proxy). Callers must treat None as "unknown"
+    and skip every destructive container operation.
     """
-    override = settings.instance_id.strip()
-    if override:
-        return override
-    derived = settings.compose_project_name.strip()
-    if derived:
-        return derived
-    return None
+    chosen = configured_instance_id(settings)
+    if not chosen:
+        return None
+    if not INSTANCE_ID_PATTERN.fullmatch(chosen):
+        logger.error(
+            "Instance id %r is not valid: it must match %s (the docker-proxy refuses any other id). "
+            "Fix INSTANCE_ID (or COMPOSE_PROJECT_NAME when INSTANCE_ID is empty).",
+            chosen,
+            INSTANCE_ID_PATTERN.pattern,
+        )
+        return None
+    return chosen
 
 
 def _log_resolved_identity_once(settings: Settings, instance_id: str) -> None:

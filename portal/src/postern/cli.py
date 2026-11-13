@@ -62,14 +62,16 @@ def _warn_if_identity_unresolved(settings: Settings) -> bool:
     `connection add`) would otherwise give no indication that no container
     will actually be created. Returns whether it warned.
     """
-    from postern.reconciler import resolve_instance_id
+    from postern.reconciler import INSTANCE_ID_PATTERN, configured_instance_id, resolve_instance_id
     if resolve_instance_id(settings) is not None:
         return False
+    chosen = configured_instance_id(settings)
+    cause = (f"{chosen!r} is not a valid id: it must match {INSTANCE_ID_PATTERN.pattern}" if chosen else
+             "neither INSTANCE_ID nor COMPOSE_PROJECT_NAME is set")
     typer.echo(
-        "WARNING: could not determine this deployment's instance id (neither INSTANCE_ID "
-        "nor COMPOSE_PROJECT_NAME is set) -- the reconciler will NOT create, remove, or "
-        "restart any container until this is fixed. Check that the portal was started via "
-        "`docker compose` with an up-to-date compose.yaml.",
+        f"WARNING: could not determine this deployment's instance id ({cause}) -- the reconciler "
+        "will NOT create, remove, or restart any container until this is fixed. Check that the "
+        "portal was started via `docker compose` with an up-to-date compose.yaml.",
         err=True,
     )
     return True

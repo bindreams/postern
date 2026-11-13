@@ -440,6 +440,17 @@ def test_reconcile_fails_when_identity_unresolved(cli_env, monkeypatch):
     assert "WARNING: could not determine this deployment's instance id" in result.output
 
 
+def test_reconcile_fails_when_the_instance_id_is_one_the_proxy_refuses(cli_env, monkeypatch):
+    """An id the docker-proxy would deny every request for is as unusable as none: same warning, same exit code."""
+    monkeypatch.setenv("INSTANCE_ID", "prod:eu")
+
+    result = runner.invoke(app, ["reconcile"])
+
+    assert result.exit_code == 1
+    assert "WARNING: could not determine this deployment's instance id" in result.output
+    assert "prod:eu" in result.output
+
+
 def test_reconcile_succeeds_when_identity_resolved(cli_env):
     result = runner.invoke(app, ["reconcile"])
     assert result.exit_code == 0

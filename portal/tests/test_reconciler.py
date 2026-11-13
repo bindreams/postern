@@ -148,6 +148,33 @@ def test_resolve_instance_id_treats_whitespace_only_compose_project_name_as_unse
     assert resolve_instance_id(settings) is None
 
 
+# The docker-proxy refuses ids that do not match INSTANCE_ID_PATTERN (policy.lua states the same pattern), so an id the
+# portal accepted but the proxy refused would be a silent outage. Same cases as the Lua suite's "config: instance".
+BAD_INSTANCE_IDS = ["prod:eu", "-a", ".a", "_a", "a b", 'a"b', "a,b", "a/b", "a" + chr(92) + "b", "a%b", "a&b", "a=b", "a" + chr(10) + "b", "a" * 64, chr(233), chr(160) + "a", "a" + chr(160)]
+
+
+@pytest.mark.parametrize("good", ["a", "A1_b.c-d", "postern-test", "a" * 63])
+def test_resolve_instance_id_accepts_an_id_the_proxy_accepts(good):
+    settings = Settings(secret_key="test-secret", instance_id=good, compose_project_name="")
+    assert resolve_instance_id(settings) == good
+
+
+@pytest.mark.parametrize("bad", BAD_INSTANCE_IDS)
+def test_resolve_instance_id_rejects_an_override_the_proxy_would_refuse(bad, caplog):
+    settings = Settings(secret_key="test-secret", instance_id=bad, compose_project_name="postern-e2e")
+    with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+        assert resolve_instance_id(settings) is None
+    # No fallback to the project name: the proxy does not fall back either.
+    assert any(reconciler.INSTANCE_ID_PATTERN.pattern in r.getMessage() and repr(bad) in r.getMessage()
+               for r in caplog.records), [r.getMessage() for r in caplog.records]
+
+
+@pytest.mark.parametrize("bad", BAD_INSTANCE_IDS)
+def test_resolve_instance_id_rejects_a_project_name_the_proxy_would_refuse(bad):
+    settings = Settings(secret_key="test-secret", instance_id="", compose_project_name=bad)
+    assert resolve_instance_id(settings) is None
+
+
 def test_list_managed_containers_filters_on_managed_and_instance_labels():
     client = MagicMock()
     client.containers.list.return_value = []

@@ -71,7 +71,7 @@ Every `ss-*` container the reconciler creates is stamped with a `postern.instanc
 
 Two Postern deployments on one Docker daemon must resolve **different** instance ids. The docker-proxy tells deployments apart by that id alone: with equal ids each proxy treats the other deployment's labelled containers as its own. To check, read the `Resolved own instance id to ...` line in each deployment's portal log at startup; the values must differ.
 
-If the portal cannot determine its own instance id at all (neither variable is set — e.g. the portal wasn't started via `docker compose`, or an old `compose.yaml` is in use), it fails safe: it skips *all* container creation, removal, and restart for that pass (session/OTP cleanup still runs), logs an error every pass to that effect, and every state-mutating `postern` CLI command prints a `WARNING` to that effect too.
+An instance id must match `^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$` (the docker-proxy refuses any other). If the portal cannot determine its own instance id at all (neither variable is set — e.g. the portal wasn't started via `docker compose`, or an old `compose.yaml` is in use — or the one in use does not match that pattern), it fails safe: it skips *all* container creation, removal, and restart for that pass (session/OTP cleanup still runs), logs an error every pass to that effect, and every state-mutating `postern` CLI command prints a `WARNING` to that effect too.
 
 ```{important}
 **Required reading when upgrading past per-service environment delivery.** Services now receive only the variables they read; if you put DNS provider credentials or `SMTP_PASSWORD` in `.env`, consider rotating them. Your `.env` values need no move. Before `scripts/deploy.sh`, check three things:

@@ -247,6 +247,12 @@ def resolve_ss_image(config: dict, flag: str) -> str:
     return _portal_env(config).get("SHADOWSOCKS_IMAGE") or DEFAULT_SS_IMAGE
 
 
+# The only instance ids the portal and the docker-proxy accept; stated again here because this script imports nothing
+# from the portal. tests/test_docker_proxy_policy.py compares all three validators case by case.
+INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+_ASCII_WHITESPACE = " \t\n\v\f\r"
+
+
 def resolve_instance_id(config: dict, project: str) -> str:
     """The `postern.instance` label value `--tunnels` filters on.
 
@@ -256,14 +262,24 @@ def resolve_instance_id(config: dict, project: str) -> str:
     project name IS the value the reconciler derives, because compose.yaml's
     `COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}` passthrough feeds
     Settings.compose_project_name from the exact same project-name resolution
-    `docker compose config`'s "name" already reports.
+    `docker compose config`'s "name" already reports. Both are stripped of
+    ASCII whitespace only, and the result must match INSTANCE_ID_PATTERN (an
+    invalid override does not fall back to the project name): an id the portal
+    refuses to run with cannot be the id its containers carry, so the gate
+    fails rather than filter on it.
 
     Scoping tunnels this way keeps a host running more than one Postern
     deployment (production + an e2e run, two checkouts, ...) from reporting
     a DIFFERENT deployment's tunnels as this one's.
     """
-    override = (_portal_env(config).get("INSTANCE_ID") or "").strip()
-    return override or project
+    override = (_portal_env(config).get("INSTANCE_ID") or "").strip(_ASCII_WHITESPACE)
+    chosen = override or project.strip(_ASCII_WHITESPACE)
+    if not INSTANCE_ID_PATTERN.fullmatch(chosen):
+        raise CollectError(
+            f"instance id {chosen!r} is not valid: it must match {INSTANCE_ID_PATTERN.pattern} "
+            "(set INSTANCE_ID, or fix the compose project name when INSTANCE_ID is empty)"
+        )
+    return chosen
 
 
 _ENV_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")

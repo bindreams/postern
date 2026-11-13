@@ -31,8 +31,8 @@ MANAGED_LABEL = "postern.managed"
 MANAGED_VALUE = "true"
 INSTANCE_LABEL = "postern.instance"
 
-# The only instance ids the docker-proxy accepts (it pastes the id into a daemon filter). docker-proxy/policy.lua
-# states the same pattern; tests/test_compose_docker_proxy.py pins the copies equal.
+# The only instance ids the docker-proxy accepts (it pastes the id into a daemon filter). docker-proxy/policy.lua and
+# scripts/verify-deploy.py validate the same way; tests/test_docker_proxy_policy.py compares all three on edge cases.
 _ASCII_WHITESPACE = " \t\n\v\f\r"
 INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
@@ -241,11 +241,24 @@ def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
 
-def configured_instance_id(settings: Settings) -> str:
-    """The id `resolve_instance_id` validates: the INSTANCE_ID override, else the compose project name, else "".
-    Stripped of ASCII whitespace only, as the docker-proxy does (Python's own `strip()` also drops Unicode spaces,
+def _ascii_stripped(value: str) -> str:
+    """Stripped of ASCII whitespace only, as the docker-proxy does (Python's own `strip()` also drops Unicode spaces,
     which would let the portal accept an id the proxy refuses)."""
-    return settings.instance_id.strip(_ASCII_WHITESPACE) or settings.compose_project_name.strip(_ASCII_WHITESPACE)
+    return value.strip(_ASCII_WHITESPACE)
+
+
+def configured_instance_id(settings: Settings) -> str:
+    """The id `resolve_instance_id` validates: the INSTANCE_ID override, else the compose project name, else ""."""
+    return _ascii_stripped(settings.instance_id) or _ascii_stripped(settings.compose_project_name)
+
+
+def instance_id_fault(settings: Settings) -> str:
+    """Why `resolve_instance_id` returned None, naming the offending value and the pattern. For the callers that
+    report it; resolving itself logs nothing, so a fault is reported once per caller."""
+    chosen = configured_instance_id(settings)
+    if chosen:
+        return f"{chosen!r} is not a valid id: it must match {INSTANCE_ID_PATTERN.pattern}"
+    return "neither INSTANCE_ID nor COMPOSE_PROJECT_NAME is set"
 
 
 def resolve_instance_id(settings: Settings) -> str | None:
@@ -265,20 +278,10 @@ def resolve_instance_id(settings: Settings) -> str | None:
     does not match INSTANCE_ID_PATTERN (the docker-proxy would refuse every
     request carrying it; an invalid override does not fall back to the
     project name, matching the proxy). Callers must treat None as "unknown"
-    and skip every destructive container operation.
+    and skip every destructive container operation, reporting `instance_id_fault`.
     """
     chosen = configured_instance_id(settings)
-    if not chosen:
-        return None
-    if not INSTANCE_ID_PATTERN.fullmatch(chosen):
-        logger.error(
-            "Instance id %r is not valid: it must match %s (the docker-proxy refuses any other id). "
-            "Fix INSTANCE_ID (or COMPOSE_PROJECT_NAME when INSTANCE_ID is empty).",
-            chosen,
-            INSTANCE_ID_PATTERN.pattern,
-        )
-        return None
-    return chosen
+    return chosen if INSTANCE_ID_PATTERN.fullmatch(chosen) else None
 
 
 def _log_resolved_identity_once(settings: Settings, instance_id: str) -> None:
@@ -295,11 +298,11 @@ def _log_resolved_identity_once(settings: Settings, instance_id: str) -> None:
     has them on hand, without a WARNING that would fire on every correctly
     configured override deployment and teach operators to ignore it.
     """
-    override = settings.instance_id.strip()
+    override = _ascii_stripped(settings.instance_id)
     if not override:
         logger.info("Resolved own instance id to %r (from COMPOSE_PROJECT_NAME)", instance_id)
         return
-    derived = settings.compose_project_name.strip()
+    derived = _ascii_stripped(settings.compose_project_name)
     if derived and derived != instance_id:
         logger.info(
             "Resolved own instance id to %r (from INSTANCE_ID override; COMPOSE_PROJECT_NAME=%r). "
@@ -689,7 +692,12 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                     client = None  # ownership transferred to _reconcile_pass; the finally below must not close it
                     await asyncio.shield(asyncio.wrap_future(future))
                 else:
-                    logger.error("Skipping container reconciliation this pass (session/OTP cleanup still runs)")
+                    logger.error(
+                        "Skipping container reconciliation this pass (session/OTP cleanup still runs): "
+                        "could not determine the instance id (%s). Fix INSTANCE_ID, or COMPOSE_PROJECT_NAME "
+                        "when INSTANCE_ID is empty.",
+                        instance_id_fault(settings),
+                    )
             finally:
                 if client is not None:
                     client.close()
@@ -754,7 +762,7 @@ async def cleanup_all_containers(settings: Settings) -> None:
     logger.info("Cleaning up all managed containers")
     instance_id = resolve_instance_id(settings)
     if instance_id is None:
-        logger.error("Skipping shutdown cleanup: could not determine own instance identity")
+        logger.error("Skipping shutdown cleanup: could not determine the instance id (%s)", instance_id_fault(settings))
         return
     try:
         client = _get_docker_client()

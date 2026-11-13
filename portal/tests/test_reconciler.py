@@ -167,12 +167,11 @@ def test_resolve_instance_id_accepts_an_id_the_proxy_accepts(good):
 @pytest.mark.parametrize("bad", BAD_INSTANCE_IDS)
 def test_resolve_instance_id_rejects_an_override_the_proxy_would_refuse(bad, caplog):
     settings = Settings(secret_key="test-secret", instance_id=bad, compose_project_name="postern-e2e")
-    with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+    with caplog.at_level(logging.DEBUG, logger="postern.reconciler"):
+        # No fallback to the project name: the proxy does not fall back either.
         assert resolve_instance_id(settings) is None
-    # No fallback to the project name: the proxy does not fall back either.
-    assert any(
-        reconciler.INSTANCE_ID_PATTERN.pattern in r.getMessage() and repr(bad) in r.getMessage() for r in caplog.records
-    ), [r.getMessage() for r in caplog.records]
+    # Resolving reports nothing: each caller names the fault once, in its own channel.
+    assert caplog.records == []
 
 
 @pytest.mark.parametrize("bad", BAD_INSTANCE_IDS)
@@ -1153,6 +1152,25 @@ async def test_reconcile_skips_container_ops_when_identity_unknown(tmp_path):
     client.close.assert_called_once()
 
 
+async def test_reconcile_names_an_instance_id_the_proxy_refuses_in_one_error(tmp_path, caplog):
+    db_path = tmp_path / "postern.db"
+    async with db.get_connection(str(db_path)) as conn:
+        await db.migrate(conn)
+    settings = Settings(
+        secret_key="test-secret", database_path=str(db_path), instance_id="prod:eu", compose_project_name=""
+    )
+    client = MagicMock()
+    client.images.get.return_value = MagicMock(id="img1")
+
+    with patch("postern.reconciler._get_docker_client", return_value=client), \
+         caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+        await reconcile(str(db_path), settings)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1, errors
+    assert repr("prod:eu") in errors[0] and reconciler.INSTANCE_ID_PATTERN.pattern in errors[0]
+
+
 async def test_reconcile_runs_cleanup_expired_even_if_container_reconcile_raises(tmp_path):
     """cleanup_expired must run even when the container-reconcile branch
     raises for a reason OTHER than unresolved identity (e.g. an unexpected
@@ -1409,6 +1427,19 @@ async def test_cleanup_all_containers_skips_when_identity_unknown():
         await cleanup_all_containers(settings)
 
     mock_get_client.assert_not_called()
+
+
+async def test_cleanup_all_containers_names_an_instance_id_the_proxy_refuses_in_one_error(caplog):
+    settings = Settings(secret_key="test-secret", instance_id="prod:eu", compose_project_name="")
+
+    with patch("postern.reconciler._get_docker_client") as mock_get_client, \
+         caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+        await cleanup_all_containers(settings)
+
+    mock_get_client.assert_not_called()
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1, errors
+    assert repr("prod:eu") in errors[0] and reconciler.INSTANCE_ID_PATTERN.pattern in errors[0]
 
 
 async def test_cleanup_all_containers_ignores_container_from_different_instance():

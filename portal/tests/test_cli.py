@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from postern import reconcile_wait
 from postern.cli import app
+from postern.reconciler import INSTANCE_ID_PATTERN
 
 runner = CliRunner()
 
@@ -362,7 +363,9 @@ def test_reconcile_fails_when_the_instance_id_is_one_the_proxy_refuses(cli_env, 
 
     assert result.exit_code == 1
     assert "WARNING: could not determine this deployment's instance id" in result.output
-    assert "prod:eu" in result.output
+    # Named once: the warning carries the value and the pattern, and nothing else reports the same fault.
+    assert result.output.count("prod:eu") == 1
+    assert result.output.count(INSTANCE_ID_PATTERN.pattern) == 1
 
 
 def test_reconcile_succeeds_when_identity_resolved(cli_env):

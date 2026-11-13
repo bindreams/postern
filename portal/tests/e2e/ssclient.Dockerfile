@@ -8,7 +8,7 @@ RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 FROM fetch AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG EX_RAY_VERSION=v0.3.1
+ARG EX_RAY_VERSION=v0.3.0
 # ex-ray installed under the wire-compatible `v2ray-plugin` name (see
 # shadowsocks/Dockerfile). Raw per-arch binary, not a tarball.
 RUN <<-EOF
@@ -28,7 +28,7 @@ EOF
 FROM fetch AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.4.1
+ARG GALOSHES_VERSION=v0.4.0
 RUN <<-EOF
 	set -eu
 	v="${GALOSHES_VERSION#v}"

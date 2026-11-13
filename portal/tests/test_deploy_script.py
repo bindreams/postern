@@ -65,6 +65,10 @@ if [[ "$1 ${2:-} ${3:-}" == "compose config --services" ]]; then
     printf '%s\n' ${FAKE_COMPOSE_SERVICES:-nginx portal docker-proxy}
     exit 0
 fi
+if [[ "$1 ${2:-} ${3:-}" == "compose config --no-interpolate" ]]; then
+    echo '{"services": {}}'
+    exit 0
+fi
 if [[ "$1 ${2:-}" == "compose run" ]]; then
     printf '%s\n' "${FAKE_PORTAL_SS_IMAGE-local/shadowsocks-server}"
     exit 0
@@ -90,13 +94,18 @@ fi
 exit 0
 """
 
-# Fake python3. deploy.sh's only two python3 invocations are both
-# `scripts/verify-deploy.py`, matched by their distinguishing flag.
+# Fake python3. deploy.sh's python3 invocations are all `scripts/verify-deploy.py`,
+# matched by their distinguishing flag.
 PYTHON_SHIM = r"""#!/usr/bin/env bash
 printf 'python3|%s|%s\n' "$PWD" "$*" >> "$DEPLOY_TEST_LOG"
 if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --print-revision" ]]; then
     printf '%s\n' "${FAKE_GIT_REVISION:-abc1234}"
     exit "${FAKE_PRINT_REVISION_RC:-0}"
+fi
+if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --print-shell-overrides" ]]; then
+    cat > /dev/null
+    printf '%s\n' ${FAKE_SHELL_OVERRIDES:-}
+    exit 0
 fi
 if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --tunnels" ]]; then
     printf 'python3-stdin|%s|%s\n' "$PWD" "$(tr '\n' ' ')" >> "$DEPLOY_TEST_LOG"
@@ -464,6 +473,25 @@ def test_notes_the_provisioner_startup_gate_when_the_provisioner_is_active(tmp_p
 def test_no_provisioner_note_when_it_is_not_in_the_active_profiles(tmp_path):
     proc, _calls = _run(tmp_path, FAKE_COMPOSE_SERVICES="nginx portal docker-proxy")
     assert "compose.cert.yaml" not in (proc.stdout + proc.stderr)
+
+
+def test_warns_by_name_when_the_shell_exports_a_variable_compose_passes_through(tmp_path):
+    """A shell value silently wins over the same name in .env; INSTANCE_ID or AWS_* exported
+    for another purpose would otherwise change what a service receives with no sign of it."""
+    proc, calls = _run(tmp_path, FAKE_SHELL_OVERRIDES="AWS_REGION INSTANCE_ID")
+    assert proc.returncode == 0, proc.stderr
+    assert "AWS_REGION INSTANCE_ID" in proc.stderr
+    assert ".env" in proc.stderr
+    # Before anything is built: the operator can still stop the deploy.
+    tools = [a for _n, _c, a in calls]
+    warned_at = next(i for i, a in enumerate(tools) if a.endswith("--print-shell-overrides"))
+    assert warned_at < next(i for i, a in enumerate(tools) if a.startswith("compose build"))
+
+
+def test_no_override_warning_when_the_shell_exports_nothing_compose_passes_through(tmp_path):
+    proc, _calls = _run(tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert "exported in this shell" not in proc.stderr
 
 
 def test_a_broken_compose_config_is_refused_before_anything_is_built(tmp_path):

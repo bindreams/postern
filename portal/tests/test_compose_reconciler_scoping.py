@@ -10,15 +10,11 @@ SHADOWSOCKS_NETWORK are two separate places that must resolve to the same value
 from __future__ import annotations
 
 import os
-import shutil
 from pathlib import Path
 
 import pytest
 
-from ._compose import load_compose, run_compose_config
-
-# tests/ -> portal/ -> repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+from ._compose import REPO_ROOT, compose_project, load_compose, resolve_compose, run_compose_config
 
 COMPOSE_PROJECT_NAME_EXPR = "${COMPOSE_PROJECT_NAME:-}"
 
@@ -103,23 +99,13 @@ def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
 
 # Real Compose-CLI resolution ==========================================================================================
 def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str | None) -> dict:
-    """Resolve compose.yaml with the real Compose CLI and return its JSON.
-
-    compose.yaml is copied into `tmp_path` because Compose resolves `.env` against
-    the project directory: pointing the CLI at the repo's own
-    compose.yaml would read the operator's real .env (or fail without one). The
-    copy is byte-identical, so what is resolved is the shipped file.
-    """
-    shutil.copy(REPO_ROOT / "compose.yaml", tmp_path / "compose.yaml")
-    lines = ["SECRET_KEY=test-only\n"]
+    """Resolve compose.yaml with the real Compose CLI and return its JSON."""
+    dotenv = {"SECRET_KEY": "test-only"}
     if env_file_value is not None:
-        lines.append(f"SHADOWSOCKS_NETWORK={env_file_value}\n")
-    (tmp_path / ".env").write_text("".join(lines), encoding="utf-8")
-
-    env = {k: v for k, v in os.environ.items() if k != "SHADOWSOCKS_NETWORK"}
-    if shell_env is not None:
-        env["SHADOWSOCKS_NETWORK"] = shell_env
-    return run_compose_config(["-f", "compose.yaml"], tmp_path, env)
+        dotenv["SHADOWSOCKS_NETWORK"] = env_file_value
+    project = compose_project(tmp_path, ["compose.yaml"], dotenv)
+    shell = {} if shell_env is None else {"SHADOWSOCKS_NETWORK": shell_env}
+    return resolve_compose(project, ["compose.yaml"], shell)
 
 
 @pytest.mark.compose_cli

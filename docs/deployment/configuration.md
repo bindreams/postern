@@ -7,16 +7,16 @@ Settings live in `.env` at the repository root — copy [example.env](https://gi
 Each container receives only the variables it reads. `compose.yaml` lists them per service, and no service loads `.env` wholesale.
 
 - Names in `.env` must be `UPPER_SNAKE_CASE`. Compose is case-sensitive, so a lowercase name (`smtp_host=...`) is ignored.
-- A value exported in the shell that runs `docker compose` overrides the same name in `.env`.
-- Only the names documented on this page, plus the provider credentials listed in [email](email.md), reach a container. Any other name in `.env` is ignored.
+- A value exported in the shell that runs `docker compose` overrides the same name in `.env`. `scripts/deploy.sh` warns, by name only, about every such variable.
+- Only the names documented on this page, plus the DNS provider variables described in [email](email.md), reach a container. Any other name in `.env` is ignored.
 - A variable left unset stays unset in the container, so each setting falls back to its default.
 
-| Container     | Secrets it receives                                        |
-| ------------- | ---------------------------------------------------------- |
-| `portal`      | `SECRET_KEY`, `SMTP_USER`, `SMTP_PASSWORD`                 |
-| `provisioner` | the DNS provider credentials (listed in [email](email.md)) |
-| `mta`         | none                                                       |
-| `nginx`       | none                                                       |
+| Container     | Secrets it receives                                           |
+| ------------- | ------------------------------------------------------------- |
+| `portal`      | `SECRET_KEY`, `SMTP_USER`, `SMTP_PASSWORD`                    |
+| `provisioner` | the DNS provider credentials (described in [email](email.md)) |
+| `mta`         | none                                                          |
+| `nginx`       | none                                                          |
 
 ## Core
 

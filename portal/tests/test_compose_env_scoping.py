@@ -6,15 +6,14 @@ one channel only, and an unset variable stays absent in the container (the
 portal and provisioner treat "set but empty" differently from "unset").
 
 The read sets are derived from source, so a new `Settings` field, entrypoint
-variable or DNS provider that is not wired into compose fails here.
+variable or DNS provider that is not wired into compose fails here, and so does
+a variable compose delivers that nothing reads.
 Static checks parse the YAML; `compose_cli` tests resolve it with the real
 Compose CLI (no daemon).
 """
 from __future__ import annotations
 
-import os
 import re
-import shutil
 from pathlib import Path
 
 import pytest
@@ -24,9 +23,10 @@ from postern.settings import Settings
 from ._compose import (
     ALL_COMPOSE_FILES,
     REPO_ROOT,
+    compose_project,
     load_compose,
     repo_relative,
-    run_compose_config,
+    resolve_compose,
     service_environment,
 )
 
@@ -34,61 +34,119 @@ COMPOSE = REPO_ROOT / "compose.yaml"
 E2E_MTA_REAL = REPO_ROOT / "portal" / "tests" / "e2e" / "e2e-mta-real.compose.yaml"
 
 # What each service reads, derived from source =========================================================================
-_STRING_LITERAL = r'"([A-Z][A-Z0-9_]*)"'
+_STRING_LITERAL = r"""["']([A-Z][A-Z0-9_]*)["']"""
+# Every spelling of an environment read in the Python sources: os.environ[...], os.environ.get(...), os.getenv(...),
+# env.get(...) / self.env.get(...) (an injected copy of os.environ), and the entrypoints' own _require / _bool_env.
 _PY_ENV_READ = re.compile(
-    rf"os\.environ(?:\.get\(|\[)\s*{_STRING_LITERAL}|_require\(\s*{_STRING_LITERAL}|_bool_env\(\s*{_STRING_LITERAL}"
+    r"(?:os\.environ(?:\.get\(|\[)|os\.getenv\(|\benv\.get\(|\benv\[|\b_require\(|\b_bool_env\()\s*" + _STRING_LITERAL
 )
-
-
-def _python_env_reads(*relpaths: str) -> set[str]:
-    names: set[str] = set()
-    for relpath in relpaths:
-        text = (REPO_ROOT / relpath).read_text(encoding="utf-8")
-        names.update(name for match in _PY_ENV_READ.finditer(text) for name in match.groups() if name)
-    return names
-
-
-def _go_provider_vars() -> frozenset[str]:
-    """Every variable `newProvider` reads in provisioner/postern-dns/main.go, the one
-    place libdns-native names enter the stack (`lego_env.py` translates the same set)."""
-    source = (REPO_ROOT / "provisioner" / "postern-dns" / "main.go").read_text(encoding="utf-8")
-    body = source[source.index("func newProvider("):]
-    body = body[:body.index("\n}\n")]
-    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("//"))
-    names = frozenset(re.findall(r'os\.Getenv\("([A-Z0-9_]+)"\)', code))
-    assert names, "no os.Getenv names found in newProvider -- the derivation rotted"
-    return names
-
-
-def _nginx_reads() -> set[str]:
-    """Names in the `#   NAME  (...)` list in render.sh's header comment."""
-    header = (REPO_ROOT / "nginx" / "render.sh").read_text(encoding="utf-8").split("render_templates()")[0]
-    return set(re.findall(r"^#   ([A-Z][A-Z0-9_]+)\s", header, re.M))
-
-
-PROVIDER_VARS = _go_provider_vars()
+# lego_env.py also passes a provider's variables through in a loop: `for k in ("A", "B"): if k in env`.
+_PY_ENV_TUPLE = re.compile(r"\bfor \w+ in \(((?:\s*[\"'][A-Z][A-Z0-9_]*[\"'],?)+)\s*\)")
+_SH_ENV_READ = re.compile(r"\$\{?([A-Z][A-Z0-9_]*)")
 
 # Test hooks the e2e compose files set explicitly; production does not deliver them.
 _MTA_TEST_HOOKS = {"MTA_E2E_TRANSPORT_OVERRIDE"}
 # Read only by the pebble e2e provider, which the e2e stack sets itself.
 _PROVISIONER_TEST_HOOKS = {"LEGO_EXEC_PATH"}
-
-READS = {
-    "portal": {field.upper()
-               for field in Settings.model_fields},
-    "mta": _python_env_reads("mta/entrypoint.py") - _MTA_TEST_HOOKS,
-    "provisioner": (
-        _python_env_reads("provisioner/entrypoint.py", "portal/src/postern_provisioner/healthcheck.py") | PROVIDER_VARS
-    ) - _PROVISIONER_TEST_HOOKS,
-    "nginx": _nginx_reads(),
+# Injection seams of the nginx scripts (their unit tests set them), a render-internal template token and a local.
+_NGINX_SEAMS = {
+    "TEMPLATE_DIR", "TARGET_DIR", "PROXY_PROTOCOL_LISTEN", "EDGE_DIR", "EDGE_SELF", "EDGE_NGINX", "EDGE_INOTIFYD",
+    "EDGE_WATCHER_PID"
 }
+# Names a service receives that its own source never spells out: the Docker SDK reads DOCKER_HOST.
+_RECEIVED_WITHOUT_BEING_SPELLED = {"portal": {"DOCKER_HOST"}}
 
-# Secrets, by the one service that owns them. Compared by value in the CLI test.
-PORTAL_SECRETS = ("SECRET_KEY", "SMTP_PASSWORD", "SMTP_USER")
-OWNED_SECRETS = {
-    "portal": PORTAL_SECRETS,
-    "provisioner": tuple(sorted(PROVIDER_VARS)),
-}
+# Lego's documented environment variables for the eight DNS_PROVIDERs (credentials and tuning), from
+# https://github.com/go-acme/lego/blob/v4.35.2/providers/dns/<slug>/<slug>.toml, plus AWS_SESSION_TOKEN, which the
+# route53 description names. The provisioner runs lego with its whole environment, so lego reads these without any
+# Postern code naming them. A new lego version means re-reading those pages (see test_lego_variables_match_the_pin).
+_LEGO_DOCS_VERSION = "v4.35.2"
+_LEGO_TUNING = ("POLLING_INTERVAL", "PROPAGATION_TIMEOUT", "TTL", "HTTP_TIMEOUT")
+LEGO_NATIVE_VARS = frozenset({
+    # cloudflare
+    "CF_API_EMAIL", "CF_API_KEY", "CF_DNS_API_TOKEN", "CF_ZONE_API_TOKEN", "CLOUDFLARE_EMAIL", "CLOUDFLARE_API_KEY",
+    "CLOUDFLARE_DNS_API_TOKEN", "CLOUDFLARE_ZONE_API_TOKEN", "CLOUDFLARE_BASE_URL",
+    *(f"CLOUDFLARE_{t}" for t in _LEGO_TUNING),
+    # route53
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_HOSTED_ZONE_ID", "AWS_PROFILE",
+    "AWS_SDK_LOAD_CONFIG", "AWS_ASSUME_ROLE_ARN", "AWS_EXTERNAL_ID", "AWS_WAIT_FOR_RECORD_SETS_CHANGED",
+    "AWS_PRIVATE_ZONE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_MAX_RETRIES", "AWS_POLLING_INTERVAL",
+    "AWS_PROPAGATION_TIMEOUT", "AWS_TTL",
+    # gandi (lego slug gandiv5)
+    "GANDIV5_PERSONAL_ACCESS_TOKEN", "GANDIV5_API_KEY", *(f"GANDIV5_{t}" for t in _LEGO_TUNING),
+    # digitalocean
+    "DO_AUTH_TOKEN", "DO_API_URL", "DO_POLLING_INTERVAL", "DO_PROPAGATION_TIMEOUT", "DO_TTL", "DO_HTTP_TIMEOUT",
+    # ovh
+    "OVH_ENDPOINT", "OVH_APPLICATION_KEY", "OVH_APPLICATION_SECRET", "OVH_CONSUMER_KEY", "OVH_CLIENT_ID",
+    "OVH_CLIENT_SECRET", "OVH_ACCESS_TOKEN", *(f"OVH_{t}" for t in _LEGO_TUNING),
+    # hetzner
+    "HETZNER_API_TOKEN", *(f"HETZNER_{t}" for t in _LEGO_TUNING),
+    # linode (lego slug linodev4)
+    "LINODE_TOKEN", *(f"LINODE_{t}" for t in _LEGO_TUNING),
+    # namecheap
+    "NAMECHEAP_API_USER", "NAMECHEAP_API_KEY", "NAMECHEAP_SANDBOX", *(f"NAMECHEAP_{t}" for t in _LEGO_TUNING),
+})  # yapf: disable
+
+
+def _read(*relpaths: str) -> str:
+    return "\n".join((REPO_ROOT / relpath).read_text(encoding="utf-8") for relpath in relpaths)
+
+
+def _python_env_reads(*relpaths: str) -> set[str]:
+    text = _read(*relpaths)
+    names = {name for match in _PY_ENV_READ.finditer(text) for name in match.groups()}
+    for match in _PY_ENV_TUPLE.finditer(text):
+        names.update(re.findall(_STRING_LITERAL, match.group(1)))
+    return names
+
+
+def _shell_env_reads(*relpaths: str) -> set[str]:
+    code = "\n".join(line for line in _read(*relpaths).splitlines() if not line.lstrip().startswith("#"))
+    return set(_SH_ENV_READ.findall(code))
+
+
+def _go_provider_vars() -> frozenset[str]:
+    """Every variable `newProvider` reads in provisioner/postern-dns/main.go, the one
+    place libdns-native names enter the stack (`lego_env.py` translates the same set)."""
+    source = _read("provisioner/postern-dns/main.go")
+    body = source[source.index("func newProvider("):]
+    body = body[:body.index("\n}\n")]
+    code = "\n".join(line for line in body.splitlines() if not line.lstrip().startswith("//"))
+    return frozenset(re.findall(r'os\.Getenv\("([A-Z0-9_]+)"\)', code))
+
+
+def _provisioner_python_modules() -> list[str]:
+    modules = sorted(str(p.relative_to(REPO_ROOT)) for p in (REPO_ROOT / "portal/src/postern_provisioner").glob("*.py"))
+    return ["provisioner/entrypoint.py", *modules]
+
+
+@pytest.fixture(scope="module")
+def provider_vars() -> frozenset[str]:
+    names = _go_provider_vars()
+    assert names, "no os.Getenv names found in newProvider -- the derivation rotted"
+    return names
+
+
+@pytest.fixture(scope="module")
+def provisioner_provider_vars(provider_vars: frozenset[str]) -> frozenset[str]:
+    """Every DNS provider variable the provisioner must receive: postern-dns's and lego's own."""
+    return provider_vars | LEGO_NATIVE_VARS
+
+
+@pytest.fixture(scope="module")
+def reads(provider_vars: frozenset[str]) -> dict[str, set[str]]:
+    """What each service's code reads, derived from source."""
+    derived = {
+        "portal": {field.upper()
+                   for field in Settings.model_fields},
+        "mta": _python_env_reads("mta/entrypoint.py") - _MTA_TEST_HOOKS,
+        "provisioner": (_python_env_reads(*_provisioner_python_modules()) | provider_vars | LEGO_NATIVE_VARS)
+                       - _PROVISIONER_TEST_HOOKS,
+        "nginx": _shell_env_reads("nginx/render.sh", "nginx/nginx-entrypoint.sh", "nginx/edge.sh") - _NGINX_SEAMS,
+    }  # yapf: disable
+    for service, names in derived.items():
+        assert names, f"derived read set for {service} is empty -- the derivation rotted"
+    return derived
 
 
 # Static pins ==========================================================================================================
@@ -100,27 +158,41 @@ def test_no_compose_file_loads_an_env_file():
     assert not problems, "\n".join(problems)
 
 
-def test_provider_credentials_reach_only_the_provisioner():
+def test_provider_credentials_reach_only_the_provisioner(provisioner_provider_vars: frozenset[str]):
     problems = [
         f"{repo_relative(path)}: service {name!r} receives {sorted(leaked)}" for path in ALL_COMPOSE_FILES()
         for name in (load_compose(path).get("services") or {})
-        if name != "provisioner" and (leaked := PROVIDER_VARS & service_environment(path, name).keys())
+        if name != "provisioner" and (leaked := provisioner_provider_vars & service_environment(path, name).keys())
     ]
     assert not problems, "\n".join(problems)
 
 
-@pytest.mark.parametrize("path", [COMPOSE, E2E_MTA_REAL], ids=repo_relative)
-def test_provisioner_receives_every_provider_variable(path: Path):
-    missing = PROVIDER_VARS - service_environment(path, "provisioner").keys()
-    assert not missing, f"{repo_relative(path)}: provisioner lacks {sorted(missing)}"
+def test_the_e2e_real_provisioner_receives_every_postern_dns_provider_variable(provider_vars: frozenset[str]):
+    missing = provider_vars - service_environment(E2E_MTA_REAL, "provisioner").keys()
+    assert not missing, f"{repo_relative(E2E_MTA_REAL)}: provisioner lacks {sorted(missing)}"
 
 
-@pytest.mark.parametrize("service", sorted(READS))
-def test_every_service_environment_covers_what_the_service_reads(service: str):
-    reads = READS[service]
-    assert reads, f"derived read set for {service} is empty -- the derivation rotted"
-    missing = reads - service_environment(COMPOSE, service).keys()
-    assert not missing, f"compose.yaml's {service} never receives {sorted(missing)}, which its code reads"
+@pytest.mark.parametrize("service", ["portal", "mta", "provisioner", "nginx"])
+def test_every_service_receives_exactly_what_it_reads(service: str, reads: dict[str, set[str]]):
+    received = service_environment(COMPOSE, service).keys()
+    missing = reads[service] - received
+    unread = received - reads[service] - _RECEIVED_WITHOUT_BEING_SPELLED.get(service, set())
+    problems = []
+    if missing:
+        problems.append(f"compose.yaml's {service} never receives {sorted(missing)}, which its code reads")
+    if unread:
+        problems.append(f"compose.yaml's {service} receives {sorted(unread)}, which nothing in it reads")
+    assert not problems, "\n".join(problems)
+
+
+def test_lego_variables_match_the_pin():
+    """LEGO_NATIVE_VARS was read off lego's provider pages at one version."""
+    pinned = re.search(r"github\.com/go-acme/lego/v4/cmd/lego@(v[0-9.]+)", _read("provisioner/Dockerfile"))
+    assert pinned, "provisioner/Dockerfile no longer pins lego with `go install ...lego@<version>`"
+    assert pinned.group(1) == _LEGO_DOCS_VERSION, (
+        f"lego is pinned at {pinned.group(1)} but LEGO_NATIVE_VARS was read from {_LEGO_DOCS_VERSION}: re-read the "
+        "providers/dns/<slug>/<slug>.toml pages for the eight providers and update the set and the version"
+    )
 
 
 # Resolved by the real Compose CLI =====================================================================================
@@ -131,25 +203,13 @@ _OVERLAY_COMBINATIONS = [
     ["compose.yaml", "compose.edge.yaml"],
 ]
 _ALL_PROFILES = "with-mta,with-cert-renewal,with-edge"
-# Everything these tests set or assert on, so a value exported in the developer's own shell cannot leak in.
-_SCRUBBED = {field.upper()
-             for field in Settings.model_fields
-             } | PROVIDER_VARS | {"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"}
 
 
-def _project(tmp_path: Path, files: list[str], dotenv: dict[str, str]) -> Path:
-    for name in files:
-        shutil.copy(REPO_ROOT / name, tmp_path / name)
-    (tmp_path / ".env").write_text("".join(f"{k}={v}\n" for k, v in dotenv.items()), encoding="utf-8")
-    return tmp_path
-
-
-def _resolve(project: Path, files: list[str], shell: dict[str, str] | None = None) -> dict:
-    env = {k: v for k, v in os.environ.items() if k not in _SCRUBBED}
-    env["COMPOSE_PROFILES"] = _ALL_PROFILES
-    env.update(shell or {})
-    args = [arg for name in files for arg in ("-f", name)]
-    return run_compose_config(args, project, env)
+def _resolve(
+    project: Path, files: list[str], provider_vars: frozenset[str], shell: dict[str, str] | None = None
+) -> dict:
+    """Resolve with every profile on and nothing but `shell` (and the provider names) from the developer's shell."""
+    return resolve_compose(project, files, {"COMPOSE_PROFILES": _ALL_PROFILES, **(shell or {})}, scrub=provider_vars)
 
 
 def _env_of(config: dict, service: str) -> dict[str, str | None]:
@@ -158,15 +218,21 @@ def _env_of(config: dict, service: str) -> dict[str, str | None]:
 
 @pytest.mark.compose_cli
 @pytest.mark.parametrize("files", _OVERLAY_COMBINATIONS, ids="+".join)
-def test_no_secret_reaches_a_service_that_does_not_read_it(tmp_path: Path, files: list[str]):
+def test_no_secret_reaches_a_service_that_does_not_read_it(
+    tmp_path: Path, files: list[str], provisioner_provider_vars: frozenset[str]
+):
     """Checked by VALUE, so a secret re-exposed under another name is caught too."""
-    sentinels = {name: f"sentinel-{name.lower()}" for names in OWNED_SECRETS.values() for name in names}
-    project = _project(tmp_path, files, {"SECRET_KEY": sentinels["SECRET_KEY"], "DOMAIN": "postern.test", **sentinels})
-    config = _resolve(project, files)
+    owned = {
+        "portal": ("SECRET_KEY", "SMTP_PASSWORD", "SMTP_USER"),
+        "provisioner": tuple(sorted(provisioner_provider_vars)),
+    }
+    sentinels = {name: f"sentinel-{name.lower()}-end" for names in owned.values() for name in names}
+    project = compose_project(tmp_path, files, {"DOMAIN": "postern.test", **sentinels})
+    config = _resolve(project, files, provisioner_provider_vars)
     problems = []
     for service in config["services"]:
         values = [str(v) for v in _env_of(config, service).values() if v is not None]
-        for owner, names in OWNED_SECRETS.items():
+        for owner, names in owned.items():
             if service == owner:
                 absent = [n for n in names if sentinels[n] not in values]
                 if absent:
@@ -179,13 +245,13 @@ def test_no_secret_reaches_a_service_that_does_not_read_it(tmp_path: Path, files
 
 
 @pytest.mark.compose_cli
-def test_unset_variables_are_absent_not_empty(tmp_path: Path):
+def test_unset_variables_are_absent_not_empty(tmp_path: Path, provisioner_provider_vars: frozenset[str]):
     """Interpolating `${VAR:-}` would turn an unset variable into "" -- the provisioner's
     `_bool_env` then reads a default-true setting as False, and the portal's `Settings`
     rejects explicitly-set EDGE_CF_* fields under a non-cloudflare profile."""
     files = ["compose.yaml"]
-    project = _project(tmp_path, files, {"SECRET_KEY": "x", "DOMAIN": "postern.test"})
-    config = _resolve(project, files)
+    project = compose_project(tmp_path, files, {"SECRET_KEY": "x", "DOMAIN": "postern.test"})
+    config = _resolve(project, files, provisioner_provider_vars)
     portal = _env_of(config, "portal")
     provisioner = _env_of(config, "provisioner")
     for name in (
@@ -198,12 +264,14 @@ def test_unset_variables_are_absent_not_empty(tmp_path: Path):
 
 
 @pytest.mark.compose_cli
-def test_dot_env_values_reach_their_service_and_the_shell_wins(tmp_path: Path):
+def test_dot_env_values_reach_their_service_and_the_shell_wins(
+    tmp_path: Path, provisioner_provider_vars: frozenset[str]
+):
     """The contract in docs/deployment/configuration.md: a variable in `.env` reaches the
     container that reads it, and a value exported in the shell running `docker compose`
     overrides `.env`."""
     files = ["compose.yaml"]
-    project = _project(
+    project = compose_project(
         tmp_path, files, {
             "SECRET_KEY": "k",
             "DOMAIN": "postern.test",
@@ -211,11 +279,12 @@ def test_dot_env_values_reach_their_service_and_the_shell_wins(tmp_path: Path):
             "CLOUDFLARE_API_TOKEN": "from-dot-env",
         }
     )
-    config = _resolve(project, files)
+    config = _resolve(project, files, provisioner_provider_vars)
     assert _env_of(config, "portal")["SMTP_PASSWORD"] == "from-dot-env"
     assert _env_of(config, "provisioner")["CLOUDFLARE_API_TOKEN"] == "from-dot-env"
 
-    config = _resolve(project, files, shell={"CLOUDFLARE_API_TOKEN": "from-shell", "SMTP_PASSWORD": "from-shell"})
+    shell = {"CLOUDFLARE_API_TOKEN": "from-shell", "SMTP_PASSWORD": "from-shell"}
+    config = _resolve(project, files, provisioner_provider_vars, shell)
     assert _env_of(config, "portal")["SMTP_PASSWORD"] == "from-shell"
     assert _env_of(config, "provisioner")["CLOUDFLARE_API_TOKEN"] == "from-shell"
 
@@ -225,9 +294,11 @@ def test_dot_env_values_reach_their_service_and_the_shell_wins(tmp_path: Path):
     "dotenv", [{"DOMAIN": "postern.test"}, {"DOMAIN": "postern.test", "SECRET_KEY": ""}],
     ids=["secret-key-missing", "secret-key-empty"]
 )
-def test_a_missing_or_empty_secret_key_is_refused(tmp_path: Path, dotenv: dict[str, str]):
+def test_a_missing_or_empty_secret_key_is_refused(
+    tmp_path: Path, dotenv: dict[str, str], provisioner_provider_vars: frozenset[str]
+):
     """`env_file: .env` made every compose command fail without a usable `.env`, which
     scripts/deploy.sh relies on to refuse early; `SECRET_KEY: ${SECRET_KEY:?...}` keeps that."""
-    project = _project(tmp_path, ["compose.yaml"], dotenv)
+    project = compose_project(tmp_path, ["compose.yaml"], dotenv)
     with pytest.raises(AssertionError, match="SECRET_KEY"):
-        _resolve(project, ["compose.yaml"])
+        _resolve(project, ["compose.yaml"], provisioner_provider_vars)

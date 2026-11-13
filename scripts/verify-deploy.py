@@ -49,10 +49,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -215,14 +216,15 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
-def _portal_env(config: dict) -> dict[str, str]:
+def _portal_env(config: dict) -> dict[str, str | None]:
     """The compose-resolved portal environment, keyed upper-case.
 
     `Settings` (pydantic-settings) matches environment names case-insensitively,
     so the lookup here does too: a case-sensitive `dict.get` would miss a
     differently-spelled name -- silently, in the passing direction, which is the
     one failure mode this script exists to eliminate. compose.yaml itself
-    delivers upper-case names only.
+    delivers upper-case names only. A value is None for a bare passthrough key
+    that compose could not resolve (JSON null); every caller treats that as unset.
     """
     raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
     return {k.upper(): v for k, v in raw.items()}
@@ -262,6 +264,27 @@ def resolve_instance_id(config: dict, project: str) -> str:
     """
     override = (_portal_env(config).get("INSTANCE_ID") or "").strip()
     return override or project
+
+
+_ENV_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def shell_overrides(config: dict, environ: Mapping[str, str]) -> list[str]:
+    """Names compose resolves for a service from the deploying shell that `environ` exports.
+
+    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
+    key is None and an interpolated one is its `${NAME...}` text. Compose lets a shell value
+    win over the same name in `.env`, which an operator who exported it for another purpose
+    does not expect. Names only: the caller prints them, and a value could be a secret.
+    """
+    names: set[str] = set()
+    for service in (config.get("services") or {}).values():
+        for key, value in ((service or {}).get("environment") or {}).items():
+            if value is None:
+                names.add(key)
+            elif isinstance(value, str):
+                names.update(_ENV_REFERENCE.findall(value))
+    return sorted(name for name in names if name in environ)
 
 
 def _optional_dict(obj: dict, key: str, label: str, context: str) -> dict:
@@ -998,6 +1021,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Print the revision a build from --repo would carry, and exit. Export this "
         "as GIT_REVISION before building so both halves agree.",
     )
+    parser.add_argument(
+        "--print-shell-overrides",
+        action="store_true",
+        help="Read `docker compose config --no-interpolate --format json` on stdin and print, one per "
+        "line, the variables compose resolves for a service that are also exported in this shell "
+        "(names only), then exit."
+    )
     parser.add_argument("--json", dest="output_json", action="store_true", help="Emit structured JSON")
     parser.add_argument(
         "--project-dir",
@@ -1061,6 +1091,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         except RevisionError as exc:
             print(f"verify-deploy: {exc}", file=sys.stderr)
             return 2
+        return 0
+
+    if args.print_shell_overrides:
+        try:
+            config = json.loads(sys.stdin.read())
+        except (OSError, ValueError) as exc:
+            print(f"verify-deploy: --print-shell-overrides needs compose config JSON on stdin: {exc}", file=sys.stderr)
+            return 2
+        for name in shell_overrides(config, os.environ):
+            print(name)
         return 0
 
     if args.expected_tunnels_from is not None and not args.tunnels:

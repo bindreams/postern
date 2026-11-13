@@ -140,7 +140,7 @@ The provisioner generates the initial key on first start, then exits. To rotate:
 
 ### Auto rotation (when `DNS_PROVIDER=<provider>`)
 
-Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env` (set in `.env`; delivered only to the provisioner):
+Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`. They are delivered only to the provisioner:
 
 ```{list-table}
 ---
@@ -174,6 +174,8 @@ header-rows: 1
   - `NAMECHEAP_API_KEY`, `NAMECHEAP_API_USER`, `NAMECHEAP_CLIENT_IP`
   -
 ```
+
+Certificate renewal runs [lego](https://go-acme.github.io/lego/dns/) with the provisioner's environment, so the provisioner also receives every variable lego documents for these eight providers (for example `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_HOSTED_ZONE_ID`, `CLOUDFLARE_PROPAGATION_TIMEOUT`). Their `*_FILE` forms and lego's own `LEGO_*` settings are not delivered.
 
 ```{tip}
 Use a token scoped to **only** the DNS zone for `<your-domain>`. The token lives only in the provisioner container (zero inbound listeners), but tighter scope is still better.

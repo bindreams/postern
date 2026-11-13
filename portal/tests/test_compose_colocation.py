@@ -969,11 +969,7 @@ def test_declared_network_names_reads_object_form_external(monkeypatch):
     flag."""
     fake_path = E2E_COMPOSE_DIR / "_fake-external-object-form.compose.yaml"
     fake_compose = {"networks": {"n": {"external": {}}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     assert _declared_network_names(fake_path) == [("n", None, True)]
 
 
@@ -1209,11 +1205,7 @@ def test_published_host_ports_rejects_network_mode_host(monkeypatch):
     file: no compose file in this repo uses network_mode today."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-network-mode-host.compose.yaml"
     fake_compose = {"services": {"mta": {"network_mode": "host"}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     with pytest.raises(AssertionError, match="network_mode: host"):
         _published_host_ports(fake_path)
 
@@ -1514,11 +1506,7 @@ def test_declared_volume_names_reads_object_form_external(monkeypatch):
     production's real DKIM volume with no `name:` override needed at all."""
     fake_path = E2E_COMPOSE_DIR / "_fake-external-object-form.compose.yaml"
     fake_compose = {"volumes": {"postern-mta-data": {"external": {}}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     assert _declared_volume_names(fake_path) == [("postern-mta-data", None, True)]
 
 

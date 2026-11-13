@@ -948,6 +948,48 @@ def test_resolve_ss_image_is_case_insensitive():
     assert vd.resolve_ss_image(config, "") == "local/from-lowercase-env"
 
 
+def test_a_null_environment_value_is_treated_as_unset():
+    """compose prints an unresolved bare key as JSON null; both lookups must fall through to their defaults."""
+    config = {"services": {"portal": {"environment": {"SHADOWSOCKS_IMAGE": None, "INSTANCE_ID": None}}}}
+    assert vd.resolve_ss_image(config, "") == "local/shadowsocks-server"
+    assert vd.resolve_instance_id(config, "postern") == "postern"
+
+
+# Shell overrides ------------------------------------------------------------------------------------------------------
+_UNINTERPOLATED = {
+    "services": {
+        "portal": {"environment": {"SMTP_HOST": None, "DOCKER_HOST": "tcp://docker-proxy:2375", "DOMAIN": "${DOMAIN:-x}"}},
+        "provisioner": {"environment": {"AWS_REGION": None, "CONTAINERS": 1}},
+        "docker-proxy": {},
+    }
+}  # yapf: disable
+
+
+def test_shell_overrides_names_the_exported_variables_compose_passes_through():
+    environ = {"SMTP_HOST": "x", "DOMAIN": "", "AWS_REGION": "y", "PATH": "/bin", "HOME": "/root"}
+    assert vd.shell_overrides(_UNINTERPOLATED, environ) == ["AWS_REGION", "DOMAIN", "SMTP_HOST"]
+
+
+def test_shell_overrides_ignores_literals_and_unexported_names():
+    # DOCKER_HOST and CONTAINERS are literal values in the compose file: the shell cannot override them.
+    assert vd.shell_overrides(_UNINTERPOLATED, {"DOCKER_HOST": "tcp://elsewhere", "CONTAINERS": "0"}) == []
+
+
+def test_print_shell_overrides_prints_names_only_never_values(monkeypatch, capsys):
+    monkeypatch.setenv("SMTP_HOST", "secret-looking-value")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
+    assert vd.main(["--print-shell-overrides"]) == 0
+    out = capsys.readouterr()
+    assert out.out.split() == ["SMTP_HOST"]
+    assert "secret-looking-value" not in out.out + out.err
+
+
+def test_print_shell_overrides_rejects_unparseable_input(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert vd.main(["--print-shell-overrides"]) == 2
+    assert "verify-deploy:" in capsys.readouterr().err
+
+
 # Instance resolution --------------------------------------------------------------------------------------------------
 def test_resolve_instance_id_defaults_to_the_project_name():
     assert vd.resolve_instance_id({"services": {}}, "postern") == "postern"

@@ -1,4 +1,4 @@
-"""One tolerant Compose YAML loader for the compose-asserting unit tests.
+"""One tolerant Compose YAML loader, and the Compose-CLI helpers, for the compose-asserting unit tests.
 
 `compose.gateway.yaml` uses Docker Compose's `!reset` merge tag (`ports: !reset []`),
 which plain `yaml.safe_load` rejects with a ConstructorError. Every test that
@@ -11,11 +11,16 @@ from __future__ import annotations
 
 import functools
 import json
+import os
 import re
+import shutil
 import subprocess
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import yaml
+
+from postern.settings import Settings
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -220,3 +225,38 @@ def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) 
     )
     assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
     return json.loads(proc.stdout)
+
+
+# Names no Compose-CLI test may inherit from the developer's own shell: every portal setting, plus the
+# variables Compose itself reads. A test that cares about another name passes it as `scrub`.
+_ALWAYS_SCRUBBED = frozenset({"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"})
+
+
+def compose_project(tmp_path: Path, files: Iterable[str], dotenv: Mapping[str, str]) -> Path:
+    """Copy repo-root compose `files` and a fresh `.env` into `tmp_path`.
+
+    Compose resolves `.env` against the project directory, so resolving the repo's own files would read
+    the operator's real `.env`. The copies are byte-identical, so what is resolved is the shipped file.
+    """
+    for name in files:
+        shutil.copy(REPO_ROOT / name, tmp_path / name)
+    dotenv_lines = [f"{key}={value}\n" for key, value in dotenv.items()]
+    (tmp_path / ".env").write_text("".join(dotenv_lines), encoding="utf-8")
+    return tmp_path
+
+
+def resolve_compose(
+    project: Path,
+    files: Iterable[str],
+    shell: Mapping[str, str] | None = None,
+    scrub: Iterable[str] = (),
+) -> dict:
+    """`docker compose -f <files> config` in `project`, with `shell` as the deploying shell.
+
+    The environment is the caller's own minus every `Settings` field, `_ALWAYS_SCRUBBED` and `scrub`,
+    so a value exported in the developer's shell cannot leak into what is asserted.
+    """
+    scrubbed = {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
+    env = {k: v for k, v in os.environ.items() if k not in scrubbed}
+    env.update(shell or {})
+    return run_compose_config([arg for name in files for arg in ("-f", name)], project, env)

@@ -8,14 +8,18 @@ stops trusting them, per that page and measured against its test hosts.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import ssl
+import subprocess
 from pathlib import Path
 
 import certifi
+import pytest
 from packaging.version import Version
 
 from tests._compose import load_compose
+from tests.e2e._helpers import E2E_PORTAL_IMAGE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -39,26 +43,47 @@ DOCKERFILES = (
     "mta/Dockerfile", "provisioner/Dockerfile", "shadowsocks/Dockerfile", "portal/tests/e2e/ssclient.Dockerfile"
 )
 
+# Run inside the portal image. Its TLS clients take their trust anchors from the image's
+# system CA bundle, not from certifi: dnspython's DoH client (httpx2/httpcore2), the
+# MTA-STS policy fetch (urllib, mta/dns.py), and the `postern doctor` / cli.py TLS probes
+# (ssl.create_default_context).
+_IMAGE_CA_PROBE = """
+import hashlib, json, ssl
+import httpcore2
 
-def test_doh_client_verifies_against_the_system_store_not_certifi():
-    """The portal's only outbound HTTPS client is dnspython's DoH one (httpx2/httpcore2).
-    It builds its TLS context from the system store (or SSL_CERT_FILE/SSL_CERT_DIR), so
-    in the distroless portal image the trust anchor is the base image's bundle; that is
-    what test_compose_builds_pull_base_images keeps fresh. If a release goes back to
-    certifi, the guard below becomes the one that covers DoH and this test must be
-    revisited."""
-    import inspect
+def fingerprints(ctx):
+    return sorted(hashlib.sha256(der).hexdigest().upper() for der in ctx.get_ca_certs(binary_form=True))
 
-    import httpcore2._ssl
+print(json.dumps({
+    "httpcore2 default context (DoH)": fingerprints(httpcore2.default_ssl_context()),
+    "ssl.create_default_context (urllib, TLS probes)": fingerprints(ssl.create_default_context()),
+}))
+"""
 
-    source = inspect.getsource(httpcore2._ssl)
-    assert not re.search(r"\bcertifi\b", source)
-    assert "ssl.get_default_verify_paths()" in source
+
+@pytest.mark.e2e
+def test_portal_image_trust_store_excludes_compromised_chain_roots():
+    """The CA bundle the portal image's own HTTPS clients verify against, measured by
+    running them in the built image (build local/postern-portal-test first). A source
+    grep of one library cannot see the base image's bundle going stale."""
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none", "--entrypoint", "python", E2E_PORTAL_IMAGE, "-c",
+            _IMAGE_CA_PROBE
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    for client, fingerprints in json.loads(result.stdout).items():
+        assert fingerprints, f"{client}: loaded no CA certificates; the probe would pass vacuously"
+        trusted = set(fingerprints) & COMPROMISED_CHAIN_ROOTS.keys()
+        assert not trusted, (client, [COMPROMISED_CHAIN_ROOTS[f] for f in trusted])
 
 
 def test_certifi_bundle_excludes_compromised_chain_roots():
     """requests (the Docker SDK) and the dev-group httpx verify against certifi, not the
-    system store. The portal's DoH client does not: see the test above."""
+    system store. The portal's other HTTPS clients do: see the image test above."""
     pems = re.findall(
         r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----",
         Path(certifi.where()).read_text(), re.S

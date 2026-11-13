@@ -889,8 +889,8 @@ def ech_verify() -> None:
         )
         raise typer.Exit(1)
     typer.echo(
-        f"INCONCLUSIVE: no HTTPS record for {settings.domain} resolved over DoH "
-        f"({settings.ech_doh_url}). CF may still be propagating, or DoH is unreachable or returned an unreadable reply.",
+        f"INCONCLUSIVE: could not read the HTTPS record for {settings.domain} over DoH ({settings.ech_doh_url}): "
+        "none resolved yet (CF may still be propagating), DoH is unreachable, or its reply could not be read.",
         err=True,
     )
     raise typer.Exit(2)

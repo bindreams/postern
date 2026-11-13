@@ -71,6 +71,9 @@ class CertState:
     consecutive_failures: int = 0
     # Directory the installed cert was issued under; set only when the install completes.
     acme_directory: str = ""
+    # ACME server host -> directory URL that last registered or used the Lego account for that host (Lego names the
+    # account directory by host alone); set BEFORE calling Lego, since a failed run may already have registered.
+    account_directory_by_host: dict[str, str] = field(default_factory=dict)
     acme_account_email: str = ""  # tracks email used for Lego account; mismatch forces account dir recreate
     pending_cert_paths: dict[str,
                              str] = field(default_factory=dict)  # raw Lego output paths during ISSUED_PENDING_INSTALL

@@ -148,29 +148,23 @@ def advance_cert_state(
     if state.state == "INSTALLED":
         # Every path but expiry takes ISSUING (`lego run`); see `renewable` below for why not `renew`.
         target: cert_state.State = "ISSUING"
+        live = _read_live_cert(cert_dir, settings.domain)
         if directory_drift:
-            logger.info("cert: ACME directory changed; transitioning to ISSUING")
-            if trigger_present:
-                logger.info("cert: .renew-cert trigger is served by this reissue")
-        else:
+            reason = "ACME directory changed"
+        elif live is None or not live.sans_match(expected):
             # SAN list invariant: defends CT-leak hygiene.
-            on_disk = _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem")
-            if on_disk is None or not on_disk.sans_match(expected):
-                logger.info("cert: SAN mismatch or missing on-disk cert; transitioning to ISSUING")
-            elif trigger_present:
-                logger.info("cert: .renew-cert trigger present; transitioning to ISSUING")
-            else:
-                days_left = on_disk.days_until_expiry(now=now)
-                if days_left >= settings.cert_renewal_days_before_expiry:
-                    return state
-                logger.info("cert: %.1f days to expiry < threshold; transitioning to RENEWING", days_left)
-                target = "RENEWING"
+            reason = "SAN mismatch or missing on-disk cert"
+        elif trigger_present:
+            reason = ".renew-cert trigger present"
+        else:
+            days_left = live.days_until_expiry(now=now)
+            if days_left >= settings.cert_renewal_days_before_expiry:
+                return state
+            reason = f"{days_left:.1f} days to expiry < threshold"
+            target = "RENEWING"
         # Checked here, not after leaving INSTALLED: otherwise every tick of an active guard would flip the state
         # to ISSUING and back, and the healthcheck with it.
         if not _rate_limit_guard_clear(state, settings, now):
-            # INSTALLED reports a cert on disk: with none, ISSUING (whose deferral below holds it) stands in.
-            if _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem") is None:
-                return _begin_issuance(state, "ISSUING", now)
             if trigger_present:
                 logger.warning(
                     "cert: 24h rate-limit guard active; the .renew-cert request was dropped. "
@@ -180,7 +174,11 @@ def advance_cert_state(
                 logger.warning(
                     "cert: 24h rate-limit guard active; staying INSTALLED. Set CERT_FORCE_REISSUE=true to override."
                 )
-            return state
+            # INSTALLED reports a cert on disk: with none, ISSUING (whose deferral below holds it) stands in.
+            return state if live is not None else _begin_issuance(state, "ISSUING", now)
+        logger.info("cert: %s; transitioning to %s", reason, target)
+        if trigger_present and directory_drift:
+            logger.info("cert: .renew-cert trigger is served by this reissue")
         return _begin_issuance(state, target, now)
 
     # ISSUING / RENEWING: actually call Lego, then transition to PENDING_INSTALL.
@@ -191,17 +189,15 @@ def advance_cert_state(
                 state.state,
             )
             # Back to INSTALLED only with a cert to serve: INSTALLED with none would open the healthcheck gate.
-            if _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem") is None:
+            if _read_live_cert(cert_dir, settings.domain) is None:
                 return state
             return replace(state, state="INSTALLED")
 
-        # Accounts are keyed by directory host and email: an email change resets them, and a switch within one host
-        # moves that account aside unless the last attempt already ran under this directory (it registered afresh).
+        # Accounts are keyed by directory host and email: an email change resets them, and a directory that shares a
+        # host with the one that last registered the account must not reuse it.
         if bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email:
             _reset_lego_account_dir()
-        last_attempted = _latest_attempt_directory(state)
-        if directory_drift and last_attempted not in ("", settings.cert_acme_directory):
-            _move_aside_shared_host_account(last_attempted, settings, now)
+        _move_aside_account_of_another_directory(state, settings, now)
 
         # `renew` is a no-op on a fresh cert and fatal without a registered account or a cert under Lego's path (an
         # adopted BYO cert has neither), so it is only for a due cert Lego itself issued.
@@ -214,6 +210,11 @@ def advance_cert_state(
             state,
             last_attempt_iso=now.isoformat(),
             last_issued_by_directory={**state.last_issued_by_directory, settings.cert_acme_directory: now.isoformat()},
+            # Before Lego too: a failed run may already have registered an account for this directory.
+            account_directory_by_host={
+                **state.account_directory_by_host,
+                _account_host(settings.cert_acme_directory): settings.cert_acme_directory
+            },
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
@@ -252,7 +253,7 @@ def advance_cert_state(
             logger.error("cert: install step failed: %s", e)
             return _failed_or_increment(state, settings, now)
 
-        installed_cert = _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem")
+        installed_cert = _read_live_cert(cert_dir, settings.domain)
         return replace(
             state,
             state="INSTALLED",
@@ -279,13 +280,17 @@ def _read_cert_or_none(path: Path) -> cert_inspect.CertInfo | None:
         return None
 
 
+def _read_live_cert(cert_dir: Path, domain: str) -> cert_inspect.CertInfo | None:
+    return _read_cert_or_none(cert_dir / "live" / domain / "fullchain.pem")
+
+
 def _try_adopt_existing(
     cert_dir: Path, domain: str, expected: set[str], now: dt.datetime
 ) -> cert_state.CertState | None:
     """If an on-disk cert exists with valid SANs and is currently in-validity,
     adopt to INSTALLED without calling Lego. Defends against accidental volume
     re-creation triggering wasteful re-issuance."""
-    info = _read_cert_or_none(cert_dir / "live" / domain / "fullchain.pem")
+    info = _read_live_cert(cert_dir, domain)
     if info is None or not info.sans_match(expected):
         return None
     if not (info.not_before <= now <= info.not_after):
@@ -314,10 +319,13 @@ def _latest_attempt_directory(state: cert_state.CertState) -> str:
     return max(by_directory, key=lambda d: dt.datetime.fromisoformat(by_directory[d]), default="")
 
 
-def _lego_server_dir(settings: CertSettings) -> Path:
+def _account_host(directory: str) -> str:
     """Lego keeps accounts at `<path>/accounts/<server host, ':' -> '_'>/<email>/account.json`."""
-    host = urlparse(settings.cert_acme_directory).netloc.replace(":", "_")
-    return LEGO_PATH / "accounts" / host
+    return urlparse(directory).netloc.replace(":", "_")
+
+
+def _lego_server_dir(settings: CertSettings) -> Path:
+    return LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory)
 
 
 def _lego_account_registered(settings: CertSettings) -> bool:
@@ -328,19 +336,23 @@ def _lego_cert_exists(settings: CertSettings) -> bool:
     return (LEGO_PATH / "certificates" / f"{settings.domain}.crt").exists()
 
 
-def _move_aside_shared_host_account(old_directory: str, settings: CertSettings, now: dt.datetime) -> None:
+def _move_aside_account_of_another_directory(
+    state: cert_state.CertState, settings: CertSettings, now: dt.datetime
+) -> None:
     """Lego names an account directory by the server's host alone, so two directories on one host (a private CA
-    serving several ACME paths) share one: `run` would reuse the account registered with the old directory's URL,
-    which the new one does not know. Move it aside so Lego registers afresh. A retry after a failed run moves the
-    fresh one aside again, harmlessly: Lego re-registers on every run."""
-    new_directory = settings.cert_acme_directory
-    if old_directory == new_directory or urlparse(old_directory).netloc != urlparse(new_directory).netloc:
+    serving several ACME paths) share one: `run` would reuse the account registered with the other directory's URL,
+    which this one does not know. When the state records another directory as the host's account owner, move the
+    account aside so Lego registers afresh. State without a record (written before the map existed) moves nothing.
+    A retry after a failed run moves the fresh account aside only if another directory has run since; Lego
+    re-registers on every run, so a needless move costs nothing."""
+    owner = state.account_directory_by_host.get(_account_host(settings.cert_acme_directory))
+    if owner is None or owner == settings.cert_acme_directory:
         return
     account = _lego_server_dir(settings) / settings.cert_acme_email
     if not account.exists():
         return
     aside = LEGO_PATH / "accounts-aside" / f"{account.parent.name}-{settings.cert_acme_email}-{now:%Y%m%dT%H%M%SZ}"
-    logger.info("cert: ACME directory moved within one host; setting the old Lego account aside at %s", aside)
+    logger.info("cert: Lego account on this host belongs to %s; setting it aside at %s", owner, aside)
     aside.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(account), str(aside))
 
@@ -362,7 +374,7 @@ def _advance_failed(
     attempted = _latest_attempt_directory(state)
     if attempted not in ("", settings.cert_acme_directory):
         logger.info("cert: FAILED under another ACME directory; skipping hold-off")
-        installed = _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem") is not None
+        installed = _read_live_cert(cert_dir, settings.domain) is not None
         retry = "INSTALLED" if installed else "ISSUING"
         return replace(state, state=retry, consecutive_failures=0, last_failed_state=None)
     if state.last_attempt_iso is None:

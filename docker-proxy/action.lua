@@ -86,13 +86,15 @@ core.register_action("pn_filter", {"http-req"}, function(txn)
     reply(txn, status, "request denied by the postern docker-proxy: " .. tostring(reason))
     return
   end
+  -- The path fetch is empty once the response is being processed, so the response action reads it from here.
+  txn:set_var("txn.pn_path", txn.sf:path() or "")
   txn:set_var("txn.pn_allow", true)
 end)
 
 -- Response side: forget the id of a container the daemon has confirmed removed. Nothing here can deny anything.
 core.register_action("pn_evict", {"http-res"}, function(txn)
   local ok, err = pcall(function()
-    local id = policy.evict_id(txn.sf:method(), txn.sf:path(), tonumber(txn.sf:status()))
+    local id = policy.evict_id(txn.sf:method(), txn:get_var("txn.pn_path") or "", tonumber(txn.sf:status()))
     if id then owned_ids[id] = nil end
   end)
   if not ok then core.Alert("postern docker-proxy: evict error: " .. tostring(err)) end

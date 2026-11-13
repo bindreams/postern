@@ -71,7 +71,7 @@ docker compose exec portal postern cert show
 
 When happy, remove the `CERT_ACME_DIRECTORY` line and restart the provisioner. The state machine sees that the cert in `state.json` came from another directory and transitions `INSTALLED → ISSUING` to run a fresh issuance under the new directory (Lego registers a separate account per directory, so the staging one is kept). The staging issuance does not count toward the 24-hour guard below. Each state change waits for the provisioner's hourly tick, and the switch takes three (`INSTALLED → ISSUING`, issuance, install), so expect the real cert within about three hours; `postern cert renewal-status` shows progress. Until it succeeds, the staging cert stays live, and a failed attempt is retried (the 24-hour guard, then the FAILED hold-off, pace it) until one succeeds. If both directories are on one host (a private CA serving several ACME paths), the old Lego account is moved aside to `/etc/letsencrypt/lego/accounts-aside/` so Lego registers afresh.
 
-**Upgrading from an earlier release.** The state file of an earlier release recorded the configured directory before a renewal had succeeded, so it cannot show where the installed cert came from (a deployment stranded on a staging cert by an earlier switch looks like a healthy one). After the upgrade the first provisioner tick treats the installed cert's origin as unknown and reissues once under the configured directory, unless a Lego attempt within the last 24 hours holds it back. `postern cert renewal-status` shows `acme_directory: (unknown)` until that install completes.
+**Upgrading from an earlier release.** A deployment that switched to production under an earlier release and still serves the staging cert (`postern cert show` prints the issuer) is not detected. Run `postern cert renew`, and if the provisioner logs that the 24-hour guard is active, set `CERT_FORCE_REISSUE=true` for that one run, then reset it.
 ````
 
 ### CLI commands
@@ -91,7 +91,7 @@ If you already have certs in `/etc/letsencrypt` on the host, the simplest path i
 
 Two layers protect Let's Encrypt's 5-issuances-per-7-days limit:
 
-1. **24-hour guard** — the attempt time is recorded BEFORE calling Lego, so any new issuance within 24 hours is refused regardless of state, even on partial-failure paths (e.g. a successful Lego run that then fails to install). The guard is per ACME directory (`last_issued_by_directory`, shown by `postern cert renewal-status`; an earlier release's single `last_issued_iso` is carried over into it on the first read after upgrading), like Let's Encrypt's own limits: an issuance under staging never delays one under production, and a detour through staging does not reset production's clock.
+1. **24-hour guard** — the attempt time is recorded BEFORE calling Lego, so any new issuance within 24 hours is refused regardless of state, even on partial-failure paths (e.g. a successful Lego run that then fails to install). The guard is per ACME directory (`last_issued_by_directory`, shown by `postern cert renewal-status`), like Let's Encrypt's own limits: an issuance under staging never delays or resets production's clock.
 1. **`CERT_FORCE_REISSUE=true`** — a one-shot bypass of the 24-hour guard, used after a cert revocation or compromise. Reset it to `false` after the next renewal.
 
 ````{dropdown} State machine detail
@@ -108,7 +108,7 @@ RENEWING   ──(success)──▶  ISSUED_PENDING_INSTALL
 FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried
 ```
 
-`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`. State is persisted at `/etc/letsencrypt/state.json`.
+`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`, unless no cert is on disk, in which case it waits in `ISSUING`. A `postern cert renew` request made while the guard is active is dropped, and the provisioner logs it. State is persisted at `/etc/letsencrypt/state.json`.
 ````
 
 ### Threat-model notes

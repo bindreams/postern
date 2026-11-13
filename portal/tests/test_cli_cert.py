@@ -116,7 +116,7 @@ def test_show_last_issued_comes_from_the_per_directory_times(env, tmp_path):
     assert "last_issued: 2026-11-04T00:00:00+00:00" in result.output
 
 
-def test_renewal_status_of_pre_upgrade_state_shows_the_seeded_time_and_unknown_origin(env):
+def test_renewal_status_of_pre_upgrade_state_shows_the_seeded_time(env):
     """The portal reads state the provisioner has not yet rewritten."""
     cert_state.state_path().write_text(
         '{"schema_version": 1, "state": "INSTALLED", "acme_directory": "https://acme.example/directory",'
@@ -124,4 +124,4 @@ def test_renewal_status_of_pre_upgrade_state_shows_the_seeded_time_and_unknown_o
     )
     result = runner.invoke(app, ["cert", "renewal-status"])
     assert "last_issued:          2026-11-03T00:00:00+00:00" in result.output
-    assert f"acme_directory:       {cert_state.UNKNOWN_DIRECTORY}" in result.output
+    assert "acme_directory:       https://acme.example/directory" in result.output

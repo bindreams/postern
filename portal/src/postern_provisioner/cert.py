@@ -20,7 +20,6 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable
 from urllib.parse import urlparse
 
 from postern.cert import inspect as cert_inspect
@@ -121,15 +120,11 @@ def advance_cert_state(
     trigger_present: bool,
     now: dt.datetime | None = None,
     cert_dir: Path = CERT_DIR,
-    persist: Callable[[cert_state.CertState], None] | None = None,
 ) -> cert_state.CertState:
     """One transition. Idempotent enough to retry on failure.
 
     Pure with respect to fs+subprocess: takes everything as parameters or
     via the injected `lego` runner. Easy to unit-test by patching `lego`.
-
-    `persist` is called with the state recording an attempt BEFORE Lego runs, so a restart mid-run keeps the
-    attempt time (the 24h guard) instead of losing it with the in-memory return value.
     """
     if now is None:
         now = dt.datetime.now(tz=dt.timezone.utc)
@@ -139,7 +134,6 @@ def advance_cert_state(
     if state.state == "FAILED":
         return _advance_failed(state, settings, now, cert_dir)
 
-    # acme_directory is where the installed cert came from; it only moves once the install under the new directory completes.
     directory_drift = _directory_drift(state, settings)
 
     # NO_CERT: adopt existing valid cert OR begin issuance -------------------------------------------------------------
@@ -152,8 +146,7 @@ def advance_cert_state(
 
     # INSTALLED: check whether to renew --------------------------------------------------------------------------------
     if state.state == "INSTALLED":
-        # Every path but expiry takes ISSUING (`lego run`): `renew` is a no-op on a cert that is not yet due, and fatal
-        # without an account registered under the configured directory. Drift is checked first.
+        # Every path but expiry takes ISSUING (`lego run`); see `renewable` below for why not `renew`.
         target: cert_state.State = "ISSUING"
         if directory_drift:
             logger.info("cert: ACME directory changed; transitioning to ISSUING")
@@ -175,9 +168,18 @@ def advance_cert_state(
         # Checked here, not after leaving INSTALLED: otherwise every tick of an active guard would flip the state
         # to ISSUING and back, and the healthcheck with it.
         if not _rate_limit_guard_clear(state, settings, now):
-            logger.warning(
-                "cert: 24h rate-limit guard active; staying INSTALLED. Set CERT_FORCE_REISSUE=true to override."
-            )
+            # INSTALLED reports a cert on disk: with none, ISSUING (whose deferral below holds it) stands in.
+            if _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem") is None:
+                return _begin_issuance(state, "ISSUING", now)
+            if trigger_present:
+                logger.warning(
+                    "cert: 24h rate-limit guard active; the .renew-cert request was dropped. "
+                    "Set CERT_FORCE_REISSUE=true and run `postern cert renew` again to override."
+                )
+            else:
+                logger.warning(
+                    "cert: 24h rate-limit guard active; staying INSTALLED. Set CERT_FORCE_REISSUE=true to override."
+                )
             return state
         return _begin_issuance(state, target, now)
 
@@ -193,12 +195,13 @@ def advance_cert_state(
                 return state
             return replace(state, state="INSTALLED")
 
-        # Lego keys accounts by directory host and email, so a switch to another host needs no reset: `run` registers
-        # the new one. An email change resets them all; a switch within one host moves that account aside below.
+        # Accounts are keyed by directory host and email: an email change resets them, and a switch within one host
+        # moves that account aside unless the last attempt already ran under this directory (it registered afresh).
         if bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email:
             _reset_lego_account_dir()
-        if directory_drift:
-            _move_aside_shared_host_account(state.acme_directory, settings, now)
+        last_attempted = _latest_attempt_directory(state)
+        if directory_drift and last_attempted not in ("", settings.cert_acme_directory):
+            _move_aside_shared_host_account(last_attempted, settings, now)
 
         # `renew` is a no-op on a fresh cert and fatal without a registered account or a cert under Lego's path (an
         # adopted BYO cert has neither), so it is only for a due cert Lego itself issued.
@@ -214,8 +217,6 @@ def advance_cert_state(
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
-        if persist is not None:
-            persist(attempt_state)
         try:
             output = lego.issue_or_renew(settings=settings, action=action)
         except subprocess.CalledProcessError as e:
@@ -256,7 +257,7 @@ def advance_cert_state(
             state,
             state="INSTALLED",
             consecutive_failures=0,
-            # The directory Lego ran under, which a config change since may no longer be the configured one.
+            # Not settings: the config may have changed since Lego ran.
             acme_directory=state.pending_acme_directory or settings.cert_acme_directory,
             pending_cert_paths={},
             pending_acme_directory="",

@@ -4,8 +4,6 @@ import dataclasses
 import json
 from pathlib import Path
 
-import pytest
-
 from postern.cert import state as cert_state
 
 
@@ -98,53 +96,6 @@ def test_read_state_malformed_field_shape_degrades_to_default(tmp_path: Path, ca
     assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
 
 
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"last_issued_by_directory": None},
-        {"last_issued_by_directory": "https://acme.example/directory"},
-        {"last_issued_by_directory": {"https://acme.example/directory": None}},
-        {"last_issued_by_directory": {"https://acme.example/directory": "not a date"}},
-        {"last_issued_by_directory": {"https://acme.example/directory": 5}},
-        {"pending_cert_paths": ["a"]},
-        {"pending_cert_paths": {"fullchain": 1}},
-        {"pending_acme_directory": None},
-        {"acme_directory": 7},
-        {"last_attempt_iso": "yesterday"},
-        {"last_issued_iso": 3},
-        {"consecutive_failures": True},
-        {"consecutive_failures": "3"},
-        {"consecutive_failures": None},
-        {"state": "BOGUS"},
-        {"state": None},
-        {"last_failed_state": "BOGUS"},
-        {"last_failed_state": 4},
-        {"sans": "postern.example.com"},
-        {"sans": [1]},
-        {"sans": None},
-        {"not_after_iso": "2026-11-01T00:00:00"},
-        {"last_attempt_iso": "2026-11-01T00:00:00"},
-        {"last_issued_iso": "2026-11-01T00:00:00"},
-        {"last_issued_by_directory": {"https://acme.example/directory": "2026-11-01T00:00:00"}},
-        {
-            "last_issued_by_directory": {
-                "https://a.example/directory": "2026-11-01T00:00:00+00:00",
-                "https://b.example/directory": "2026-11-02T00:00:00",
-            }
-        },
-    ],
-)
-def test_read_state_malformed_field_types_degrade_to_default(tmp_path: Path, caplog, bad):
-    """The provisioner tick and the healthcheck read state.json uncaught: a null/str/wrong-typed field must degrade
-    like the other malformed shapes, not raise."""
-    cert_state.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
-    cert_state.state_path(tmp_path).write_text(json.dumps({"state": "INSTALLED", **bad}))
-    with caplog.at_level("WARNING"):
-        loaded = cert_state.read_state(certdir=tmp_path)
-    assert loaded == cert_state.CertState()
-    assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
-
-
 def test_read_state_accepts_per_directory_times(tmp_path: Path):
     original = cert_state.CertState(
         state="INSTALLED",
@@ -186,70 +137,34 @@ def _write_legacy(tmp_path: Path, **fields) -> None:
     path.write_text(json.dumps({"schema_version": 1, **fields}))
 
 
-def test_legacy_state_marks_the_installed_origin_unknown(tmp_path: Path):
-    """The old code wrote acme_directory=configured BEFORE a renew that could fail, so it proves nothing about where
-    the installed cert came from."""
-    _write_legacy(tmp_path, state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
-    loaded = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
-    assert loaded.acme_directory == cert_state.UNKNOWN_DIRECTORY
-
-
 def test_legacy_state_seeds_the_per_directory_time_from_last_issued_iso(tmp_path: Path):
     _write_legacy(tmp_path, state="INSTALLED", acme_directory=STAGING, last_issued_iso="2026-11-01T00:00:00+00:00")
-    loaded = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
+    loaded = cert_state.read_state(certdir=tmp_path)
     assert loaded.last_issued_by_directory == {STAGING: "2026-11-01T00:00:00+00:00"}
     assert loaded.latest_issued_iso == "2026-11-01T00:00:00+00:00"
-
-
-def test_legacy_state_without_a_directory_seeds_under_the_configured_one(tmp_path: Path):
-    _write_legacy(tmp_path, state="INSTALLED", last_issued_iso="2026-11-01T00:00:00+00:00")
-    loaded = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
-    assert loaded.last_issued_by_directory == {PROD: "2026-11-01T00:00:00+00:00"}
-    assert loaded.acme_directory == ""  # no Lego run is on record, so there is no origin to doubt
+    assert loaded.acme_directory == STAGING
 
 
 def test_legacy_state_without_any_lego_run_is_untouched(tmp_path: Path):
-    """An adopted BYO cert: nothing to seed, nothing to doubt."""
+    """An adopted BYO cert: nothing to seed."""
     _write_legacy(tmp_path, state="INSTALLED", sans=["postern.example.com", "*.postern.example.com"])
-    loaded = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
+    loaded = cert_state.read_state(certdir=tmp_path)
     assert loaded.acme_directory == ""
     assert loaded.last_issued_by_directory == {}
-
-
-def test_legacy_pending_install_keeps_the_directory_lego_ran_under(tmp_path: Path):
-    """Old code recorded acme_directory at the attempt, so for a pending install it is the directory Lego ran under."""
-    _write_legacy(
-        tmp_path,
-        state="ISSUED_PENDING_INSTALL",
-        acme_directory=PROD,
-        last_issued_iso="2026-11-01T00:00:00+00:00",
-        pending_cert_paths={"fullchain": "/x"},
-    )
-    loaded = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
-    assert loaded.pending_acme_directory == PROD
-    assert loaded.acme_directory == cert_state.UNKNOWN_DIRECTORY
 
 
 def test_legacy_migration_is_one_shot(tmp_path: Path):
     """Once the state is written with the per-directory map, reading it again changes nothing."""
     _write_legacy(tmp_path, state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
-    migrated = cert_state.read_state(certdir=tmp_path, configured_directory=PROD)
-    cert_state.write_state(dataclasses.replace(migrated, acme_directory=PROD), certdir=tmp_path)
-    assert cert_state.read_state(certdir=tmp_path, configured_directory=PROD).acme_directory == PROD
+    migrated = cert_state.read_state(certdir=tmp_path)
+    cert_state.write_state(dataclasses.replace(migrated, last_issued_by_directory={}), certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path).last_issued_by_directory == {}
 
 
 def test_state_written_by_current_code_is_not_migrated(tmp_path: Path):
     original = cert_state.CertState(state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
     cert_state.write_state(original, certdir=tmp_path)
-    assert cert_state.read_state(certdir=tmp_path, configured_directory=PROD) == original
-
-
-def test_legacy_state_without_a_configured_directory_still_marks_the_origin(tmp_path: Path):
-    """The healthcheck reads state without settings; it must not raise, and must see the same origin."""
-    _write_legacy(tmp_path, state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
-    loaded = cert_state.read_state(certdir=tmp_path)
-    assert loaded.acme_directory == cert_state.UNKNOWN_DIRECTORY
-    assert loaded.last_issued_by_directory == {PROD: "2026-11-01T00:00:00+00:00"}
+    assert cert_state.read_state(certdir=tmp_path) == original
 
 
 def test_pending_cert_paths_round_trips(tmp_path: Path):

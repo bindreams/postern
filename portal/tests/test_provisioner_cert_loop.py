@@ -597,6 +597,32 @@ def test_drift_is_served_once_the_guard_clears(prod_settings, lego_mock, now, ce
     assert _advance(state, prod_settings, lego_mock, now + dt.timedelta(hours=24)).state == "ISSUING"
 
 
+def test_installed_without_a_cert_on_disk_under_an_active_guard_goes_to_issuing(
+    prod_settings, lego_mock, now, cert_dir
+):
+    """A deferral reports INSTALLED only while a cert is on disk: INSTALLED with none would open the healthcheck gate."""
+    issued = (now - dt.timedelta(hours=1)).isoformat()
+    state = _staging_issued(now, state="INSTALLED", last_issued_by_directory={PROD: issued})
+    state = _advance(state, prod_settings, lego_mock, now)
+    assert state.state == "ISSUING"
+    assert _advance(state, prod_settings, lego_mock, now).state == "ISSUING"
+    lego_mock.issue_or_renew.assert_not_called()
+
+
+def test_dropped_renew_trigger_under_an_active_guard_is_logged(settings, lego_mock, now, cert_dir, caplog):
+    _install_live_cert(cert_dir, settings)
+    issued = (now - dt.timedelta(hours=1)).isoformat()
+    state = cert_state.CertState(
+        state="INSTALLED",
+        sans=[settings.domain, f"*.{settings.domain}"],
+        acme_directory=STAGING,
+        last_issued_by_directory={STAGING: issued},
+    )
+    _advance(state, settings, lego_mock, now, trigger_present=True)
+    assert ".renew-cert request was dropped" in caplog.text
+    assert "CERT_FORCE_REISSUE" in caplog.text
+
+
 def test_san_mismatch_under_an_active_guard_stays_installed(settings, lego_mock, now, cert_dir):
     _install_live_cert(cert_dir, settings)
     settings.expected_sans = {"other.test"}
@@ -772,6 +798,23 @@ def test_switch_between_directories_on_one_host_moves_the_old_account_aside(prod
     assert (asides[0] / "account.json").exists()
 
 
+def test_retry_after_a_failed_switch_attempt_keeps_the_account_the_attempt_registered(
+    prod_settings, lego_mock, now, cert_dir
+):
+    """The failed attempt already registered an account under the new directory; moving it aside again is waste."""
+    state = _step_ca_switch(prod_settings, now)
+    state = dataclasses.replace(
+        state,
+        last_issued_by_directory={
+            **state.last_issued_by_directory, STEP_CA_NEW: (now - dt.timedelta(days=2)).isoformat()
+        },
+    )
+    account = _register_account(cert_dir, STEP_CA_NEW, "ops@postern.test")
+    _advance(state, prod_settings, lego_mock, now)
+    assert (account / "account.json").exists()
+    assert not (cert_dir / "lego" / "accounts-aside").exists()
+
+
 def test_switch_between_hosts_leaves_accounts_alone(prod_settings, lego_mock, now, cert_dir):
     old_account = _register_account(cert_dir, STAGING, "ops@postern.test")
     _advance(_staging_issued(now), prod_settings, lego_mock, now)
@@ -815,158 +858,18 @@ def test_attempt_records_only_the_per_directory_time(settings, lego_mock, now):
     assert state.last_issued_iso == legacy
 
 
-# Attempt time survives a restart mid-run ==============================================================================
-def test_attempt_is_persisted_before_lego_runs(settings, lego_mock, now):
-    """A restart while Lego runs would otherwise lose the attempt, and with it the 24h guard."""
-    persisted = []
-
-    def run(*, settings, action):
-        assert persisted, "Lego ran before the attempt was persisted"
-        return LegoOutput(Path("a"), Path("b"), Path("c"))
-
-    lego_mock.issue_or_renew.side_effect = run
-    state = cert_state.CertState(state="ISSUING")
-    cert_driver.advance_cert_state(
-        state,
-        settings=settings,
-        lego=lego_mock,
-        trigger_present=False,
-        now=now,
-        cert_dir=cert_driver.CERT_DIR,
-        persist=persisted.append,
-    )
-    assert len(persisted) == 1
-    assert persisted[0].state == "ISSUING"
-    assert persisted[0].last_issued_by_directory == {STAGING: now.isoformat()}
-    assert persisted[0].last_attempt_iso == now.isoformat()
-
-
-def test_nothing_is_persisted_when_the_guard_blocks(settings, lego_mock, now, cert_dir):
-    _install_live_cert(cert_dir, settings)
-    persisted = []
-    state = cert_state.CertState(
-        state="RENEWING", last_issued_by_directory={STAGING: (now - dt.timedelta(hours=1)).isoformat()}
-    )
-    cert_driver.advance_cert_state(
-        state,
-        settings=settings,
-        lego=lego_mock,
-        trigger_present=False,
-        now=now,
-        cert_dir=cert_driver.CERT_DIR,
-        persist=persisted.append,
-    )
-    assert persisted == []
-
-
 # State written before the per-directory attempt times =================================================================
 def _legacy_state(settings: CertSettings, **fields) -> cert_state.CertState:
     """Write state.json the way the pre-upgrade code did, then read it back as the provisioner does."""
     path = cert_state.state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"schema_version": 1, **fields}))
-    return cert_state.read_state(configured_directory=settings.cert_acme_directory)
-
-
-def _drive(state, settings, lego, now, ticks):
-    """Run the real tick `ticks` times, a minute apart; returns the final state."""
-    for _ in range(ticks):
-        state = _advance(state, settings, lego, now)
-        now += dt.timedelta(minutes=1)
-    return state
-
-
-def _stranded_legacy(cert_dir: Path, prod_settings: CertSettings, now: dt.datetime, **fields) -> cert_state.CertState:
-    """What the old code left after a switch whose `renew` failed: acme_directory already production, the staging
-    cert still installed and live, only a staging account in Lego's directory."""
-    _install_live_cert(cert_dir, prod_settings)
-    _lego_cert(cert_dir, prod_settings)
-    _register_account(cert_dir, STAGING, "ops@postern.test")
-    return _legacy_state(
-        prod_settings,
-        **{
-            "state": "INSTALLED",
-            "sans": [prod_settings.domain, f"*.{prod_settings.domain}"],
-            "acme_directory": PROD,
-            "acme_account_email": "ops@postern.test",
-            "last_issued_iso": (now - dt.timedelta(days=2)).isoformat(),
-            **fields,
-        },
-    )
-
-
-def test_stranded_deployment_is_rescued_through_to_an_installed_production_cert(
-    prod_settings, lego_mock, now, cert_dir
-):
-    state = _stranded_legacy(cert_dir, prod_settings, now)
-    state = _drive(state, prod_settings, lego_mock, now, 3)  # INSTALLED -> ISSUING -> pending -> INSTALLED
-    assert state.state == "INSTALLED"
-    assert state.acme_directory == PROD
-    lego_mock.issue_or_renew.assert_called_once()
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-    # Done: later ticks leave it alone.
-    assert _drive(state, prod_settings, lego_mock, now + dt.timedelta(days=2), 3).state == "INSTALLED"
-    lego_mock.issue_or_renew.assert_called_once()
-
-
-def test_stranded_rescue_survives_a_failed_run(prod_settings, lego_mock, now, cert_dir):
-    """One failed issuance must not strand the deployment again for the rest of the cert's life."""
-    import subprocess
-    state = _stranded_legacy(cert_dir, prod_settings, now)
-    working_lego = lego_mock.issue_or_renew.side_effect
-    lego_mock.issue_or_renew.side_effect = subprocess.CalledProcessError(1, "lego")
-    state = _advance(state, prod_settings, lego_mock, now)  # INSTALLED -> ISSUING
-    state = _advance(state, prod_settings, lego_mock, now)  # lego fails
-    assert state.state == "ISSUING"
-    assert state.acme_directory == cert_state.UNKNOWN_DIRECTORY
-
-    # The guard defers to INSTALLED, where the drift is still seen once the guard clears.
-    lego_mock.issue_or_renew.side_effect = working_lego
-    later = now + dt.timedelta(hours=1)
-    state = _advance(state, prod_settings, lego_mock, later)
-    assert state.state == "INSTALLED"
-    assert _advance(state, prod_settings, lego_mock, later).state == "INSTALLED"
-    state = _drive(state, prod_settings, lego_mock, now + dt.timedelta(hours=25), 3)
-    assert state.state == "INSTALLED"
-    assert state.acme_directory == PROD
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-
-
-def test_stranded_deployment_with_a_recent_attempt_waits_out_the_guard(prod_settings, lego_mock, now, cert_dir):
-    state = _stranded_legacy(cert_dir, prod_settings, now, last_issued_iso=(now - dt.timedelta(hours=2)).isoformat())
-    assert _drive(state, prod_settings, lego_mock, now, 3).state == "INSTALLED"
-    lego_mock.issue_or_renew.assert_not_called()
-    assert _advance(state, prod_settings, lego_mock, now + dt.timedelta(hours=23)).state == "ISSUING"
-
-
-def test_legacy_healthy_production_deployment_reissues_once(prod_settings, lego_mock, now, cert_dir):
-    """The old acme_directory cannot tell this from a stranded one, so the first tick after the upgrade reissues."""
-    state = _legacy_state(
-        prod_settings,
-        state="INSTALLED",
-        sans=[prod_settings.domain, f"*.{prod_settings.domain}"],
-        acme_directory=PROD,
-        last_issued_iso=(now - dt.timedelta(days=40)).isoformat(),
-    )
-    _install_live_cert(cert_dir, prod_settings)
-    state = _drive(state, prod_settings, lego_mock, now, 3)
-    assert state.state == "INSTALLED"
-    assert state.acme_directory == PROD
-    assert _drive(state, prod_settings, lego_mock, now, 3).state == "INSTALLED"
-    lego_mock.issue_or_renew.assert_called_once()
+    return cert_state.read_state()
 
 
 def test_legacy_adopted_cert_is_left_alone(prod_settings, lego_mock, now, cert_dir):
     _install_live_cert(cert_dir, prod_settings)
     state = _legacy_state(prod_settings, state="INSTALLED", sans=[prod_settings.domain, f"*.{prod_settings.domain}"])
-    assert _drive(state, prod_settings, lego_mock, now, 3).state == "INSTALLED"
-    lego_mock.issue_or_renew.assert_not_called()
-
-
-def test_legacy_state_without_a_directory_keeps_its_24h_guard(prod_settings, lego_mock, now, cert_dir):
-    """last_issued_iso with no acme_directory is read as an attempt under the configured directory."""
-    _install_live_cert(cert_dir, prod_settings)
-    state = _legacy_state(prod_settings, state="RENEWING", last_issued_iso=(now - dt.timedelta(hours=12)).isoformat())
     assert _advance(state, prod_settings, lego_mock, now).state == "INSTALLED"
     lego_mock.issue_or_renew.assert_not_called()
 
@@ -1011,7 +914,7 @@ def test_legacy_failed_under_another_directory_skips_the_hold_off(prod_settings,
     assert next_state.consecutive_failures == 0
 
 
-def test_legacy_pending_install_completes_under_the_directory_lego_ran_under(prod_settings, lego_mock, now):
+def test_legacy_pending_install_completes_under_the_configured_directory(prod_settings, lego_mock, now):
     state = _advance(cert_state.CertState(state="ISSUING"), prod_settings, lego_mock, now)
     legacy = _legacy_state(
         prod_settings,

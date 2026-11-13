@@ -37,7 +37,7 @@ from typing import NoReturn
 import dns.exception
 import dns.resolver
 
-# postern_mta is COPYed into /usr/lib/python3.13/site-packages/ at image build time.
+# postern_mta is COPYed into /usr/lib/python<minor>/site-packages/ (the interpreter's default path) at image build time.
 from postern_mta import dkim as mta_dkim  # noqa: E402
 from postern_mta import rotation  # noqa: E402
 

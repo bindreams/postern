@@ -17,7 +17,6 @@ from postern.reconciler import (
     _list_managed_containers,
     _reconcile_once,
     _reconcile_pass,
-    _report_legacy_running_containers,
     resolve_instance_id,
     cleanup_all_containers,
     reconcile,
@@ -476,36 +475,6 @@ async def test_reconciliation_loop_clears_shutdown_flag_on_start(tmp_path):
                 pass
 
 
-def test_reconcile_pass_skips_legacy_scan_when_shutdown_requested():
-    """_report_legacy_running_containers is an unbounded, daemon-wide Docker
-    inspect scan (see its own docstring) that the cooperative-abort
-    checkpoints inside _reconcile_once do nothing to bound -- it must be
-    skipped once shutdown has been requested, or it can burn through
-    stop_grace_period and get the portal SIGKILLed before
-    cleanup_all_containers ever runs."""
-    import postern.reconciler as reconciler_module
-
-    conn = _make_connection()
-    settings = _make_settings()
-
-    client = MagicMock()
-    client.containers.list.return_value = []
-    client.images.get.return_value = MagicMock(id="img1")
-    client.networks.get.return_value = _mock_network()
-
-    reconciler_module._shutdown_requested.set()
-    try:
-        _reconcile_pass(client, [conn], [conn], settings, INSTANCE_ID)
-    finally:
-        reconciler_module._shutdown_requested.clear()
-
-    # _reconcile_once itself makes exactly one containers.list() call
-    # (_list_managed_containers) before its own first checkpoint bails out.
-    # If the legacy scan's SEPARATE containers.list() call also fired, this
-    # would be 2 -- it must stay 1.
-    assert client.containers.list.call_count == 1
-
-
 def test_recreates_container_on_image_change():
     conn = _make_connection()
     settings = _make_settings()
@@ -776,6 +745,19 @@ def test_recreate_check_skips_entirely_when_image_missing_even_if_network_change
     client.containers.run.assert_not_called()
 
 
+def _list_entry(name, labels, state="running"):
+    """One entry of a `GET /containers/json` payload (what `client.api.containers` returns)."""
+    return {"Id": "f" * 64, "Names": [f"/{name}"], "Labels": labels, "State": state}
+
+
+def _assert_squatter_untouched(client):
+    """A squatter is only ever READ, and only through the list payload (never by an inspect that returns `Env`)."""
+    client.containers.get.assert_not_called()
+    client.containers.run.assert_called_once()
+    client.api.stop.assert_not_called()
+    client.api.remove_container.assert_not_called()
+
+
 # Name conflicts on create (pre-fix / legacy / cross-deployment containers) ============================================
 def _conflict_error():
     response = MagicMock(status_code=409)
@@ -797,24 +779,17 @@ def test_create_logs_name_conflict_and_never_touches_a_foreign_squatter(caplog):
     settings = _make_settings()
     name = _container_name(conn)
 
-    squatter = MagicMock()
-    squatter.name = name
-    squatter.labels = {MANAGED_LABEL: MANAGED_VALUE}  # no instance label: legacy
-    squatter.stop = MagicMock()
-    squatter.remove = MagicMock()
-
     client = MagicMock()
     client.containers.list.return_value = []  # not in the instance-scoped managed set
     client.images.get.return_value = MagicMock(id="img1")
     client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
-    client.containers.get.return_value = squatter
+    client.api.containers.return_value = [_list_entry(name, {MANAGED_LABEL: MANAGED_VALUE})]  # no instance label
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
-    squatter.stop.assert_not_called()
-    squatter.remove.assert_not_called()
+    _assert_squatter_untouched(client)
     assert client.containers.run.call_count == 1
     assert name in caplog.text
     assert "docker rm -f" in caplog.text
@@ -830,24 +805,19 @@ def test_create_logs_distinctly_when_squatter_is_this_instances_own(caplog):
     settings = _make_settings()
     name = _container_name(conn)
 
-    squatter = MagicMock()
-    squatter.name = name
-    squatter.labels = {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: INSTANCE_ID}
-    squatter.stop = MagicMock()
-    squatter.remove = MagicMock()
-
     client = MagicMock()
     client.containers.list.return_value = []
     client.images.get.return_value = MagicMock(id="img1")
     client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
-    client.containers.get.return_value = squatter
+    client.api.containers.return_value = [
+        _list_entry(name, {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: INSTANCE_ID})
+    ]
 
     with caplog.at_level(logging.WARNING, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
-    squatter.stop.assert_not_called()
-    squatter.remove.assert_not_called()
+    _assert_squatter_untouched(client)
     assert client.containers.run.call_count == 1
     assert "own container" in caplog.text
     assert "docker rm -f" not in caplog.text
@@ -870,7 +840,7 @@ def test_log_name_conflict_logs_distinctly_when_squatter_lookup_fails(caplog):
     client.images.get.return_value = MagicMock(id="img1")
     client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
-    client.containers.get.side_effect = RuntimeError("container vanished")
+    client.api.containers.side_effect = RuntimeError("proxy unreachable")
 
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
@@ -882,7 +852,7 @@ def test_log_name_conflict_logs_distinctly_when_squatter_lookup_fails(caplog):
 
 def test_log_name_conflict_resolves_itself_when_squatter_vanishes_before_inspection(caplog):
     """The 409-then-inspect sequence is racy: the squatter can be removed
-    between containers.run()'s 409 and this containers.get() -- most
+    between containers.run()'s 409 and this name-filtered read -- most
     plausibly an operator following this function's own `docker rm -f`
     remediation advice. That's docker.errors.NotFound, a benign and
     self-healing outcome (the name is free again), and must NOT get the
@@ -898,7 +868,7 @@ def test_log_name_conflict_resolves_itself_when_squatter_vanishes_before_inspect
     client.images.get.return_value = MagicMock(id="img1")
     client.networks.get.return_value = _mock_network()
     client.containers.run.side_effect = _conflict_error()
-    client.containers.get.side_effect = docker.errors.NotFound("no such container")
+    client.api.containers.return_value = []  # the squatter was removed in between
 
     with caplog.at_level(logging.INFO, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
@@ -924,7 +894,7 @@ def test_create_logs_generically_on_non_conflict_api_error(caplog):
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
-    client.containers.get.assert_not_called()
+    client.api.containers.assert_not_called()
     assert "Failed to create container" in caplog.text
     assert "docker rm -f" not in caplog.text
 
@@ -992,164 +962,6 @@ def test_image_upgrade_recreates_when_removal_target_already_gone():
     _reconcile_once(client, [conn], settings, INSTANCE_ID)
 
     client.containers.run.assert_called_once()  # recreate DID happen
-
-
-# Visibility for legacy containers outside the desired (enabled) set ===================================================
-def _make_disabled_squatter(name, labels, status="running"):
-    squatter = MagicMock()
-    squatter.name = name
-    squatter.labels = labels
-    squatter.status = status
-    return squatter
-
-
-def test_reports_legacy_container_for_disabled_connection(caplog):
-    """A disabled connection is never the target of a create() call, so
-    _log_name_conflict's 409-triggered logging never fires for it -- this
-    is the only other place the equivalent visibility exists. Its DB row
-    still exists (disabled, not deleted), so the message can cite the
-    connection id."""
-    conn = _make_connection()
-    name = _container_name(conn)
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE})  # no instance label
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with caplog.at_level(logging.WARNING, logger="postern.reconciler"):
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={name: conn})
-
-    assert name in caplog.text
-    assert "docker rm -f" in caplog.text
-    assert conn.id in caplog.text
-
-
-def test_reports_legacy_container_for_deleted_connection(caplog):
-    """`postern user delete` cascades the connection row away entirely --
-    connections_by_name has no entry for it -- but a still-running legacy
-    container for that connection must still be flagged. The message can't
-    cite a connection id it doesn't have, so it must say so instead of
-    guessing or silently dropping the report."""
-    name = "ss-deletedtoken123456789012"
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE})
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with caplog.at_level(logging.WARNING, logger="postern.reconciler"):
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={})
-
-    assert name in caplog.text
-    assert "docker rm -f" in caplog.text
-    assert "no connection" in caplog.text.lower()
-
-
-def test_report_legacy_running_skips_container_in_desired_set():
-    """A container whose name IS in desired_names (an enabled connection)
-    is left to the ordinary create-sweep's own 409 handling
-    (_log_name_conflict) -- this function must not ALSO warn about it."""
-    conn = _make_connection()
-    name = _container_name(conn)
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE})
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with patch("postern.reconciler.logger") as mock_logger:
-        _report_legacy_running_containers(client, desired_names={name}, connections_by_name={name: conn})
-        mock_logger.warning.assert_not_called()
-
-
-def test_report_legacy_running_skips_own_instance_container():
-    """Already in this instance's own managed set -- the ordinary sweep
-    handles it; no separate warning needed here."""
-    conn = _make_connection()
-    name = _container_name(conn)
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: INSTANCE_ID})
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with patch("postern.reconciler.logger") as mock_logger:
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={name: conn})
-        mock_logger.warning.assert_not_called()
-
-
-def test_report_legacy_running_skips_foreign_instance_container():
-    """A container labelled for a DIFFERENT, live deployment must never be
-    flagged, even if its name happens to match one of THIS instance's
-    disabled connections (a cloned database makes that collision possible,
-    not just theoretical) -- suggesting `docker rm -f` against a live
-    foreign tunnel would be exactly the destructive mistake this whole
-    design exists to avoid."""
-    conn = _make_connection()
-    name = _container_name(conn)
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: "some-other-deployment"})
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with patch("postern.reconciler.logger") as mock_logger:
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={name: conn})
-        mock_logger.warning.assert_not_called()
-
-
-def test_report_legacy_running_skips_non_running_container():
-    """A claim of 'still running' must actually be verified -- an exited
-    or created (never-running) container isn't serving traffic, so there's
-    nothing urgent to tell the operator about."""
-    conn = _make_connection()
-    name = _container_name(conn)
-    squatter = _make_disabled_squatter(name, {MANAGED_LABEL: MANAGED_VALUE}, status="exited")
-
-    client = MagicMock()
-    client.containers.list.return_value = [squatter]
-
-    with patch("postern.reconciler.logger") as mock_logger:
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={name: conn})
-        mock_logger.warning.assert_not_called()
-
-
-def test_report_legacy_running_skips_when_no_container_exists():
-    client = MagicMock()
-    client.containers.list.return_value = []
-
-    with patch("postern.reconciler.logger") as mock_logger:
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={})
-        mock_logger.warning.assert_not_called()
-
-
-def test_report_legacy_running_makes_one_list_call():
-    """O(1) Docker API calls per pass, not O(N) -- this runs every pass."""
-    client = MagicMock()
-    client.containers.list.return_value = []
-
-    _report_legacy_running_containers(client, desired_names=set(), connections_by_name={})
-
-    client.containers.list.assert_called_once()
-
-
-def test_report_legacy_running_passes_ignore_removed():
-    """Same ask-forgiveness listing as _list_managed_containers -- a
-    container vanishing between the initial list and docker-py's per-id
-    inspect must not abort the whole check."""
-    client = MagicMock()
-    client.containers.list.return_value = []
-
-    _report_legacy_running_containers(client, desired_names=set(), connections_by_name={})
-
-    call_kwargs = client.containers.list.call_args.kwargs
-    assert call_kwargs.get("ignore_removed") is True
-
-
-def test_report_legacy_running_logs_and_swallows_listing_failure(caplog):
-    client = MagicMock()
-    client.containers.list.side_effect = RuntimeError("docker-proxy blip")
-
-    with caplog.at_level(logging.WARNING, logger="postern.reconciler"):
-        _report_legacy_running_containers(client, desired_names=set(), connections_by_name={})  # must not raise
-
-    assert "Could not check for legacy containers" in caplog.text
 
 
 # Cross-instance sweep isolation =======================================================================================
@@ -1802,3 +1614,92 @@ async def test_loop_notifies_a_waiter_registered_during_the_interval_wait_on_shu
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+
+# Container summaries: reading a container the portal may not own =======================================================
+def test_container_summary_reader_returns_name_labels_and_state_from_the_list_payload():
+    client = MagicMock()
+    client.api.containers.return_value = [
+        {"Id": "a" * 64, "Names": ["/ss-one"], "Labels": {"k": "v"}, "State": "exited", "Mounts": [], "Image": "x"},
+    ]
+
+    result = reconciler.read_container_summaries(client, {"label": ["k=v"]})
+
+    assert result == [reconciler.ContainerSummary(name="ss-one", labels={"k": "v"}, state="exited")]
+    client.api.containers.assert_called_once_with(all=True, filters={"label": ["k=v"]})
+    client.containers.get.assert_not_called()  # a by-id inspect would return the container's Env
+
+
+def test_container_summary_reader_tolerates_missing_fields():
+    client = MagicMock()
+    client.api.containers.return_value = [{"Id": "a" * 64, "Names": ["/ss-one"], "Labels": None}]
+
+    assert reconciler.read_container_summaries(client, {}) == [
+        reconciler.ContainerSummary(name="ss-one", labels={}, state="")
+    ]
+
+
+def test_container_summary_reader_returns_nothing_for_an_empty_list():
+    client = MagicMock()
+    client.api.containers.return_value = []
+
+    assert reconciler.read_container_summaries(client, {}) == []
+
+
+def test_find_container_summary_by_name_sends_an_anchored_name_filter():
+    client = MagicMock()
+    client.api.containers.return_value = [_list_entry("ss-one", {"k": "v"})]
+
+    found = reconciler.find_container_summary_by_name(client, "ss-one")
+
+    assert found == reconciler.ContainerSummary(name="ss-one", labels={"k": "v"}, state="running")
+    client.api.containers.assert_called_once_with(all=True, filters={"name": ["^/ss-one$"]})
+
+
+def test_find_container_summary_by_name_ignores_an_entry_whose_name_differs():
+    """The daemon's name filter is a regex; only an exact name is the container asked about."""
+    client = MagicMock()
+    client.api.containers.return_value = [_list_entry("other-ss-one", {}), _list_entry("ss-one-2", {})]
+
+    assert reconciler.find_container_summary_by_name(client, "ss-one") is None
+
+
+def test_find_container_summary_by_name_returns_none_when_nothing_matches():
+    client = MagicMock()
+    client.api.containers.return_value = []
+
+    assert reconciler.find_container_summary_by_name(client, "ss-one") is None
+
+
+# Tunnel container hardening ===========================================================================================
+def _created_kwargs():
+    conn = _make_connection()
+    client = MagicMock()
+    reconciler._create_container(client, conn, _make_settings(), INSTANCE_ID)
+    return client.containers.run.call_args.kwargs
+
+
+def test_tunnel_container_is_created_with_the_hardening_profile():
+    kwargs = _created_kwargs()
+
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["security_opt"] == ["no-new-privileges:true"]
+    assert kwargs["read_only"] is True
+    assert kwargs["mem_limit"] == reconciler.SS_MEMORY_BYTES
+    assert kwargs["pids_limit"] == reconciler.SS_PIDS_LIMIT
+    assert kwargs["tmpfs"] == reconciler.SS_TMPFS
+
+
+def test_tunnel_container_tmpfs_gives_galoshes_a_writable_exec_cache():
+    """galoshes extracts its embedded ex-ray into ~/.cache and must be able to execute it."""
+    assert reconciler.SS_TMPFS == {"/tmp": "", "/home/nonroot/.cache": "exec"}
+
+
+def test_tunnel_container_limits_have_the_measured_values():
+    """The proxy's policy.lua repeats these; tests/test_compose_docker_proxy.py pins the copies equal."""
+    assert reconciler.SS_MEMORY_BYTES == 536870912
+    assert reconciler.SS_PIDS_LIMIT == 1024
+
+
+def test_tunnel_container_labels_are_exactly_the_two_postern_labels():
+    assert _created_kwargs()["labels"] == {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: INSTANCE_ID}

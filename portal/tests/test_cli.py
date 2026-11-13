@@ -37,7 +37,7 @@ def _unresolve_identity(monkeypatch):
 @pytest.fixture(autouse=True)
 def _mock_docker_client(monkeypatch):
     """`connection disable` and `user delete` both construct a real
-    docker.DockerClient.from_env() (the disabled/deleted-connection legacy-
+    docker.DockerClient.from_env() (the disabled/deleted-connection
     container check) -- CLAUDE.md pins that tests never need a real Docker
     daemon. Without this, any test invoking either command depends on the
     ambient DOCKER_HOST: on a host where it points at an unreachable (not
@@ -49,9 +49,8 @@ def _mock_docker_client(monkeypatch):
     container-lookup behavior use `patch("docker.DockerClient.from_env",
     ...)` in their own scope, which takes precedence for its duration.
     """
-    import docker.errors
     mock_client = MagicMock()
-    mock_client.containers.get.side_effect = docker.errors.NotFound("no such container")
+    mock_client.api.containers.return_value = []
     monkeypatch.setattr("docker.DockerClient.from_env", MagicMock(return_value=mock_client))
     return mock_client
 
@@ -141,11 +140,8 @@ def test_user_disable_warns_when_legacy_container_still_running(cli_env):
     with sqlite3.connect(cli_env) as raw:
         path_token = raw.execute("SELECT path_token FROM connections WHERE label='Phone'").fetchone()[0]
 
-    container = MagicMock()
-    container.labels = {"postern.managed": "true"}  # legacy: no instance label
-    container.status = "running"
     mock_client = MagicMock()
-    mock_client.containers.get.return_value = container
+    mock_client.api.containers.return_value = [_list_entry(path_token, {"postern.managed": "true"})]  # no instance label
 
     with patch("docker.DockerClient.from_env", return_value=mock_client):
         result = runner.invoke(app, ["user", "disable", "alice@example.com"])
@@ -183,11 +179,8 @@ def test_user_delete_warns_when_legacy_container_still_running(cli_env):
     with sqlite3.connect(cli_env) as raw:
         path_token = raw.execute("SELECT path_token FROM connections WHERE label='Phone'").fetchone()[0]
 
-    container = MagicMock()
-    container.labels = {"postern.managed": "true"}  # legacy: no instance label
-    container.status = "running"
     mock_client = MagicMock()
-    mock_client.containers.get.return_value = container
+    mock_client.api.containers.return_value = [_list_entry(path_token, {"postern.managed": "true"})]  # no instance label
 
     with patch("docker.DockerClient.from_env", return_value=mock_client):
         result = runner.invoke(app, ["user", "delete", "alice@example.com"])
@@ -657,20 +650,16 @@ def test_connection_add_does_not_warn_when_identity_resolved(cli_env):
 
 # Disabled-connection container survival warning =======================================================================
 def test_connection_disable_warns_when_legacy_container_still_running(cli_env, monkeypatch):
-    """The proactive, CLI-side counterpart to the reconciler's own
-    _report_legacy_running_containers: `connection disable` immediately
-    surfaces the same manual-remediation guidance instead of leaving the
-    operator to notice only in the reconciler's logs on the next pass."""
+    """`connection disable` immediately surfaces the manual-remediation
+    guidance for a container the reconciler will never stop, instead of
+    leaving the operator to discover it later."""
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
     conn_id = result.output.split("Created connection ")[1].split()[0]
     path_token = _connection_path_token(cli_env, conn_id)
 
-    container = MagicMock()
-    container.labels = {"postern.managed": "true"}  # legacy: no instance label
-    container.status = "running"
     mock_client = MagicMock()
-    mock_client.containers.get.return_value = container
+    mock_client.api.containers.return_value = [_list_entry(path_token, {"postern.managed": "true"})]  # no instance label
 
     with patch("docker.DockerClient.from_env", return_value=mock_client):
         result = runner.invoke(app, ["connection", "disable", conn_id])
@@ -686,12 +675,12 @@ def test_connection_disable_does_not_warn_for_own_instance_container(cli_env):
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
     conn_id = result.output.split("Created connection ")[1].split()[0]
+    path_token = _connection_path_token(cli_env, conn_id)
 
-    container = MagicMock()
-    container.labels = {"postern.managed": "true", "postern.instance": "postern-test"}
-    container.status = "running"
     mock_client = MagicMock()
-    mock_client.containers.get.return_value = container
+    mock_client.api.containers.return_value = [
+        _list_entry(path_token, {"postern.managed": "true", "postern.instance": "postern-test"})
+    ]
 
     with patch("docker.DockerClient.from_env", return_value=mock_client):
         result = runner.invoke(app, ["connection", "disable", conn_id])
@@ -701,14 +690,12 @@ def test_connection_disable_does_not_warn_for_own_instance_container(cli_env):
 
 
 def test_connection_disable_does_not_warn_when_no_container_exists(cli_env):
-    import docker.errors
-
     runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
     result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
     conn_id = result.output.split("Created connection ")[1].split()[0]
 
     mock_client = MagicMock()
-    mock_client.containers.get.side_effect = docker.errors.NotFound("no such container")
+    mock_client.api.containers.return_value = []
 
     with patch("docker.DockerClient.from_env", return_value=mock_client):
         result = runner.invoke(app, ["connection", "disable", conn_id])
@@ -732,6 +719,11 @@ def test_connection_disable_reports_when_container_lookup_fails(cli_env):
 
     assert result.exit_code == 0
     assert "NOTE: could not check" in result.output
+
+
+def _list_entry(path_token, labels, state="running"):
+    """One entry of a `GET /containers/json` payload for this connection's `ss-<token>` container."""
+    return {"Id": "f" * 64, "Names": [f"/ss-{path_token}"], "Labels": labels, "State": state}
 
 
 def _connection_path_token(db_path, conn_id):
@@ -869,3 +861,21 @@ def test_connection_tunnels_keeps_the_identity_warning_off_stdout(cli_env, monke
     assert result.stdout.splitlines() == [f"ss-{_tokens(cli_env)[0]}"]
     assert "WARNING: could not determine this deployment's instance id" in result.stderr
     assert "WARNING" not in result.stdout
+
+
+def test_connection_disable_never_inspects_a_container_by_name(cli_env):
+    """The container is read from a name-filtered list payload. A by-name inspect would return another
+    deployment's `Env` and is denied by the docker-proxy."""
+    runner.invoke(app, ["user", "add", "Alice", "alice@example.com"])
+    result = runner.invoke(app, ["connection", "add", "alice@example.com", "Phone"])
+    conn_id = result.output.split("Created connection ")[1].split()[0]
+    path_token = _connection_path_token(cli_env, conn_id)
+
+    mock_client = MagicMock()
+    mock_client.api.containers.return_value = []
+
+    with patch("docker.DockerClient.from_env", return_value=mock_client):
+        runner.invoke(app, ["connection", "disable", conn_id])
+
+    mock_client.containers.get.assert_not_called()
+    mock_client.api.containers.assert_called_once_with(all=True, filters={"name": [f"^/ss-{path_token}$"]})

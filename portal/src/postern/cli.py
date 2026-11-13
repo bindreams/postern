@@ -93,16 +93,13 @@ def _warn_if_disabled_connection_container_survives(settings: Settings, path_tok
     a raised exception).
     """
     import docker
-    import docker.errors
-    from postern.reconciler import is_unlabelled_and_running
+    from postern.reconciler import find_container_summary_by_name, is_unlabelled_and_running
 
     name = f"ss-{path_token}"
     try:
         client = docker.DockerClient.from_env()
         try:
-            container = client.containers.get(name)
-        except docker.errors.NotFound:
-            return
+            container = find_container_summary_by_name(client, name)
         finally:
             client.close()
     except Exception:
@@ -114,7 +111,7 @@ def _warn_if_disabled_connection_container_survives(settings: Settings, path_tok
         )
         return
 
-    if not is_unlabelled_and_running(container.labels or {}, container.status):
+    if container is None or not is_unlabelled_and_running(container.labels, container.state):
         return
     typer.echo(
         f"WARNING: container {name} for this connection is still running and predates instance "

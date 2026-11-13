@@ -1,8 +1,14 @@
+# Every service lists the variables it reads under environment: as bare
+# passthrough keys (`KEY:`). Compose resolves them from the shell, then .env;
+# an unset key stays absent in the container, which the portal and provisioner
+# treat differently from "set but empty" -- so never write ${KEY:-} for them.
+# No service uses env_file:. Pinned by portal/tests/test_compose_env_scoping.py.
+#
 # Single source for the tunnel network name: aliased below into both the
 # portal's own environment: (services.portal) and networks.shadowsocks.name,
 # so the two can't drift apart the way two independently-typed
-# ${SHADOWSOCKS_NETWORK:-shadowsocks} literals could -- env_file: alone can't
-# guarantee that (see docs/development/architecture.md).
+# ${SHADOWSOCKS_NETWORK:-shadowsocks} literals could (see
+# docs/development/architecture.md).
 x-shadowsocks-network: &shadowsocks_network ${SHADOWSOCKS_NETWORK:-shadowsocks}
 
 services:
@@ -31,6 +37,10 @@ services:
       # Cloudflare Authenticated Origin Pull mTLS; only meaningful under
       # EDGE_PROFILE=cloudflare. render.sh FAILs LOUD on an unrecognized value.
       EDGE_CF_AUTHENTICATED_ORIGIN_PULL: ${EDGE_CF_AUTHENTICATED_ORIGIN_PULL:-true}
+      # EDGE_PROFILE=generic only: the CIDRs trusted as the real-IP source and
+      # the header that carries the client IP. render.sh reads both raw.
+      EDGE_TRUSTED_CIDRS:
+      EDGE_REALIP_HEADER:
     ports:
       - "80:80/tcp"
       - "443:443/tcp"
@@ -66,7 +76,6 @@ services:
       pull: true
     image: local/postern-portal
     container_name: portal
-    env_file: .env
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -76,6 +85,49 @@ services:
       # Aliased to the same node as networks.shadowsocks.name below -- see
       # the x-shadowsocks-network comment at the top of this file.
       SHADOWSOCKS_NETWORK: *shadowsocks_network
+      # Required: the portal refuses to start without it, and so does any `docker compose` command run without a usable .env.
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY must be set in .env}
+      # The rest of postern.settings.Settings, in its order. Nothing here is a
+      # DNS provider credential: those go to the provisioner only.
+      DATABASE_PATH:
+      SMTP_HOST:
+      SMTP_PORT:
+      SMTP_USER:
+      SMTP_PASSWORD:
+      SMTP_FROM:
+      OTP_EXPIRY_SECONDS:
+      OTP_MAX_ATTEMPTS:
+      OTP_MAX_REQUESTS_PER_WINDOW:
+      OTP_RATE_WINDOW_SECONDS:
+      SESSION_EXPIRY_DAYS:
+      RECONCILE_INTERVAL_SECONDS:
+      SHADOWSOCKS_IMAGE:
+      INSTANCE_ID:
+      DOMAIN:
+      PRODUCT_NAME:
+      PRODUCT_ICON_PATH:
+      GEOIP_DB_DIR:
+      MTA_VERIFY_DNS:
+      MTA_REQUIRE_DNSSEC:
+      MTA_DKIM_SELECTOR_PREFIX:
+      MTA_ADMIN_EMAIL:
+      MTA_DKIM_ROTATION_DAYS:
+      DNS_PROVIDER:
+      CERT_RENEWAL:
+      CERT_ACME_EMAIL:
+      CERT_ACME_DIRECTORY:
+      CERT_RENEWAL_DAYS_BEFORE_EXPIRY:
+      CERT_FORCE_REISSUE:
+      EDGE_PROFILE:
+      EDGE_TRUSTED_CIDRS:
+      EDGE_REALIP_HEADER:
+      EDGE_CF_AUTHENTICATED_ORIGIN_PULL:
+      EDGE_CF_MANAGE_ZONE_ECH:
+      EDGE_CF_MANAGE_SSL_MODE:
+      EDGE_CF_SSL_MODE:
+      ECH_DOH_URL:
+      PUBLIC_IPV4:
+      PUBLIC_IPV6:
     volumes:
       - postern-data:/data
       # rw so `postern mta show-dns` can read state.json + selector pubkeys, AND
@@ -121,9 +173,16 @@ services:
     container_name: mta
     profiles: [with-mta]
     hostname: mail.${DOMAIN:-postern.example.com}
-    env_file: .env
     environment:
       MTA_SUBMIT_CIDR: 172.30.42.0/29
+      # Everything else mta/entrypoint.py reads. The mta is on public port 25 and
+      # receives no credentials.
+      DOMAIN:
+      MTA_VERIFY_DNS:
+      MTA_REQUIRE_DNSSEC:
+      MTA_ADMIN_EMAIL:
+      SMTP_FROM:
+      MTA_DKIM_SELECTOR_PREFIX:
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, NET_BIND_SERVICE, DAC_OVERRIDE, SYS_CHROOT]
     security_opt: ["no-new-privileges:true"]
@@ -169,7 +228,6 @@ services:
     # with-cert-renewal lets cert auto-renewal run even without MTA.
     profiles: [with-mta, with-cert-renewal, with-edge]
     user: "110:110"
-    env_file: .env
     environment:
       # "MTA deployed" signal for the enable-gate (entrypoint + healthcheck):
       # the built-in MTA runs under the with-mta profile, but a Cloudflare edge
@@ -178,6 +236,106 @@ services:
       # provisioner can tell "with-mta" apart from "DNS provider configured" and
       # never publishes mail/mta-sts records for an edge-only deployment.
       COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
+      # Everything else the entrypoint, healthcheck and lego driver read.
+      DOMAIN:
+      MTA_DKIM_ROTATION_DAYS:
+      MTA_DKIM_SELECTOR_PREFIX:
+      MTA_ADMIN_EMAIL:
+      DNS_PROVIDER:
+      CERT_RENEWAL:
+      CERT_ACME_EMAIL:
+      CERT_ACME_DIRECTORY:
+      CERT_RENEWAL_DAYS_BEFORE_EXPIRY:
+      CERT_FORCE_REISSUE:
+      PUBLIC_IPV4:
+      PUBLIC_IPV6:
+      EDGE_PROFILE:
+      EDGE_CF_MANAGE_ZONE_ECH:
+      EDGE_CF_MANAGE_SSL_MODE:
+      EDGE_CF_SSL_MODE:
+      # DNS provider variables: the only place they enter the stack. Per provider,
+      # what provisioner/postern-dns/main.go newProvider reads plus the variables
+      # lego documents for it (lego runs with this whole environment). Static
+      # credentials only: route53's profile/credentials-file variables are left out
+      # (no ~/.aws in this container). Adding a provider means adding its variables
+      # here; pinned by test_compose_env_scoping.py, which also pins the lego version.
+      # cloudflare
+      CLOUDFLARE_API_TOKEN:
+      CF_API_EMAIL:
+      CF_API_KEY:
+      CF_DNS_API_TOKEN:
+      CF_ZONE_API_TOKEN:
+      CLOUDFLARE_EMAIL:
+      CLOUDFLARE_API_KEY:
+      CLOUDFLARE_DNS_API_TOKEN:
+      CLOUDFLARE_ZONE_API_TOKEN:
+      CLOUDFLARE_BASE_URL:
+      CLOUDFLARE_POLLING_INTERVAL:
+      CLOUDFLARE_PROPAGATION_TIMEOUT:
+      CLOUDFLARE_TTL:
+      CLOUDFLARE_HTTP_TIMEOUT:
+      # route53
+      AWS_REGION:
+      AWS_ACCESS_KEY_ID:
+      AWS_SECRET_ACCESS_KEY:
+      AWS_SESSION_TOKEN:
+      AWS_HOSTED_ZONE_ID:
+      AWS_ASSUME_ROLE_ARN:
+      AWS_EXTERNAL_ID:
+      AWS_WAIT_FOR_RECORD_SETS_CHANGED:
+      AWS_PRIVATE_ZONE:
+      AWS_MAX_RETRIES:
+      AWS_POLLING_INTERVAL:
+      AWS_PROPAGATION_TIMEOUT:
+      AWS_TTL:
+      # gandi
+      GANDI_API_TOKEN:
+      GANDIV5_PERSONAL_ACCESS_TOKEN:
+      GANDIV5_API_KEY:
+      GANDIV5_POLLING_INTERVAL:
+      GANDIV5_PROPAGATION_TIMEOUT:
+      GANDIV5_TTL:
+      GANDIV5_HTTP_TIMEOUT:
+      # digitalocean
+      DO_AUTH_TOKEN:
+      DO_API_URL:
+      DO_POLLING_INTERVAL:
+      DO_PROPAGATION_TIMEOUT:
+      DO_TTL:
+      DO_HTTP_TIMEOUT:
+      # ovh
+      OVH_ENDPOINT:
+      OVH_APPLICATION_KEY:
+      OVH_APPLICATION_SECRET:
+      OVH_CONSUMER_KEY:
+      OVH_CLIENT_ID:
+      OVH_CLIENT_SECRET:
+      OVH_ACCESS_TOKEN:
+      OVH_POLLING_INTERVAL:
+      OVH_PROPAGATION_TIMEOUT:
+      OVH_TTL:
+      OVH_HTTP_TIMEOUT:
+      # hetzner
+      HETZNER_API_TOKEN:
+      HETZNER_POLLING_INTERVAL:
+      HETZNER_PROPAGATION_TIMEOUT:
+      HETZNER_TTL:
+      HETZNER_HTTP_TIMEOUT:
+      # linode
+      LINODE_TOKEN:
+      LINODE_POLLING_INTERVAL:
+      LINODE_PROPAGATION_TIMEOUT:
+      LINODE_TTL:
+      LINODE_HTTP_TIMEOUT:
+      # namecheap
+      NAMECHEAP_API_KEY:
+      NAMECHEAP_API_USER:
+      NAMECHEAP_CLIENT_IP:
+      NAMECHEAP_SANDBOX:
+      NAMECHEAP_POLLING_INTERVAL:
+      NAMECHEAP_PROPAGATION_TIMEOUT:
+      NAMECHEAP_TTL:
+      NAMECHEAP_HTTP_TIMEOUT:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true

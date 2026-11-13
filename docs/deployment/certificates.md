@@ -36,7 +36,7 @@ DNS_PROVIDER=cloudflare                          # or route53, gandi, etc.
 CERT_RENEWAL=true
 CERT_ACME_EMAIL=ops@example.com
 PUBLIC_IPV4=203.0.113.10
-CLOUDFLARE_API_TOKEN=...                         # provider-specific creds
+CLOUDFLARE_API_TOKEN=...                         # provider-specific creds (provisioner only)
 ```
 
 - Profiles must be set in `.env` — a CLI-only `docker compose --profile` flag is not visible to the provisioner container.

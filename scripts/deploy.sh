@@ -169,14 +169,30 @@ check_revision() {
     fi
 }
 
-# Refuse early on a broken compose setup (a missing .env is a hard failure for the
-# portal's `env_file:`). Without this the operator finds out at `compose up`, minutes
-# later, after two image builds -- which contradicts the whole "refuse before you
-# touch anything" premise of the precondition gate.
+# Refuse before the image builds: a missing .env or SECRET_KEY fails `config` via the portal's `${SECRET_KEY:?}`.
 check_compose_config() {
     if ! docker compose config -q; then
         die "docker compose config failed -- fix .env / COMPOSE_FILE before deploying"
     fi
+}
+
+# Compose resolves a variable it passes to a service from this shell before .env, so a
+# name exported here for another purpose (INSTANCE_ID, AWS_REGION, ...) silently
+# replaces what .env or the compose default would give it. Warn with the names only -- a value could be a
+# secret. `--no-interpolate` keeps bare passthrough keys visible as keys; verify-deploy.py
+# does the matching and the comparison, so this script needs no JSON parser. Advisory:
+# if the check itself cannot run, say so and deploy on.
+warn_shell_overrides() {
+    local overrides
+    if ! overrides="$(docker compose config --no-interpolate --format json |
+        python3 scripts/verify-deploy.py --print-shell-overrides)"; then
+        warn "could not check for shell variables overriding .env (see above); continuing"
+        return 0
+    fi
+    if [[ -z "$overrides" ]]; then
+        return 0
+    fi
+    warn "exported in this shell, overriding .env or its default: ${overrides//$'\n'/ }"
 }
 
 print_preflight() {
@@ -220,11 +236,11 @@ resolve_git_revision() {
 
 # Tunnel image =========================================================================================================
 # The tag to build is whatever the portal's Settings will resolve at runtime
-# (SHADOWSOCKS_IMAGE, default local/shadowsocks-server). compose hands the portal that
-# variable through `env_file: .env` only -- never through the deploying shell -- so the
-# only way to be sure we build the tag the reconciler will look up is to ask the portal
-# image itself. `compose run` applies the identical env_file. Re-implementing compose's
-# dotenv parser here would be a second source of truth, and any disagreement between
+# (SHADOWSOCKS_IMAGE, default local/shadowsocks-server). compose resolves that variable
+# for the portal from the deploying shell, then .env, so the only way to be sure we
+# build the tag the reconciler will look up is to ask the portal image itself.
+# `compose run` applies the identical environment. Re-implementing compose's
+# resolution here would be a second source of truth, and any disagreement between
 # the two is a silent wrong-image deploy.
 resolve_shadowsocks_image() {
     local image
@@ -399,6 +415,7 @@ main() {
     check_worktree_clean
     check_revision
     check_compose_config
+    warn_shell_overrides
     print_preflight
     resolve_git_revision
     build_shadowsocks_image

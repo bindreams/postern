@@ -49,10 +49,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal, NamedTuple
@@ -215,15 +216,15 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
-def _portal_env(config: dict) -> dict[str, str]:
+def _portal_env(config: dict) -> dict[str, str | None]:
     """The compose-resolved portal environment, keyed upper-case.
 
-    `Settings` (pydantic-settings) has no `model_config` overriding the
-    library default, which is case-INSENSITIVE: a `.env` entry spelled
-    `shadowsocks_image=...` or `instance_id=...` is authoritative for the
-    portal, and a case-sensitive `dict.get` here would miss it -- silently,
-    in the passing direction, which is the one failure mode this script
-    exists to eliminate.
+    `Settings` (pydantic-settings) matches environment names case-insensitively,
+    so the lookup here does too: a case-sensitive `dict.get` would miss a
+    differently-spelled name -- silently, in the passing direction, which is the
+    one failure mode this script exists to eliminate. compose.yaml itself
+    delivers upper-case names only. A value is None for a bare passthrough key
+    that compose could not resolve (JSON null); every caller treats that as unset.
     """
     raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
     return {k.upper(): v for k, v in raw.items()}
@@ -232,15 +233,14 @@ def _portal_env(config: dict) -> dict[str, str]:
 def resolve_ss_image(config: dict, flag: str) -> str:
     """The tunnel image ref the portal will actually spawn.
 
-    SHADOWSOCKS_IMAGE is a portal Settings field reaching the container through
-    `env_file: .env`. It is NOT compose interpolation, so the host shell's
-    environment has no bearing on it -- reading $SHADOWSOCKS_IMAGE here would
-    invert the precedence and verify an image nothing uses.
+    SHADOWSOCKS_IMAGE is a portal Settings field that compose.yaml passes through
+    to the container from the deploying shell, then .env. Reading $SHADOWSOCKS_IMAGE
+    here directly would skip that resolution (and .env) and could verify an image
+    nothing uses.
 
-    `docker compose config --format json` already resolves `env_file` into
-    `services.<name>.environment` (and drops the `env_file` key), so the
-    authoritative value is in the config we have already parsed. That is why
-    there is no .env parser in this script.
+    `docker compose config --format json` already resolves the portal's
+    `environment` from both sources, so the authoritative value is in the config
+    we have already parsed. That is why there is no .env parser in this script.
     """
     if flag:
         return flag
@@ -251,7 +251,7 @@ def resolve_instance_id(config: dict, project: str) -> str:
     """The `postern.instance` label value `--tunnels` filters on.
 
     Mirrors `reconciler.resolve_instance_id`: an explicit INSTANCE_ID override
-    (already folded into services.portal.environment by `docker compose
+    (already resolved into services.portal.environment by `docker compose
     config`, the same way SHADOWSOCKS_IMAGE is) wins; otherwise the compose
     project name IS the value the reconciler derives, because compose.yaml's
     `COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}` passthrough feeds
@@ -264,6 +264,56 @@ def resolve_instance_id(config: dict, project: str) -> str:
     """
     override = (_portal_env(config).get("INSTANCE_ID") or "").strip()
     return override or project
+
+
+_ENV_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
+
+
+def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
+    """`docker compose config --format json`, with `unset` removed from the shell when given."""
+    argv = ["docker", "compose", "config", "--format", "json"]
+    result = run(["env", "-u", unset, *argv] if unset else argv, project_dir)
+    if result.returncode != 0:
+        raise CollectError(f"docker compose config failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as exc:
+        raise CollectError(f"docker compose config emitted unparseable JSON: {exc}") from exc
+
+
+def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
+    """Names the deploying shell exports that change what compose delivers to a service.
+
+    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
+    key is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
+    literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
+    shell value win over `.env` and the interpolation default, which an operator who exported the
+    name for another purpose does not expect. A name is reported when it is exported and the
+    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
+    only: the caller prints them, and a value could be a secret. A variant that fails to resolve or
+    parse (a `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline
+    raises CollectError.
+    """
+    names: set[str] = set()
+    for service in (config.get("services") or {}).values():
+        for key, value in ((service or {}).get("environment") or {}).items():
+            if value is None:
+                names.add(key)
+            elif isinstance(value, str):
+                names.update(_ENV_REFERENCE.findall(value.replace("$$", "")))
+    candidates = sorted(name for name in names if name in environ and not name.startswith("COMPOSE_"))
+    if not candidates:
+        return []
+    baseline = _compose_resolved(run, project_dir)
+    overrides = []
+    for name in candidates:
+        try:
+            differs = _compose_resolved(run, project_dir, name) != baseline
+        except CollectError:
+            differs = True
+        if differs:
+            overrides.append(name)
+    return overrides
 
 
 def _optional_dict(obj: dict, key: str, label: str, context: str) -> dict:
@@ -1000,6 +1050,13 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         help="Print the revision a build from --repo would carry, and exit. Export this "
         "as GIT_REVISION before building so both halves agree.",
     )
+    parser.add_argument(
+        "--print-shell-overrides",
+        action="store_true",
+        help="Read `docker compose config --no-interpolate --format json` on stdin and print, one per "
+        "line, the variables compose passes to a service that are exported in this shell and change "
+        "what compose resolves (names only), then exit."
+    )
     parser.add_argument("--json", dest="output_json", action="store_true", help="Emit structured JSON")
     parser.add_argument(
         "--project-dir",
@@ -1063,6 +1120,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         except RevisionError as exc:
             print(f"verify-deploy: {exc}", file=sys.stderr)
             return 2
+        return 0
+
+    if args.print_shell_overrides:
+        try:
+            config = json.loads(sys.stdin.read())
+        except (OSError, ValueError) as exc:
+            print(f"verify-deploy: --print-shell-overrides needs compose config JSON on stdin: {exc}", file=sys.stderr)
+            return 2
+        try:
+            names = shell_overrides(config, os.environ, run_command, args.project_dir)
+        except CollectError as exc:
+            print(f"verify-deploy: {exc}", file=sys.stderr)
+            return 2
+        for name in names:
+            print(name)
         return 0
 
     if args.expected_tunnels_from is not None and not args.tunnels:

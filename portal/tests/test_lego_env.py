@@ -2,7 +2,7 @@
 
 import pytest
 
-from postern_provisioner import lego_env
+from postern_provisioner import cert, lego_env
 
 
 def test_cloudflare_translates_token():
@@ -51,10 +51,12 @@ def test_ovh_passes_four_vars():
     assert cfg.env == env
 
 
-def test_hetzner_renames_token():
+def test_hetzner_pass_through():
+    """lego's hetzner provider reads HETZNER_API_TOKEN (a Hetzner Cloud token, as postern-dns does);
+    HETZNER_API_KEY is its deprecated legacy-DNS-API variable, which a Cloud token cannot satisfy."""
     cfg = lego_env.lego_config("hetzner", {"HETZNER_API_TOKEN": "tok"})
     assert cfg.dns_slug == "hetzner"
-    assert cfg.env == {"HETZNER_API_KEY": "tok"}
+    assert cfg.env == {"HETZNER_API_TOKEN": "tok"}
 
 
 def test_linode_pass_through():
@@ -107,3 +109,14 @@ def test_missing_credentials_yields_empty_env():
     cfg = lego_env.lego_config("cloudflare", {})
     assert cfg.dns_slug == "cloudflare"
     assert cfg.env == {}
+
+
+def test_lego_subprocess_receives_the_route53_session_token(monkeypatch):
+    """lego reads AWS_SESSION_TOKEN natively; the runner hands it the whole environment, so a
+    session token delivered to the provisioner reaches the process that signs the request."""
+    seen = {}
+    monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(env=env))
+    settings = cert.CertSettings(domain="postern.test", dns_provider="route53", cert_acme_email="a@postern.test")
+    runner = cert.LegoRunner(env={"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SESSION_TOKEN": "session-sentinel"})
+    runner.issue_or_renew(settings=settings, action="run")
+    assert seen["env"]["AWS_SESSION_TOKEN"] == "session-sentinel"

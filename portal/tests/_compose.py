@@ -1,4 +1,4 @@
-"""One tolerant Compose YAML loader for the compose-asserting unit tests.
+"""One tolerant Compose YAML loader, and the Compose-CLI helpers, for the compose-asserting unit tests.
 
 `compose.gateway.yaml` uses Docker Compose's `!reset` merge tag (`ports: !reset []`),
 which plain `yaml.safe_load` rejects with a ConstructorError. Every test that
@@ -10,10 +10,17 @@ first needs it -- not before.
 from __future__ import annotations
 
 import functools
+import json
+import os
 import re
+import shutil
+import subprocess
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import yaml
+
+from postern.settings import Settings
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -95,6 +102,33 @@ _narrow_implicit_resolver(ComposeLoader, "tag:yaml.org,2002:float", _YAML_1_2_FL
 # correct default to leave in place. See
 # test_load_compose_reads_legacy_bool_spellings_as_booleans in test__compose.py.
 
+# Glob-derived compose file lists ======================================================================================
+E2E_COMPOSE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
+
+
+def repo_relative(path: Path) -> str:
+    return str(path.relative_to(REPO_ROOT))
+
+
+def PRODUCTION_COMPOSE_FILES() -> list[Path]:
+    # Two shapes: overlays match `compose*.yaml`; supplementary files follow `<name>.compose.yaml`, which that glob misses.
+    files = sorted(set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml")))
+    assert files, "no production compose files found -- these guards would pass vacuously"
+    return files
+
+
+def E2E_COMPOSE_FILES() -> list[Path]:
+    # rglob, not glob: matches test_e2e_image_isolation.py's e2e_compose_files(),
+    # so both modules agree on what "an e2e compose file" is -- a file matching
+    # one guard's definition but not the other's would be caught by exactly one.
+    files = sorted(E2E_COMPOSE_DIR.rglob("*.compose.yaml"))
+    assert files, f"no *.compose.yaml under {E2E_COMPOSE_DIR} -- these guards would pass vacuously"
+    return files
+
+
+def ALL_COMPOSE_FILES() -> list[Path]:
+    return PRODUCTION_COMPOSE_FILES() + E2E_COMPOSE_FILES()
+
 
 def load_compose(path: Path) -> dict:
     """Parse a Docker Compose YAML file into a plain dict.
@@ -140,3 +174,79 @@ def production_mta_submit_subnet() -> str:
     subnet = configs[0]["subnet"]
     assert isinstance(subnet, str), f"compose.yaml mta-submit subnet is {subnet!r}"
     return subnet
+
+
+# Service environment and the real Compose CLI =========================================================================
+def service_environment(path: Path, service: str) -> dict[str, str | None]:
+    """A service's `environment` as a dict, accepting both Compose forms.
+
+    The mapping form is what this repo uses; the `- KEY=VALUE` list form is
+    equally valid Compose and would otherwise crash every glob-derived guard in
+    this module with an AttributeError the moment a new file used it. A bare
+    `- KEY` entry (no `=`) is legal Compose too -- it passes the host's own
+    environment value through -- and maps to None rather than raising, since
+    "value comes from the host" is not "malformed file".
+    """
+    env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
+    if env is None:
+        return {}
+    if isinstance(env, dict):
+        return {str(k): (None if v is None else str(v)) for k, v in env.items()}
+    assert isinstance(env, list), f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
+    out: dict[str, str | None] = {}
+    for item in env:
+        key, sep, value = str(item).partition("=")
+        out[key] = value if sep else None
+    return out
+
+
+def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
+    """Shell out to the real Compose CLI's `config --format json` and return
+    the parsed result.
+    """
+    proc = subprocess.run(
+        ["docker", "compose", *compose_args, "config", "--format", "json"],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named; keep below pyproject's `timeout = 30`.
+        timeout=20,
+    )
+    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
+    return json.loads(proc.stdout)
+
+
+# Names no Compose-CLI test may inherit from the developer's own shell: every portal setting, plus the
+# variables Compose itself reads. A test that cares about another name passes it as `scrub`.
+_ALWAYS_SCRUBBED = frozenset({"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"})
+
+
+def compose_project(tmp_path: Path, files: Iterable[str], dotenv: Mapping[str, str]) -> Path:
+    """Copy repo-root compose `files` and a fresh `.env` into `tmp_path`.
+
+    Compose resolves `.env` against the project directory, so resolving the repo's own files would read
+    the operator's real `.env`. The copies are byte-identical, so what is resolved is the shipped file.
+    """
+    for name in files:
+        shutil.copy(REPO_ROOT / name, tmp_path / name)
+    dotenv_lines = [f"{key}={value}\n" for key, value in dotenv.items()]
+    (tmp_path / ".env").write_text("".join(dotenv_lines), encoding="utf-8")
+    return tmp_path
+
+
+def resolve_compose(
+    project: Path,
+    files: Iterable[str],
+    shell: Mapping[str, str] | None = None,
+    scrub: Iterable[str] = (),
+) -> dict:
+    """`docker compose -f <files> config` in `project`, with `shell` as the deploying shell.
+
+    The environment is the caller's own minus every `Settings` field, `_ALWAYS_SCRUBBED` and `scrub`,
+    so a value exported in the developer's shell cannot leak into what is asserted.
+    """
+    scrubbed = {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
+    env = {k: v for k, v in os.environ.items() if k not in scrubbed}
+    env.update(shell or {})
+    return run_compose_config([arg for name in files for arg in ("-f", name)], project, env)

@@ -27,41 +27,21 @@ from pathlib import Path
 
 import pytest
 
-from ._compose import load_compose, production_mta_submit_subnet
+from . import _compose
+from ._compose import (
+    ALL_COMPOSE_FILES,
+    E2E_COMPOSE_DIR,
+    E2E_COMPOSE_FILES,
+    PRODUCTION_COMPOSE_FILES,
+    load_compose,
+    production_mta_submit_subnet,
+    repo_relative,
+    service_environment,
+)
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SUBMIT_ALIAS = "mta-submit"
-
-# Same glob-derived construction as test_e2e_image_isolation.py.
-E2E_COMPOSE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
-
-
-def _rel(path: Path) -> str:
-    return str(path.relative_to(REPO_ROOT))
-
-
-def PRODUCTION_COMPOSE_FILES() -> list[Path]:
-    # Two glob shapes at repo root, same as test_build_revision.py's
-    # test_overlays_declare_no_builds: the existing overlays match `compose*.yaml`,
-    # but CLAUDE.md's general convention for a supplementary file is
-    # `<name>.compose.yaml`, which `compose*.yaml` would NOT match.
-    files = sorted(set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml")))
-    assert files, "no production compose files found -- these guards would pass vacuously"
-    return files
-
-
-def E2E_COMPOSE_FILES() -> list[Path]:
-    # rglob, not glob: matches test_e2e_image_isolation.py's e2e_compose_files(),
-    # so both modules agree on what "an e2e compose file" is -- a file matching
-    # one guard's definition but not the other's would be caught by exactly one.
-    files = sorted(E2E_COMPOSE_DIR.rglob("*.compose.yaml"))
-    assert files, f"no *.compose.yaml under {E2E_COMPOSE_DIR} -- these guards would pass vacuously"
-    return files
-
-
-def ALL_COMPOSE_FILES() -> list[Path]:
-    return PRODUCTION_COMPOSE_FILES() + E2E_COMPOSE_FILES()
 
 
 def test_production_mta_submit_subnet_is_the_documented_literal():
@@ -87,30 +67,6 @@ def test_production_mta_submit_subnet_is_the_documented_literal():
 # load_compose does no Compose merge and a standalone file missing either half
 # silently falls back to mta/entrypoint.py's default CIDR and breaks submission.
 _PARTIAL_SUBMISSION_OVERLAYS: frozenset[Path] = frozenset()
-
-
-def _service_environment(path: Path, service: str) -> dict[str, str | None]:
-    """A service's `environment` as a dict, accepting both Compose forms.
-
-    The mapping form is what this repo uses; the `- KEY=VALUE` list form is
-    equally valid Compose and would otherwise crash every glob-derived guard in
-    this module with an AttributeError the moment a new file used it. A bare
-    `- KEY` entry (no `=`) is legal Compose too -- it passes the host's own
-    environment value through -- and maps to None rather than raising, since
-    "value comes from the host" is not "malformed file".
-    """
-    env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
-    if env is None:
-        return {}
-    if isinstance(env, dict):
-        return {str(k): (None if v is None else str(v)) for k, v in env.items()}
-    assert isinstance(env, list), f"{_rel(path)}: service {service!r} environment is {type(env).__name__}"
-    out: dict[str, str | None] = {}
-    for item in env:
-        key, sep, value = str(item).partition("=")
-        out[key] = value if sep else None
-    return out
-
 
 # Compose coerces a YAML-*quoted* boolean through the same legacy spellings
 # it accepts unquoted -- confirmed via `docker compose config`: `internal:
@@ -189,6 +145,18 @@ def test_every_compose_file_agrees_on_its_own_mynetworks_chain():
     }, f"unexpected set of submission-configuring compose files: {checked!r}"
 
 
+def _fake_compose_file(monkeypatch, fake_path: Path, fake_compose: dict) -> None:
+    """Make `load_compose(fake_path)` return `fake_compose`, for this module's own
+    callers and for `service_environment` (which resolves `load_compose` inside
+    `_compose`); every other path still loads for real."""
+    for module in (sys.modules[__name__], _compose):
+        monkeypatch.setattr(
+            module,
+            "load_compose",
+            lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
+        )
+
+
 def _check_submission_chain(path: Path, *, exempt: frozenset[Path]) -> str | None:
     """The per-file assertion body of test_every_compose_file_agrees_on_its_own_
     mynetworks_chain, split out so the `exempt` exemption path can be exercised
@@ -197,9 +165,9 @@ def _check_submission_chain(path: Path, *, exempt: frozenset[Path]) -> str | Non
     Returns the file's rel path if it participates in the chain (subnet AND
     cidr both present and checked), None if it has neither or is exempt.
     """
-    rel = _rel(path)
+    rel = repo_relative(path)
     net = (load_compose(path).get("networks") or {}).get(SUBMIT_ALIAS)
-    cidr = _service_environment(path, "mta").get("MTA_SUBMIT_CIDR")
+    cidr = service_environment(path, "mta").get("MTA_SUBMIT_CIDR")
     subnet = _pinned_subnet_of(net, where=rel)
 
     # Checked whenever the file declares the network at all, independent of
@@ -244,11 +212,7 @@ def test_submission_chain_checks_internal_flag_even_without_a_pinned_subnet(monk
     owning the IPAM config. Synthetic: no real compose file does this today."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-internal-false-overlay.compose.yaml"
     fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": False}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     with pytest.raises(AssertionError, match="must be internal: true"):
         _check_submission_chain(fake_path, exempt=frozenset())
 
@@ -262,11 +226,7 @@ def test_submission_chain_normalizes_a_quoted_internal_boolean(monkeypatch):
     checks the reverse: a quoted "true" must not fail the non-exempt branch."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-quoted-internal-false.compose.yaml"
     fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": "false"}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     with pytest.raises(AssertionError, match="must be internal: true"):
         _check_submission_chain(fake_path, exempt=frozenset())
 
@@ -283,11 +243,7 @@ def test_submission_chain_exempt_overlay_may_not_set_internal_false(monkeypatch)
     not "every check on this file is suspended"."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-exempt-internal-false.compose.yaml"
     fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": False}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     with pytest.raises(AssertionError, match="must never override it to false"):
         _check_submission_chain(fake_path, exempt=frozenset({fake_path}))
 
@@ -301,11 +257,7 @@ def test_partial_submission_overlay_exemption_skips_files_that_would_otherwise_f
     than happening to no-op."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-partial-overlay.compose.yaml"
     fake_compose = {"networks": {SUBMIT_ALIAS: {"internal": True, "ipam": {"config": [{"subnet": "10.0.0.0/29"}]}}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     # Not exempt: the synthetic data really does fail the chain check.
     with pytest.raises(AssertionError, match="pins a mta-submit subnet but sets no MTA_SUBMIT_CIDR"):
         _check_submission_chain(fake_path, exempt=frozenset())
@@ -334,7 +286,9 @@ def _pinned_subnets(path: Path) -> list[tuple[str, str | None, ipaddress.IPv4Net
             try:
                 parsed = ipaddress.ip_network(subnet)
             except ValueError as e:
-                raise AssertionError(f"{_rel(path)}: network {key!r} has malformed subnet {subnet!r}: {e}") from e
+                raise AssertionError(
+                    f"{repo_relative(path)}: network {key!r} has malformed subnet {subnet!r}: {e}"
+                ) from e
             found.append((key, cfg.get("name"), parsed))
     return found
 
@@ -343,7 +297,7 @@ def test_pinned_subnet_inventory_is_complete():
     """Tripwire, not a ban list: pinning a new subnet changes this set and reds
     this test, prompting a human to check it against everything else on the
     host. The disjointness guard below does the actual enforcement."""
-    inventory = {(_rel(p), key, str(net)) for p in ALL_COMPOSE_FILES() for key, _, net in _pinned_subnets(p)}
+    inventory = {(repo_relative(p), key, str(net)) for p in ALL_COMPOSE_FILES() for key, _, net in _pinned_subnets(p)}
     assert inventory == {
         ("compose.yaml", "mta-submit", "172.30.42.0/29"),
         ("portal/tests/e2e/e2e-mta.compose.yaml", "default", "10.234.45.0/24"),
@@ -369,7 +323,7 @@ def test_unpinned_e2e_networks_are_exactly_the_documented_residual():
         pinned_keys = {key for key, _, _ in _pinned_subnets(path)}
         for key in (load_compose(path).get("networks") or {}):
             if key not in pinned_keys:
-                unpinned.add((_rel(path), key))
+                unpinned.add((repo_relative(path), key))
     assert unpinned == {
         ("portal/tests/e2e/e2e.compose.yaml", "default"),
         ("portal/tests/e2e/e2e.compose.yaml", "e2e-tunnel-entry"),
@@ -481,8 +435,8 @@ def _find_subnet_overlaps(entries: list[_SubnetEntry]) -> list[str]:
             # Compose/Docker), not two declarations to reconcile against each
             # other -- neither the same-name nor the overlap check applies.
             continue
-        shown_a = f"{_rel(pa)} {ka} ({na or '<project-derived>'}) {sa}"
-        shown_b = f"{_rel(pb)} {kb} ({nb or '<project-derived>'}) {sb}"
+        shown_a = f"{repo_relative(pa)} {ka} ({na or '<project-derived>'}) {sa}"
+        shown_b = f"{repo_relative(pb)} {kb} ({nb or '<project-derived>'}) {sb}"
         # Two DIFFERENT purposes need two DIFFERENT notions of "same name",
         # not one shared boolean:
         #
@@ -870,7 +824,7 @@ def _find_cross_family_name_reuse(
     if flag_external:
         for path, key, _name, external in entries:
             if _compose_family(path) == "e2e" and external:
-                problems.append(f"{_rel(path)}: {noun} {key!r} sets external: true")
+                problems.append(f"{repo_relative(path)}: {noun} {key!r} sets external: true")
     for (pa, ka, na, ea), (pb, kb, nb, eb) in itertools.combinations(entries, 2):
         ra, rb = resolve(ka, na, ea), resolve(kb, nb, eb)
         matches = (ra is not None and ra == rb) or (na is not None and na == nb)
@@ -880,7 +834,7 @@ def _find_cross_family_name_reuse(
             continue
         shown = ra if ra is not None else na
         problems.append(
-            f"{_rel(pa)} {noun} {ka!r} ({na!r}) and {_rel(pb)} {noun} {kb!r} ({nb!r}) both resolve to "
+            f"{repo_relative(pa)} {noun} {ka!r} ({na!r}) and {repo_relative(pb)} {noun} {kb!r} ({nb!r}) both resolve to "
             f"{noun} {shown!r} across production/e2e"
         )
     return problems
@@ -1015,11 +969,7 @@ def test_declared_network_names_reads_object_form_external(monkeypatch):
     flag."""
     fake_path = E2E_COMPOSE_DIR / "_fake-external-object-form.compose.yaml"
     fake_compose = {"networks": {"n": {"external": {}}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     assert _declared_network_names(fake_path) == [("n", None, True)]
 
 
@@ -1236,13 +1186,13 @@ def _published_host_ports(path: Path) -> list[tuple[str, str | None, int, int, s
         # `network_mode: host` claims every host port directly, with no
         # `ports:` entry to parse -- invisible to every guard below it.
         assert cfg.get("network_mode") != "host", (
-            f"{_rel(path)}: service {service!r} sets network_mode: host, which claims the entire host port "
+            f"{repo_relative(path)}: service {service!r} sets network_mode: host, which claims the entire host port "
             "namespace and is invisible to the port-collision/loopback guards -- extend this module"
         )
         # `ports: !reset []` (compose.gateway.yaml) loads as None via ComposeLoader.
         entries = cfg.get("ports") or []
         for host_ip, port, container_port, protocol in parse_published_ports(
-            entries, where=f"{_rel(path)} service {service!r}"
+            entries, where=f"{repo_relative(path)} service {service!r}"
         ):
             found.append((service, host_ip, port, container_port, protocol))
     return found
@@ -1255,11 +1205,7 @@ def test_published_host_ports_rejects_network_mode_host(monkeypatch):
     file: no compose file in this repo uses network_mode today."""
     fake_path = REPO_ROOT / "portal" / "tests" / "e2e" / "_fake-network-mode-host.compose.yaml"
     fake_compose = {"services": {"mta": {"network_mode": "host"}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     with pytest.raises(AssertionError, match="network_mode: host"):
         _published_host_ports(fake_path)
 
@@ -1333,7 +1279,7 @@ _HOST_PORT_ALLOWLIST: dict[tuple[str, str, int, str], str] = {
 
 
 def _host_port_key(path: Path, service: str, port: int, protocol: str) -> tuple[str, str, int, str]:
-    return (_rel(path), service, port, protocol)
+    return (repo_relative(path), service, port, protocol)
 
 
 def test_e2e_publishes_no_host_port_production_publishes():
@@ -1352,7 +1298,7 @@ def test_e2e_publishes_no_host_port_production_publishes():
     assert production, "no production compose file publishes a host port -- this guard would pass vacuously"
     assert e2e, "no e2e compose file publishes a host port -- this guard would pass vacuously"
     problems = [
-        f"{_rel(path)}: service {svc!r} publishes host port {port}/{proto}" for path, svc, port, proto in e2e
+        f"{repo_relative(path)}: service {svc!r} publishes host port {port}/{proto}" for path, svc, port, proto in e2e
         if (port, proto) in production and _host_port_key(path, svc, port, proto) not in _HOST_PORT_ALLOWLIST
     ]
     assert not problems, (
@@ -1380,7 +1326,9 @@ def test_e2e_published_host_ports_bind_loopback():
             if _host_port_key(path, service, port, protocol) in _HOST_PORT_ALLOWLIST:
                 continue
             where = host_ip or "0.0.0.0 (all interfaces)"
-            problems.append(f"{_rel(path)}: service {service!r} publishes host port {port}/{protocol} on {where}")
+            problems.append(
+                f"{repo_relative(path)}: service {service!r} publishes host port {port}/{protocol} on {where}"
+            )
     assert not problems, (
         "E2e compose files must publish host ports on a loopback address only, unless allowlisted in "
         "_HOST_PORT_ALLOWLIST with a written reason:\n" + "\n".join(f"  {p}" for p in problems)
@@ -1558,11 +1506,7 @@ def test_declared_volume_names_reads_object_form_external(monkeypatch):
     production's real DKIM volume with no `name:` override needed at all."""
     fake_path = E2E_COMPOSE_DIR / "_fake-external-object-form.compose.yaml"
     fake_compose = {"volumes": {"postern-mta-data": {"external": {}}}}
-    monkeypatch.setattr(
-        sys.modules[__name__],
-        "load_compose",
-        lambda path, _real=load_compose: fake_compose if path == fake_path else _real(path),
-    )
+    _fake_compose_file(monkeypatch, fake_path, fake_compose)
     assert _declared_volume_names(fake_path) == [("postern-mta-data", None, True)]
 
 
@@ -1620,7 +1564,7 @@ def _subnet_of(path: Path, key: str) -> str:
     for found_key, _, net in _pinned_subnets(path):
         if found_key == key:
             return str(net)
-    raise AssertionError(f"{_rel(path)}: no {key!r} subnet pinned")
+    raise AssertionError(f"{repo_relative(path)}: no {key!r} subnet pinned")
 
 
 def test_docs_quote_the_current_e2e_mta_submit_subnets_and_port():

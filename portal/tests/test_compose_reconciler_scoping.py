@@ -2,25 +2,19 @@
 COMPOSE_PROJECT_NAME forwarding, and SHADOWSOCKS_NETWORK's network-name /
 portal-env sync.
 
-This module exists because Compose interpolates `${VAR}` from the shell (or
---env-file), while a service's `env_file:` is a separate lookup against
-./.env, and the two can disagree. Static YAML checks below;
+This module exists because the network's `name:` and the portal's own
+SHADOWSOCKS_NETWORK are two separate places that must resolve to the same value
+(shell first, then ./.env, as Compose resolves any variable). Static YAML checks below;
 `test_compose_config_*` shells out to the real Compose CLI.
 """
 from __future__ import annotations
 
-import json
 import os
-import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from ._compose import load_compose
-
-# tests/ -> portal/ -> repo root
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+from ._compose import REPO_ROOT, compose_project, load_compose, resolve_compose, run_compose_config
 
 COMPOSE_PROJECT_NAME_EXPR = "${COMPOSE_PROJECT_NAME:-}"
 
@@ -58,7 +52,7 @@ SHADOWSOCKS_NETWORK_EXPR = "${SHADOWSOCKS_NETWORK:-shadowsocks}"
 
 def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expression():
     """Network name and portal env must interpolate the identical expression --
-    see the module docstring for why `env_file:` alone can't guarantee that."""
+    see the module docstring for why they must not be typed independently."""
     compose = _load_compose("compose.yaml")
 
     net_name = compose["networks"]["shadowsocks"]["name"]
@@ -71,7 +65,7 @@ def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expres
     assert portal_env == SHADOWSOCKS_NETWORK_EXPR, (
         "compose.yaml's portal service must set SHADOWSOCKS_NETWORK in its own environment: block to the "
         f"identical expression as networks.shadowsocks.name ({SHADOWSOCKS_NETWORK_EXPR!r}), not rely on "
-        f"env_file: .env for it; got {portal_env!r}."
+        f"a bare passthrough for it; got {portal_env!r}."
     )
 
 
@@ -104,47 +98,14 @@ def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
 
 
 # Real Compose-CLI resolution ==========================================================================================
-def _run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
-    """Shell out to the real Compose CLI's `config --format json` and return
-    the parsed result. Shared by every `_compose_config*` helper below.
-    """
-    proc = subprocess.run(
-        ["docker", "compose", *compose_args, "config", "--format", "json"],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        # `config` is a local parse and normally returns in well under a second,
-        # but it is still a child process: a hung Docker-context probe or a
-        # credential-helper prompt would otherwise wedge the whole pytest run
-        # with no output. TimeoutExpired propagating (naming this specific
-        # child process) is the failure bound -- kept below pyproject.toml's
-        # global `timeout = 30` per-test bound so it can actually fire first,
-        # instead of a generic pytest-timeout traceback with no subprocess detail.
-        timeout=20,
-    )
-    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
-    return json.loads(proc.stdout)
-
-
 def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str | None) -> dict:
-    """Resolve compose.yaml with the real Compose CLI and return its JSON.
-
-    compose.yaml is copied into `tmp_path` because the portal's `env_file: .env`
-    resolves against the project directory: pointing the CLI at the repo's own
-    compose.yaml would read the operator's real .env (or fail without one). The
-    copy is byte-identical, so what is resolved is the shipped file.
-    """
-    shutil.copy(REPO_ROOT / "compose.yaml", tmp_path / "compose.yaml")
-    lines = ["SECRET_KEY=test-only\n"]
+    """Resolve compose.yaml with the real Compose CLI and return its JSON."""
+    dotenv = {"SECRET_KEY": "test-only"}
     if env_file_value is not None:
-        lines.append(f"SHADOWSOCKS_NETWORK={env_file_value}\n")
-    (tmp_path / ".env").write_text("".join(lines), encoding="utf-8")
-
-    env = {k: v for k, v in os.environ.items() if k != "SHADOWSOCKS_NETWORK"}
-    if shell_env is not None:
-        env["SHADOWSOCKS_NETWORK"] = shell_env
-    return _run_compose_config(["-f", "compose.yaml"], tmp_path, env)
+        dotenv["SHADOWSOCKS_NETWORK"] = env_file_value
+    project = compose_project(tmp_path, ["compose.yaml"], dotenv)
+    shell = {} if shell_env is None else {"SHADOWSOCKS_NETWORK": shell_env}
+    return resolve_compose(project, ["compose.yaml"], shell)
 
 
 @pytest.mark.compose_cli
@@ -164,8 +125,7 @@ def test_compose_config_resolves_network_name_and_portal_env_identically(
 ):
     """The real Compose CLI must resolve the network's name and the portal's
     SHADOWSOCKS_NETWORK to the SAME value under every source combination --
-    the last case being the one no YAML parse can check (see the module
-    docstring for why the two sources can disagree).
+    the last case being the one no YAML parse can check (shell and .env disagree).
     """
     config = _compose_config(tmp_path, shell_env, env_file_value)
     net_name = config["networks"]["shadowsocks"]["name"]
@@ -212,8 +172,8 @@ def test_e2e_mta_overlay_merge_agrees_on_the_shadowsocks_network(overlay_relpath
     resolved SHADOWSOCKS_NETWORK must be a network nginx actually joins in
     the MERGED project, not just in either file read alone."""
     env = dict(os.environ, **extra_env)
-    config = _run_compose_config(["-f", "portal/tests/e2e/e2e.compose.yaml", "-f", overlay_relpath, "-p", project_name],
-                                 REPO_ROOT, env)
+    config = run_compose_config(["-f", "portal/tests/e2e/e2e.compose.yaml", "-f", overlay_relpath, "-p", project_name],
+                                REPO_ROOT, env)
     portal_env = config["services"]["portal"]["environment"]["SHADOWSOCKS_NETWORK"]
     networks = config["networks"] or {}
     nginx_net_names = {(networks.get(key) or {}).get("name") for key in config["services"]["nginx"]["networks"]}

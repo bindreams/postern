@@ -60,7 +60,7 @@ def _ovh(env: dict[str, str]) -> dict[str, str]:
 
 def _hetzner(env: dict[str, str]) -> dict[str, str]:
     token = env.get("HETZNER_API_TOKEN", "")
-    return {"HETZNER_API_KEY": token} if token else {}
+    return {"HETZNER_API_TOKEN": token} if token else {}
 
 
 def _linode(env: dict[str, str]) -> dict[str, str]:

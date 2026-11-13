@@ -299,14 +299,15 @@ def _lua_instance_ids(stdout: str) -> dict[tuple[str, str], str | None]:
     """The suite prints `instance-id <hex override>:<hex project> <hex resolved id | ->` per case."""
     out: dict[tuple[str, str], str | None] = {}
     for override, project, resolved in re.findall(r"^instance-id ([0-9a-f]*):([0-9a-f]*) ([0-9a-f]+|-)$", stdout, re.M):
-        out[(bytes.fromhex(override).decode(), bytes.fromhex(project).decode())] = (
-            None if resolved == "-" else bytes.fromhex(resolved).decode()
-        )
+        case = (bytes.fromhex(override).decode(), bytes.fromhex(project).decode())
+        out[case] = None if resolved == "-" else bytes.fromhex(resolved).decode()
     return out
 
 
 def _portal_instance_id(override: str, project: str) -> str | None:
-    settings = Settings(secret_key="x" * 40, domain="postern.example.com", instance_id=override, compose_project_name=project)
+    settings = Settings(
+        secret_key="x" * 40, domain="postern.example.com", instance_id=override, compose_project_name=project
+    )
     return reconciler.resolve_instance_id(settings)
 
 

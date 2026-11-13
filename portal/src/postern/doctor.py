@@ -167,7 +167,7 @@ def _ptr_fix_hint(ip: str) -> str:
 class PosternManagedExpectation:
     """One record the doctor will verify against live DNS. Reflects what the
     provisioner's two reconcilers (cert manager + MTA manager) publish."""
-    label: str  # e.g. "A    hole.binarydreams.me"
+    label: str  # e.g. "A    host.example.com"
     name: str
     type: str  # A | AAAA | CAA | MX | TXT | TLSA
     expected_content: str  # rendered form for matching on the wire

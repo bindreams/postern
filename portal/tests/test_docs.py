@@ -289,6 +289,18 @@ def test_no_real_domains():
     assert not hits, f"real domains leaked into docs: {hits}"
 
 
+def test_no_real_domains_in_portal_source():
+    """portal/src/ (code, comments, templates) never mentions the maintainer's real deployment domains."""
+    src = REPO_ROOT / "portal" / "src"
+    files = [p for p in src.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
+    assert files, f"no files under {src}"
+    hits = [
+        str(p.relative_to(REPO_ROOT)) for p in files
+        if REAL_DOMAIN.search(p.read_text(encoding="utf-8", errors="replace"))
+    ]
+    assert not hits, f"real domains leaked into portal/src: {hits}"
+
+
 STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.md|CONTRIBUTING\.md#")
 
 

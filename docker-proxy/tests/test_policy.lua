@@ -8,6 +8,8 @@
 -- HTTP/1.0 and an HTTP/1.1 form of each; the CRLFs are part of what is tested. Every probe and ping case runs
 -- over every set.
 --
+-- test_action.lua (loaded at the end) covers action.lua.
+--
 -- Every negative case is differential: the unmodified baseline is accepted in the same run (see "baseline" below).
 
 package.path = "/pn/?.lua;" .. package.path
@@ -754,6 +756,12 @@ eq("json reply: duplicate key", parses("reply", '{"a":1,"a":2}'), false)
 eq("json reply: trailing data", parses("reply", '{"a":1}x'), false)
 eq("json reply: depth 32 ok", parses("reply", string.rep("[", 32) .. string.rep("]", 32)), true)
 eq("json reply: depth 33 denied", parses("reply", string.rep("[", 33) .. string.rep("]", 33)), false)
+
+-- action.lua, the HAProxy glue (tests/test_action.lua)
+dofile("/pn/tests/test_action.lua")(eq, {
+  ID = ID, INSTANCE = INSTANCE, IMAGE = IMAGE, NETWORK = NETWORK, API = API,
+  owned_reply = owned_reply, ping_reply = ping_reply,
+})
 
 core.register_init(function()
   print(string.format("%d checks, %d failed", total, fails))

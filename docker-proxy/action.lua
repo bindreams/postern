@@ -13,6 +13,14 @@ local DAEMON_TIMEOUT = 5
 
 local cfg = policy.config_from_env(os.getenv)
 core.Info("postern docker-proxy: instance=" .. tostring(cfg.instance) .. " image=" .. cfg.image .. " network=" .. cfg.network)
+if not cfg.instance then
+  core.Warning(
+    "postern docker-proxy: no usable instance id, so every by-id and create request is denied. INSTANCE_ID="
+      .. string.format("%q", os.getenv("INSTANCE_ID") or "") .. " COMPOSE_PROJECT_NAME="
+      .. string.format("%q", os.getenv("COMPOSE_PROJECT_NAME") or "")
+      .. "; the id must match ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ after stripping whitespace"
+  )
+end
 
 -- One HTTP/1.0 GET over the daemon socket, read to EOF. Returns the raw reply, or nil, err.
 local function daemon_get(uri)
@@ -31,12 +39,9 @@ local function daemon_get(uri)
   return data
 end
 
--- Ids the daemon vouched for. Container ids are never reused and labels are immutable, so a vouched id stays this
--- deployment's for as long as the container exists; it leaves the table when a forwarded DELETE for it is answered
--- 2xx or 404 (pn_evict below), and a probe that overlapped any eviction is not remembered (see new_owned_cache). A
--- container removed any other way (a `docker rm` on the host) leaves its id behind. Ids are never reused, so each
--- such container costs 64 bytes plus table overhead once: that is the bound on the leak. The API version is not
--- cached: it is read on every versioned request.
+-- Ids the daemon vouched for. Ids are never reused and labels are immutable, so a vouched id stays ours until a
+-- forwarded DELETE answered 2xx/404 evicts it (pn_evict). A container removed any other way leaves its 64-byte id
+-- behind: that is the leak bound. A probe that overlapped an eviction is not remembered (see new_owned_cache).
 local owned_ids = policy.new_owned_cache()
 
 local io_daemon = {

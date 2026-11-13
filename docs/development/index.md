@@ -5,7 +5,7 @@ This page covers the contributor workflow: environment setup, running the stack,
 ## Prerequisites
 
 - [`uv`](https://docs.astral.sh/uv/) — manages Python and virtualenvs
-- Python 3.13 — uv installs it for you
+- Python 3.14 — uv installs it for you
 - Docker Engine + Docker Compose v2 — only if you want to run the full stack locally
 - [`prek`](https://prek.j178.dev) — a drop-in, faster replacement for `pre-commit`, used for git hooks
 

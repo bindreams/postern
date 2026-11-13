@@ -37,20 +37,20 @@ from typing import NoReturn
 import dns.exception
 import dns.resolver
 
-# postern_mta is COPYed into /usr/lib/python3.13/site-packages/ at image build time.
-from postern_mta import dkim as mta_dkim  # noqa: E402
-from postern_mta import rotation  # noqa: E402
+# First-party packages are COPYed into the interpreter's site-packages at image build.
+from postern_mta import dkim as mta_dkim
+from postern_mta import rotation
 
 # Cert renewal driver -- imported via the postern.* namespace (also COPYed in by Dockerfile).
-from postern.cert import state as cert_state  # noqa: E402
-from postern.cert import dns_records as dns_records_state  # noqa: E402
-from postern_provisioner import cert as cert_driver  # noqa: E402
-from postern_provisioner import dns_records as dns_driver  # noqa: E402
-from postern_provisioner import ech as ech_driver  # noqa: E402
-from postern_provisioner import edge_ranges  # noqa: E402
-from postern_provisioner import mta_records as mta_records_driver  # noqa: E402
-from postern_provisioner import ssl_mode as ssl_driver  # noqa: E402
-from postern_provisioner.enablement import (  # noqa: E402
+from postern.cert import state as cert_state
+from postern.cert import dns_records as dns_records_state
+from postern_provisioner import cert as cert_driver
+from postern_provisioner import dns_records as dns_driver
+from postern_provisioner import ech as ech_driver
+from postern_provisioner import edge_ranges
+from postern_provisioner import mta_records as mta_records_driver
+from postern_provisioner import ssl_mode as ssl_driver
+from postern_provisioner.enablement import (
     MANAGE_SSL_MODE_DEFAULT,
     MANAGE_ZONE_ECH_DEFAULT,
     Enablement,

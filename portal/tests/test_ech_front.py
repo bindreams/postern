@@ -92,6 +92,15 @@ def _answering(build, *, qname: str = "postern.test.", id_xor: int = 0):
     return wrapped
 
 
+def _mangled(build, mangle):
+    """Wrap `build` so the reply wire (still addressed to the real query) is passed through `mangle`."""
+
+    def wrapped(query: dns.message.Message) -> bytes:
+        return mangle(build(query))
+
+    return wrapped
+
+
 def _wire_of(build) -> bytes:
     return build(dns.message.make_query("postern.test.", dns.rdatatype.HTTPS))
 
@@ -198,9 +207,38 @@ def test_inconclusive_when_svcparam_framing_overruns_the_record(monkeypatch):
 
 
 def test_inconclusive_when_reply_is_truncated(monkeypatch):
-    wire = _wire_of(_raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, ECH, BAD_IPV6HINT))))
-    _serve_doh(monkeypatch, lambda query: wire[:-5])
+    build = _mangled(_raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, ECH, BAD_IPV6HINT))), lambda wire: wire[:-5])
+    _serve_doh(monkeypatch, build)
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+
+
+def test_inconclusive_when_a_truncated_reply_still_shows_a_good_ech_record(monkeypatch):
+    # The ech record parses, but the message framing is broken after it: the reply is not
+    # trustworthy, so it must not read as a confirmed "present".
+    build = _mangled(
+        _raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, ECH)), (HTTPS_TYPE, _https_rdata_wire(ALPN_H2))),
+        lambda wire: wire[:-3]
+    )
+    _assert_dnspython_rejects(build)
+    _serve_doh(monkeypatch, build)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+
+
+def test_inconclusive_when_trailing_junk_follows_an_https_record_without_ech(monkeypatch):
+    # dnspython reports TrailingJunk at the end of the last record; it must not be blamed
+    # on that record's SvcParams.
+    build = _mangled(_raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2))), lambda wire: wire + b"\x00\x01")
+    _assert_dnspython_rejects(build)
+    _serve_doh(monkeypatch, build)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+
+
+def test_absent_when_the_last_param_of_the_last_record_is_an_unusable_ech(monkeypatch):
+    # The rejection is reported at the very end of the record's rdata: still attributed to it.
+    build = _raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, (int(ParamKey.ECH), b"\x00\x09abc"))))
+    _assert_dnspython_rejects(build)
+    _serve_doh(monkeypatch, build)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "absent"
 
 
 def test_inconclusive_when_reply_is_shorter_than_a_dns_header(monkeypatch):
@@ -267,16 +305,57 @@ def _spy_on_https(monkeypatch):
     return seen
 
 
-def test_exchange_ignores_the_environment_and_uses_dnspythons_transport(monkeypatch):
-    # An env proxy / SSL_CERT_FILE must not steer the DoH lookup, and the transport must be
-    # the one dnspython builds itself (its resolver/bootstrap handling).
+def _record_transport(monkeypatch):
+    """Replace dnspython's transport class with a recorder; returns (kwargs it got, instances built)."""
+    seen: dict = {}
+    built: list = []
+
+    def make(**kwargs):
+        seen.update(kwargs)
+        built.append(httpx2.MockTransport(lambda request: httpx2.Response(500)))
+        return built[-1]
+
+    monkeypatch.setattr(dns.query, "_HTTPTransport", make)
+    return seen, built
+
+
+def test_exchange_uses_dnspythons_transport_and_ignores_the_environment(monkeypatch):
+    # An env proxy must not steer the DoH lookup (the Client's trust_env), nor may
+    # SSL_CERT_FILE / SSL_CERT_DIR (the transport builds the SSL context, so it needs
+    # trust_env=False itself). The transport is the one dnspython builds (its resolver/bootstrap).
     seen = _spy_on_https(monkeypatch)
+    transport_kwargs, built = _record_transport(monkeypatch)
     assert ech.check_apex_ech("postern.test", DOH_URL, timeout=2.5) == "inconclusive"
     session = seen["session"]
     assert session.trust_env is False
-    assert isinstance(session._transport, dns.query._HTTPTransport)
+    assert session._transport is built[0]
+    assert transport_kwargs["trust_env"] is False
     assert seen["where"] == DOH_URL
     assert seen["timeout"] == 2.5
+
+
+def test_ssl_cert_file_from_the_environment_is_ignored(monkeypatch, tmp_path):
+    # Behavioural: httpx2 fails building the SSL context from a missing SSL_CERT_FILE if it reads it.
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "missing.pem"))
+    seen = _spy_on_https(monkeypatch)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+    assert "session" in seen  # the exchange was reached, so the transport was built
+
+
+@pytest.mark.parametrize(
+    "url,bootstrap", [
+        ("https://192.0.2.53/dns-query", "192.0.2.53"),
+        ("https://[2001:db8::53]:8443/dns-query", "2001:db8::53"),
+        (DOH_URL, None),
+    ],
+    ids=["ipv4-literal", "ipv6-literal", "hostname"]
+)
+def test_ip_literal_doh_host_is_bootstrapped_without_resolv_conf(monkeypatch, url, bootstrap):
+    # Mirrors dns.query.https: an IP-literal host needs no name resolution, so no resolver.
+    _spy_on_https(monkeypatch)
+    transport_kwargs, _ = _record_transport(monkeypatch)
+    ech.check_apex_ech("postern.test", url)
+    assert transport_kwargs.get("bootstrap_address") == bootstrap
 
 
 # Degradation paths ====================================================================================================
@@ -313,3 +392,28 @@ def test_inconclusive_when_rdata_missing_params_attr(monkeypatch):
     _serve_doh(monkeypatch, _ECH_REPLY)
     monkeypatch.setattr(ech, "_https_rrs", lambda message: [NoParams()])
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+
+
+@pytest.mark.parametrize("error", [AttributeError("no _HTTPTransport"), TypeError("unexpected keyword")])
+def test_unbuildable_dnspython_transport_logs_error_and_is_inconclusive(monkeypatch, caplog, error):
+    # dns.query._HTTPTransport is private: if it vanishes or changes shape, every check would
+    # silently degrade. That is a systemic regression, logged at ERROR like a lost backend.
+    def broken(**kwargs):
+        raise error
+
+    monkeypatch.setattr(dns.query, "_HTTPTransport", broken)
+    caplog.set_level(logging.ERROR, logger="postern.ech")
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+    assert "DoH backend unavailable" in caplog.text
+    assert repr(error) in caplog.text
+
+
+def test_failed_exchange_logs_its_cause_at_warning(monkeypatch, caplog):
+
+    def down(query):
+        raise httpx2.ConnectError("doh down")
+
+    _serve_doh(monkeypatch, down)
+    caplog.set_level(logging.WARNING, logger="postern.ech")
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+    assert "doh down" in caplog.text

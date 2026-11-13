@@ -29,8 +29,9 @@ ADVISORY_FLOORS = {
     "idna": Version("3.15"),
     "dnspython": Version("2.9.2"),
 }
-# Of those, the ones that are transitive: floored through `constraint-dependencies`.
-ADVISORY_TRANSITIVES = {"anyio", "urllib3", "starlette", "h2", "idna"}
+# Of those, the ones that are transitive (every one but the direct dependency): floored through
+# `constraint-dependencies`.
+ADVISORY_TRANSITIVES = ADVISORY_FLOORS.keys() - {"dnspython"}
 
 
 def _pyproject() -> dict:

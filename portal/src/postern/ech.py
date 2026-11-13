@@ -9,9 +9,11 @@ Requires the dnspython[doh] backend (h2/httpcore2/httpx2); see portal/pyproject.
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from typing import Literal
 
 import dns.exception
+import dns.inet
 import dns.message
 import dns.name
 import dns.query
@@ -48,10 +50,9 @@ def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFro
         bodies: list[bytes] = []
         try:
             reply = _query_doh(query, doh_url, timeout, bodies)
-        except dns.query.BadResponse:
-            return "inconclusive"  # a well-formed reply to some other query
-        except dns.query.NoDOH:
-            raise
+        except dns.query.BadResponse as e:
+            logger.warning("ech: %s: reply does not answer our query (%s); inconclusive", domain, e)
+            return "inconclusive"
         except dns.exception.DNSException as e:
             if not bodies:  # not a parse failure: the exchange itself failed
                 raise
@@ -61,26 +62,32 @@ def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFro
         if not rrs:
             return "inconclusive"
         return "present" if any(_has_ech_param(rr) for rr in rrs) else "absent"
-    except dns.query.NoDOH as e:
-        # A LOST DoH backend (h2/httpcore2 dropped) makes every check inconclusive --
-        # a systemic regression, not an ordinary blip. Log loudly so it is visible.
+    except (dns.query.NoDOH, _DohUnavailable) as e:
+        # A LOST DoH backend (h2/httpcore2 dropped) or a changed dnspython transport makes
+        # every check inconclusive -- a systemic regression, not an ordinary blip. Log loudly.
         logger.error(
             "ech: DoH backend unavailable (%s) -- install the dnspython[doh] extra; ECH checks are degraded", e
         )
         return "inconclusive"
     except Exception as e:  # ordinary DoH transport/timeout, or a parse-shape surprise.
-        logger.debug("ech: DoH check for %s failed: %s", domain, e)
+        logger.warning("ech: DoH check for %s failed, result inconclusive: %r", domain, e)
         return "inconclusive"
 
 
 # Internal =============================================================================================================
+class _DohUnavailable(Exception):
+    """dnspython's DoH transport cannot be built (a private class that changed or vanished)."""
+
+
 def _query_doh(query: dns.message.Message, doh_url: str, timeout: float, bodies: list[bytes]) -> dns.message.Message:
     """Send `query` with dns.query.https and return its parsed, validated reply.
 
-    The session is the one dnspython would build for itself (its transport owns hostname
-    resolution and bootstrap) minus the environment: `trust_env=False` keeps HTTP(S)_PROXY
-    and SSL_CERT_FILE from steering the lookup. A response hook appends each raw body to
-    `bodies`, so a reply dnspython refuses to parse can still be read by the caller."""
+    The transport is dnspython's own (it owns hostname resolution and bootstrap), built
+    as dns.query.https would build it, except that `trust_env=False` on both the transport
+    (its SSL context ignores SSL_CERT_FILE / SSL_CERT_DIR) and the client (it ignores
+    HTTP(S)_PROXY and the like). /etc/hosts and the system resolver still apply, as in
+    dns.query.https. A response hook appends each raw body to `bodies`, so a reply
+    dnspython refuses to parse can still be read by the caller."""
     if not dns.query.have_doh:
         raise dns.query.NoDOH
     import httpx2
@@ -89,7 +96,14 @@ def _query_doh(query: dns.message.Message, doh_url: str, timeout: float, bodies:
         response.read()
         bodies.append(response.content)
 
-    transport = dns.query._HTTPTransport(http1=True, http2=True)
+    host = urllib.parse.urlparse(doh_url).hostname
+    bootstrap_address = host if host and dns.inet.is_address(host) else None  # as dns.query.https does
+    try:
+        transport = dns.query._HTTPTransport(
+            http1=True, http2=True, trust_env=False, bootstrap_address=bootstrap_address
+        )
+    except (AttributeError, TypeError) as e:
+        raise _DohUnavailable(f"dnspython's DoH transport cannot be built: {e!r}") from e
     with httpx2.Client(
         http1=True, http2=True, transport=transport, trust_env=False, event_hooks={"response": [keep_body]}
     ) as session:
@@ -134,10 +148,11 @@ def _classify_unparsed(query: dns.message.Message, wire: bytes) -> EchFrontStatu
         message = dns.message.from_wire(wire, continue_on_error=True)
         if not query.is_response(message):
             return "inconclusive"
+        spans = _answer_https_spans(wire)  # framing first: a broken reply proves nothing
         if any(_has_ech_param(rr) for rr in _https_rrs(message)):
             return "present"
         rejected = False
-        for start, end in _answer_https_spans(wire):
+        for start, end in spans:
             if not any(start <= error.offset <= end for error in message.errors):
                 continue
             rejected = True
@@ -145,13 +160,15 @@ def _classify_unparsed(query: dns.message.Message, wire: bytes) -> EchFrontStatu
             if value is not None and _is_usable_ech(value):
                 return "present"
         return "absent" if rejected else "inconclusive"
-    except dns.exception.DNSException:  # includes FormError from the framing walks
+    except dns.exception.DNSException as e:  # includes FormError from the framing walks
+        logger.warning("ech: reply is unreadable (%s); inconclusive", e)
         return "inconclusive"
 
 
 def _answer_https_spans(wire: bytes) -> list[tuple[int, int]]:
     """(start, end) of the rdata of each HTTPS record in the answer section. Walks every
-    record in every section, so broken framing anywhere raises FormError."""
+    record in every section, so broken framing anywhere, or trailing bytes, raises FormError.
+    That makes a record's end offset unambiguous: no framing error can be reported there."""
     parser = dns.wire.Parser(wire)
     _id, _flags, questions, answers, authority, additional = parser.get_struct("!6H")
     for _ in range(questions):
@@ -165,6 +182,8 @@ def _answer_https_spans(wire: bytes) -> list[tuple[int, int]]:
         parser.get_bytes(length)
         if index < answers and rrtype == dns.rdatatype.HTTPS:
             spans.append((start, start + length))
+    if parser.remaining():
+        raise dns.exception.FormError("trailing data after the last record")
     return spans
 
 

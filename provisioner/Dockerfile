@@ -72,6 +72,12 @@ COPY --chmod=755 provisioner/entrypoint.py /usr/local/bin/entrypoint.py
 COPY --from=go-build /out/postern-dns /usr/local/bin/postern-dns
 COPY --from=go-build /go/bin/lego /usr/local/bin/lego
 
+# Build-time import check, run with the same bare `python3` the ENTRYPOINT and HEALTHCHECK
+# resolve from PATH: a Python minor that apk and the COPY targets disagree on builds fine
+# and only fails at container start (#266). Covers everything entrypoint.py and the
+# healthcheck import.
+RUN ["python3", "-c", "import dns.exception, dns.resolver, cryptography, postern_mta.dkim, postern_mta.rotation, postern.cert.state, postern.cert.dns_records, postern.cert.inspect, postern.mta.rotation, postern_provisioner.cert, postern_provisioner.dns_records, postern_provisioner.ech, postern_provisioner.edge_ranges, postern_provisioner.enablement, postern_provisioner.healthcheck, postern_provisioner.install, postern_provisioner.mta_records, postern_provisioner.ssl_mode"]
+
 # Healthcheck script: see postern_provisioner.healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD ["python3", "-m", "postern_provisioner.healthcheck"]

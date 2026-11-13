@@ -19,7 +19,7 @@ Postern is a small set of cooperating containers plus a dynamic fleet: an Nginx 
 ## Component map
 
 - **nginx** — TLS termination, HTTP→HTTPS redirect, path-based WebSocket routing to the tunnels, security headers (including the CSP below), and rate limiting on `/login*`. Configs are rendered from templates ([nginx/etc/nginx.conf.tmpl](https://github.com/bindreams/postern/blob/main/nginx/etc/nginx.conf.tmpl)) at container start. Nginx joins both the `default` and `shadowsocks` networks so it can reach the tunnel containers.
-- **portal** — Python 3.13 / FastAPI. OTP email login, dashboard, client-config download, the `postern` admin CLI ([CLI reference](../operations/cli.md)), and the background reconciler. There is no public API: OpenAPI docs are disabled, and connections are created only through the CLI — no `POST /connection` route exists.
+- **portal** — Python 3.14 / FastAPI. OTP email login, dashboard, client-config download, the `postern` admin CLI ([CLI reference](../operations/cli.md)), and the background reconciler. There is no public API: OpenAPI docs are disabled, and connections are created only through the CLI — no `POST /connection` route exists.
 - **docker-proxy** — [tecnativa/docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy), a filtered Docker API exposed to the portal over TCP. The portal never mounts the raw Docker socket.
 - **ss-\{token} containers** — one Shadowsocks-rust instance per enabled connection, fronted by a SIP003 plugin in TLS + WebSocket mode. Spawned from the `local/shadowsocks-server` image, which Compose does *not* build — build it yourself before first start (see [shadowsocks/Dockerfile](https://github.com/bindreams/postern/blob/main/shadowsocks/Dockerfile); the build context is the repo root).
 - **mta + provisioner** (optional, `with-mta` profile) — a self-hosted Postfix stack for OTP mail and a DNS/certificate provisioner. They are deliberately separate containers: the mta holds the DKIM signing key and listens on public port 25, while the provisioner holds the DNS provider API token and has zero inbound listeners, so compromising one does not yield the other's credentials. See [email](../deployment/email.md) and [certificates](../deployment/certificates.md).
@@ -32,7 +32,7 @@ nginx/                          # Reverse proxy
     Dockerfile
     etc/                        # nginx.conf.tmpl + conf.d/ (ssl, cert include, mta-sts vhost)
     log/                        # Bind-mounted; nginx writes access/error logs here
-portal/                         # FastAPI management service (Python 3.13)
+portal/                         # FastAPI management service (Python 3.14)
     Dockerfile
     src/postern/                # app.py, auth.py, db.py, reconciler.py, cli.py, mta/...
     tests/

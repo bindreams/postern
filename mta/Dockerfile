@@ -58,6 +58,12 @@ COPY portal/src/postern/mta /usr/lib/python${PYTHON_MINOR}/site-packages/postern
 COPY mta/etc /usr/local/share/mta-templates
 COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 
+# Build-time import check, run with the same bare `python3` the ENTRYPOINT resolves from
+# PATH: a Python minor that apk and the COPY targets disagree on builds fine and only fails
+# at container start (#266). Covers everything entrypoint.py imports, plus the pip-installed
+# mta-sts daemon, which is started as a subprocess.
+RUN ["python3", "-c", "import dns.resolver, postern_mta.dkim, postern_mta.dns, postern_mta.dnssec, postern_mta.rotation, postfix_mta_sts_resolver.daemon"]
+
 # Postfix expects /var/spool/postfix and chroot tree to be in place at runtime.
 # The compose file mounts a named volume there so the queue persists.
 EXPOSE 25 587

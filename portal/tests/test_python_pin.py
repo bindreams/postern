@@ -21,9 +21,10 @@ def _text(rel: str) -> str:
 
 
 def _portal_minor() -> str:
-    m = re.search(r"^FROM dhi\.io/python:(\d+\.\d+)-", _text("portal/Dockerfile"), re.MULTILINE)
-    assert m, "portal/Dockerfile no longer FROMs dhi.io/python:<minor>-..."
-    return m.group(1)
+    minors = set(re.findall(r"^FROM dhi\.io/python:(\d+\.\d+)-", _text("portal/Dockerfile"), re.MULTILINE))
+    assert minors, "portal/Dockerfile no longer FROMs dhi.io/python:<minor>-..."
+    assert len(minors) == 1, f"portal/Dockerfile stages disagree on the Python minor: {sorted(minors)}"
+    return minors.pop()
 
 
 @pytest.mark.parametrize("rel", IMAGES)

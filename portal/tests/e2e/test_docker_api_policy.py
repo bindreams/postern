@@ -394,6 +394,15 @@ def test_reconcile_is_idempotent_through_the_proxy(e2e_stack, fresh_user, fresh_
     assert docker_inspect(f"ss-{tunnel_token}", "{{.Id}}") == first, "the tunnel was recreated: a recreate loop"
 
 
+def _portal_shadowsocks_network() -> str:
+    return compose_exec("python", "-c", "import os; print(os.environ['SHADOWSOCKS_NETWORK'])").stdout.strip()
+
+
+def _tmpfs_options(options: str) -> frozenset[str]:
+    """Docker may reorder a tmpfs option string; the set of options is what must match."""
+    return frozenset(o for o in options.split(",") if o)
+
+
 def test_created_tunnel_is_hardened(e2e_stack, fresh_user, fresh_connection):
     fresh_user("Hard", "hard@postern.test")
     _, tunnel_token = fresh_connection("hard@postern.test", "hard")
@@ -404,8 +413,12 @@ def test_created_tunnel_is_hardened(e2e_stack, fresh_user, fresh_connection):
     assert "no-new-privileges:true" in cfg["SecurityOpt"]
     assert cfg["Memory"] == reconciler.SS_MEMORY_BYTES
     assert cfg["PidsLimit"] == reconciler.SS_PIDS_LIMIT
-    assert set(cfg["Tmpfs"]) == set(reconciler.SS_TMPFS)
-    assert not cfg["Privileged"] and not cfg["Binds"] and cfg["NetworkMode"] != "host"
+    assert {path: _tmpfs_options(opts)
+            for path, opts in cfg["Tmpfs"].items()
+            } == {path: _tmpfs_options(opts)
+                  for path, opts in reconciler.SS_TMPFS.items()}
+    assert not cfg["Privileged"] and not cfg["Binds"]
+    assert cfg["NetworkMode"] == _portal_shadowsocks_network()
     assert labels["postern.managed"] == "true" and labels["postern.instance"] == _portal_instance()
 
 

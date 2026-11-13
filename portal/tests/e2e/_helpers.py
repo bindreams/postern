@@ -33,6 +33,7 @@ E2E_NGINX_IMAGE = "local/nginx-test"
 E2E_PROVISIONER_IMAGE = "local/postern-provisioner-test"
 E2E_MTA_IMAGE = "local/postern-mta-test"
 E2E_PORTAL_IMAGE = "local/postern-portal-test"
+E2E_DOCKER_PROXY_IMAGE = "local/postern-docker-proxy-test"
 # Third-party image used for throwaway `sleep infinity` fixture containers.
 E2E_SLEEPER_IMAGE = "dhi.io/alpine-base:3.23-dev"
 

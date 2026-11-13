@@ -456,12 +456,8 @@ def test_reconciler_removes_orphan(e2e_stack):
         _run_labelled(foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"])
         _run_labelled(legacy, ["postern.managed=true"])  # no instance label: pre-upgrade shape
 
-        # `trigger_reconcile()` now blocks on `postern reconcile --wait`, which only
-        # returns once the reconciler's own `reconcile()` -- orphan removal AND the
-        # foreign/legacy scan, all of it -- has fully completed (reconciler.py awaits
-        # the whole pass's future before notifying waiters). A single trigger is
-        # therefore already a barrier past every effect of this pass; no second,
-        # sentinel-based trigger is needed to prove foreign/legacy were decided too.
+        # trigger_reconcile() returns only after the whole pass completes; the sentinel proves foreign/legacy
+        # containers were left alone.
         trigger_reconcile()
         assert not container_exists(orphan), "reconciler did not remove the orphan container"
 

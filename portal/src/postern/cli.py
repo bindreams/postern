@@ -62,66 +62,16 @@ def _warn_if_identity_unresolved(settings: Settings) -> bool:
     `connection add`) would otherwise give no indication that no container
     will actually be created. Returns whether it warned.
     """
-    from postern.reconciler import resolve_instance_id
+    from postern.reconciler import instance_id_fault, resolve_instance_id
     if resolve_instance_id(settings) is not None:
         return False
     typer.echo(
-        "WARNING: could not determine this deployment's instance id (neither INSTANCE_ID "
-        "nor COMPOSE_PROJECT_NAME is set) -- the reconciler will NOT create, remove, or "
-        "restart any container until this is fixed. Check that the portal was started via "
-        "`docker compose` with an up-to-date compose.yaml.",
+        f"WARNING: could not determine this deployment's instance id ({instance_id_fault(settings)}) -- the reconciler "
+        "will NOT create, remove, or restart any container until this is fixed. Check that the "
+        "portal was started via `docker compose` with an up-to-date compose.yaml.",
         err=True,
     )
     return True
-
-
-def _warn_if_disabled_connection_container_survives(settings: Settings, path_token: str) -> None:
-    """Best-effort, read-only check: does this connection's container still
-    exist but predate this instance's label (or belong to a different
-    deployment)? If so the reconciler will never stop it on its own --
-    surface the same manual-remediation guidance immediately, in the
-    caller's own output, rather than leaving the operator to notice it
-    only in the reconciler's logs. Called from both `connection disable`
-    (connection stays in the DB, disabled) and `user delete` (connection
-    row is gone entirely, cascaded away) -- in either case the connection
-    is no longer in the reconciler's desired set, so its container is
-    never again the target of a create() call and would otherwise get no
-    signal at all. Never fatal: a Docker-side problem here is reported (not
-    raised) and the caller still exits 0 -- the mutation itself already
-    succeeded in the database, and this check is advisory, matching the
-    reconciler's own equivalent-failure disposition (a logged warning, not
-    a raised exception).
-    """
-    import docker
-    import docker.errors
-    from postern.reconciler import is_unlabelled_and_running
-
-    name = f"ss-{path_token}"
-    try:
-        client = docker.DockerClient.from_env()
-        try:
-            container = client.containers.get(name)
-        except docker.errors.NotFound:
-            return
-        finally:
-            client.close()
-    except Exception:
-        typer.echo(
-            f"NOTE: could not check whether container {name} for this connection is still running "
-            "(docker-proxy unreachable?) -- if it predates instance labelling, the reconciler will "
-            "not stop it automatically either; check manually.",
-            err=True,
-        )
-        return
-
-    if not is_unlabelled_and_running(container.labels or {}, container.status):
-        return
-    typer.echo(
-        f"WARNING: container {name} for this connection is still running and predates instance "
-        "labelling -- the reconciler will NOT stop it automatically. If you're sure it's safe, "
-        f"remove it manually (`docker rm -f {name}`).",
-        err=True,
-    )
 
 
 def run(coro):
@@ -173,26 +123,19 @@ def user_disable(email: str) -> None:
             await db.migrate(database)
             user = await db.get_user_by_email(database, email)
             if user is None:
-                return None, []
+                return None
             connections = await db.list_connections(database, user_id=user.id)
             for conn in connections:
                 await db.set_connection_enabled(database, conn.id, False)
-            return len(connections), connections
+            return len(connections)
 
-    result = run(_disable())
-    count, connections = result
+    count = run(_disable())
     if count is None:
         typer.echo(f"User not found: {email}")
         raise typer.Exit(1)
     typer.echo(f"Disabled {count} connection(s)")
     _trigger_reconcile(settings)
     _warn_if_identity_unresolved(settings)
-    # Same rationale as connection_disable/user_delete: a disabled connection's
-    # container is never again a create() target, so the reconciler's own 409
-    # path never sees it. Warn immediately, per connection, rather than only
-    # via the reconciler's periodic log line on some later pass.
-    for conn in connections:
-        _warn_if_disabled_connection_container_survives(settings, conn.path_token)
 
 
 @user_app.command("delete")
@@ -205,28 +148,17 @@ def user_delete(email: str) -> None:
             await db.migrate(database)
             user = await db.get_user_by_email(database, email)
             if user is None:
-                return None, []
-            # Fetch connections BEFORE the cascade delete -- their path_tokens
-            # are needed for the post-delete container check below, and once
-            # delete_user runs, list_connections would return nothing for them.
-            connections = await db.list_connections(database, user_id=user.id)
+                return None
             await db.delete_user(database, user.id)
-            return user, connections
+            return user
 
-    user, connections = run(_delete())
+    user = run(_delete())
     if user is None:
         typer.echo(f"User not found: {email}")
         raise typer.Exit(1)
     typer.echo(f"Deleted user {email}")
     _trigger_reconcile(settings)
     _warn_if_identity_unresolved(settings)
-    # delete_user cascades the connection rows away entirely -- unlike
-    # `connection disable`, there is no DB row left for the reconciler's own
-    # periodic check to ever match against, so this is the ONLY place a
-    # legacy (pre-instance-labelling) container for one of these connections
-    # ever gets flagged. See _warn_if_disabled_connection_container_survives.
-    for conn in connections:
-        _warn_if_disabled_connection_container_survives(settings, conn.path_token)
 
 
 # Connection commands ==================================================================================================
@@ -355,19 +287,15 @@ def connection_disable(id: str) -> None:
     async def _disable():
         async with db.get_connection(settings.database_path) as database:
             await db.migrate(database)
-            conn = await db.get_connection_by_id(database, id)
-            disabled = await db.set_connection_enabled(database, id, False)
-            return conn, disabled
+            return await db.set_connection_enabled(database, id, False)
 
-    conn, disabled = run(_disable())
+    disabled = run(_disable())
     if not disabled:
         typer.echo(f"Connection not found: {id}")
         raise typer.Exit(1)
     typer.echo("Connection disabled")
     _trigger_reconcile(settings)
     _warn_if_identity_unresolved(settings)
-    if conn is not None:
-        _warn_if_disabled_connection_container_survives(settings, conn.path_token)
 
 
 @connection_app.command("enable")

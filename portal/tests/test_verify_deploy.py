@@ -154,6 +154,8 @@ def test_render_json_shape():
 # Collection -----------------------------------------------------------------------------------------------------------
 HEAD = "c" * 40
 
+# `docker-proxy` here is a stand-in for any third-party (build-less) service: the production proxy is first-party now,
+# and this fixture keeps the third-party branch of verify-deploy covered.
 _CONFIG_JSON = """
 {"name": "postern", "services": {
   "portal": {"image": "local/postern-portal", "build": {"context": "."}},
@@ -475,6 +477,27 @@ def test_collect_honors_an_instance_id_override():
     _collect(runner, tunnels=True)
     ps_call = next(a for a, _ in runner.calls if a[:2] == ["docker", "ps"] and any("postern.managed" in t for t in a))
     assert "label=postern.instance=custom-id" in ps_call
+
+
+def test_collect_fails_on_an_instance_id_the_portal_would_refuse():
+    """The portal refuses to run with this id, so no container carries it: the gate must say so, naming the value
+    and the pattern, instead of filtering on a label that matches nothing."""
+    config = _ok(
+        json.dumps({
+            "name": "postern",
+            "services": {
+                "portal": {
+                    "image": "local/postern-portal",
+                    "build": {"context": "."},
+                    "environment": {"INSTANCE_ID": "prod:eu"},
+                },
+            },
+        })
+    )
+    with pytest.raises(vd.CollectError) as excinfo:
+        _collect(FakeRunner(tunnels=True, config_out=config), tunnels=True)
+    assert "'prod:eu'" in str(excinfo.value)
+    assert vd.INSTANCE_ID_PATTERN.pattern in str(excinfo.value)
 
 
 def test_collect_excludes_one_off_containers():
@@ -1172,8 +1195,7 @@ def _cs(service, name, image_id, revision, health="", *, state="running", exit_c
 
 
 _PROXY_REF = "tecnativa/docker-socket-proxy:v0.4.2"
-# Third-party images ship their OWN project's revision label; docker-socket-proxy
-# really does (verified on the deploy host).
+# Third-party images ship their OWN project's revision label; this one really does (verified on a deploy host).
 _PROXY_REV = "2f04313b042c1bf4dfbd039475dfc42db79bde7a"
 
 

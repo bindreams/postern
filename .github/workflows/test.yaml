@@ -46,6 +46,9 @@ jobs:
           enable-cache: true
       - run: uv sync --all-extras
         working-directory: portal
+      # The docker-proxy policy suite runs in the base image's HAProxy; pull it here so the pull is not part of
+      # that test's per-test timeout.
+      - run: docker pull "$(sed -n 's/^FROM //p' docker-proxy/Dockerfile)"
       - run: uv run pytest -m "not e2e and not e2e_mta and not e2e_mta_real and not e2e_mta_outbound and not e2e_edge" --timeout=30
         working-directory: portal
 

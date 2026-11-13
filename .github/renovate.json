@@ -31,6 +31,11 @@
       "groupName": "libdns ecosystem"
     },
     {
+      "description": "The docker-proxy's base image is the HAProxy and Lua build that policy.lua runs in. A bump can change Lua or HTTP-parsing semantics the allow-list depends on, so a person runs the policy suites (portal/tests/test_docker_proxy_policy.py and the e2e test_docker_api_policy.py) before it merges.",
+      "matchPackageNames": ["ghcr.io/linuxserver/socket-proxy"],
+      "automerge": false
+    },
+    {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
       "matchDepNames": ["bindreams/hole-ex-ray", "bindreams/hole-galoshes"],
       "automerge": false

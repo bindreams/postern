@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import re
 import threading
+from dataclasses import dataclass
 
 import docker
 import docker.errors
@@ -28,6 +30,19 @@ logger = logging.getLogger(__name__)
 MANAGED_LABEL = "postern.managed"
 MANAGED_VALUE = "true"
 INSTANCE_LABEL = "postern.instance"
+
+# The only instance ids the docker-proxy accepts (it pastes the id into a daemon filter). docker-proxy/policy.lua and
+# scripts/verify-deploy.py validate the same way; tests/test_docker_proxy_policy.py compares all three on edge cases.
+_ASCII_WHITESPACE = " \t\n\v\f\r"
+INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
+
+# What every tunnel container is created with. The docker-proxy's allow-list (docker-proxy/policy.lua) repeats these
+# three and refuses a create body that differs; tests/test_compose_docker_proxy.py pins the copies equal.
+SS_MEMORY_BYTES = 536870912
+# pids count threads and scale with CPU count, hence 1024.
+SS_PIDS_LIMIT = 1024
+# The second tmpfs is galoshes' extraction directory: writable and executable while the root filesystem is read-only.
+SS_TMPFS = {"/tmp": "", "/home/nonroot/.cache": "exec"}
 
 # Set by request_reconcile_shutdown() (called from app.py BEFORE cancelling the
 # reconciliation loop's task) to ask an in-flight pass to stop between container
@@ -51,33 +66,8 @@ def _owned_by_instance(labels: dict[str, str], instance_id: str) -> bool:
     express this as an API filter, not a predicate) and
     `_log_name_conflict`'s own-instance-retry check test the identical
     condition in Python.
-
-    `_report_legacy_running_containers` deliberately does NOT call this --
-    see `is_unlabelled_and_running` for why label absence and a foreign
-    instance label need different treatment there.
     """
     return labels.get(MANAGED_LABEL) == MANAGED_VALUE and labels.get(INSTANCE_LABEL) == instance_id
-
-
-def is_unlabelled_and_running(labels: dict[str, str], status: str) -> bool:
-    """True iff `labels`/`status` describe a Postern-managed container that
-    predates instance labelling (`postern.managed=true`, no
-    `postern.instance`) and is currently running. This is the "legacy,
-    still live" predicate, factored out so `_report_legacy_running_containers`
-    below and `cli._warn_if_disabled_connection_container_survives` (which
-    surfaces the identical check proactively from `connection disable` and
-    `user delete`, since a not-currently-desired connection's container
-    never reaches the 409 path in `_log_name_conflict`) test the same
-    condition instead of maintaining two independently-drifting copies.
-    Deliberately NOT `_owned_by_instance`: this checks label ABSENCE, not a
-    specific instance_id match, so a caller can't reuse it to decide
-    whether removal would be safe -- only that a legacy container is
-    present and serving traffic."""
-    if labels.get(MANAGED_LABEL) != MANAGED_VALUE:
-        return False
-    if INSTANCE_LABEL in labels:
-        return False
-    return status == "running"
 
 
 # Whether the resolved instance id + its provenance (override vs
@@ -250,6 +240,26 @@ def _get_docker_client() -> docker.DockerClient:
     return docker.DockerClient.from_env()
 
 
+def _ascii_stripped(value: str) -> str:
+    """Stripped of ASCII whitespace only, as the docker-proxy does (Python's own `strip()` also drops Unicode spaces,
+    which would let the portal accept an id the proxy refuses)."""
+    return value.strip(_ASCII_WHITESPACE)
+
+
+def configured_instance_id(settings: Settings) -> str:
+    """The id `resolve_instance_id` validates: the INSTANCE_ID override, else the compose project name, else ""."""
+    return _ascii_stripped(settings.instance_id) or _ascii_stripped(settings.compose_project_name)
+
+
+def instance_id_fault(settings: Settings) -> str:
+    """Why `resolve_instance_id` returned None, naming the offending value and the pattern. For the callers that
+    report it; resolving itself logs nothing, so a fault is reported once per caller."""
+    chosen = configured_instance_id(settings)
+    if chosen:
+        return f"{chosen!r} is not a valid id: it must match {INSTANCE_ID_PATTERN.pattern}"
+    return "neither INSTANCE_ID nor COMPOSE_PROJECT_NAME is set"
+
+
 def resolve_instance_id(settings: Settings) -> str | None:
     """Resolve this portal's instance id from configuration alone -- no live
     Docker API call.
@@ -262,17 +272,15 @@ def resolve_instance_id(settings: Settings) -> str | None:
     inputs come from `Settings`, constructed once at process startup, so
     this returns the identical value for the entire life of the process.
 
-    Returns None only when NEITHER is set -- the portal wasn't started via
-    an up-to-date `docker compose` invocation at all. Callers must treat
-    None as "unknown" and skip every destructive container operation.
+    Returns None when NEITHER is set -- the portal wasn't started via an
+    up-to-date `docker compose` invocation at all -- or when the id in use
+    does not match INSTANCE_ID_PATTERN (the docker-proxy would refuse every
+    request carrying it; an invalid override does not fall back to the
+    project name, matching the proxy). Callers must treat None as "unknown"
+    and skip every destructive container operation, reporting `instance_id_fault`.
     """
-    override = settings.instance_id.strip()
-    if override:
-        return override
-    derived = settings.compose_project_name.strip()
-    if derived:
-        return derived
-    return None
+    chosen = configured_instance_id(settings)
+    return chosen if INSTANCE_ID_PATTERN.fullmatch(chosen) else None
 
 
 def _log_resolved_identity_once(settings: Settings, instance_id: str) -> None:
@@ -289,11 +297,11 @@ def _log_resolved_identity_once(settings: Settings, instance_id: str) -> None:
     has them on hand, without a WARNING that would fire on every correctly
     configured override deployment and teach operators to ignore it.
     """
-    override = settings.instance_id.strip()
+    override = _ascii_stripped(settings.instance_id)
     if not override:
         logger.info("Resolved own instance id to %r (from COMPOSE_PROJECT_NAME)", instance_id)
         return
-    derived = settings.compose_project_name.strip()
+    derived = _ascii_stripped(settings.compose_project_name)
     if derived and derived != instance_id:
         logger.info(
             "Resolved own instance id to %r (from INSTANCE_ID override; COMPOSE_PROJECT_NAME=%r). "
@@ -334,6 +342,48 @@ def _list_managed_containers(client: docker.DockerClient, instance_id: str) -> d
     return {c.name: c for c in containers}
 
 
+@dataclass(frozen=True)
+class ContainerSummary:
+    """What a container list payload says about one container. `state` is the string `Container.status` would be."""
+    name: str
+    labels: dict[str, str]
+    state: str
+
+
+def _read_container_summaries(client: docker.DockerClient, filters: dict) -> list[ContainerSummary]:
+    """List containers matching `filters` and return what the LIST payload carries (name, labels, state).
+
+    Private on purpose: the docker-proxy allows exactly two list shapes (this deployment's label pair, and one
+    anchored `ss-<token>` name), so the public surface is one function per shape, not this one.
+
+    A list payload has no `Env`, whereas `containers.get()` / docker-py's `containers.list()` inspect each container
+    and return its whole config; the proxy denies an inspect of anything that does not carry this deployment's labels.
+    """
+    summaries = []
+    for entry in client.api.containers(all=True, filters=filters):
+        names = entry.get("Names") or [""]
+        summaries.append(
+            ContainerSummary(
+                name=names[0].removeprefix("/"),
+                labels=dict(entry.get("Labels") or {}),
+                state=entry.get("State") or "",
+            )
+        )
+    return summaries
+
+
+def find_container_summary_by_name(client: docker.DockerClient, name: str) -> ContainerSummary | None:
+    """Read a container the portal may not own, by its exact `ss-<24 hex>` name; None if there is none.
+
+    This is the only way to read such a container. The proxy allows this one list shape (an anchored name filter);
+    any other name is refused. The daemon's name filter is an unanchored regex, so the request anchors it and the
+    result is checked for an exact match as well."""
+    for summary in _read_container_summaries(client, {"name": [f"^/{name}$"]}):
+        if summary.name == name:
+            return summary
+    return None
+
+
 def _image_exists(client: docker.DockerClient, image_name: str) -> bool:
     try:
         client.images.get(image_name)
@@ -358,8 +408,13 @@ def _create_container(client: docker.DockerClient, conn: Connection, settings: S
         labels={MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: instance_id},
         log_config=docker.types.LogConfig(type="none"),
         restart_policy={"Name": "unless-stopped"},
-        tmpfs={"/tmp": ""},
+        tmpfs=SS_TMPFS,
         network=settings.shadowsocks_network,
+        cap_drop=["ALL"],
+        security_opt=["no-new-privileges:true"],
+        read_only=True,
+        mem_limit=SS_MEMORY_BYTES,
+        pids_limit=SS_PIDS_LIMIT,
     )
 
 
@@ -373,7 +428,7 @@ def _log_name_conflict(client: docker.DockerClient, name: str, instance_id: str)
       sweep or image-upgrade recreate) must have silently failed, leaving
       it behind -- no manual action needed, the next pass's remove-then-
       create simply retries.
-    - If it can't even be inspected, ownership is unconfirmed, not
+    - If it can't even be read, ownership is unconfirmed, not
       disproven -- that gets its own honest disposition, not the
       confirmed-foreign message.
     - Otherwise it's most likely a container this exact deployment created
@@ -383,26 +438,18 @@ def _log_name_conflict(client: docker.DockerClient, name: str, instance_id: str)
       operator can attribute it and remove it manually once confirmed
       safe; the next pass then creates it correctly.
 
-    The 409-then-inspect sequence is inherently racy: the squatter can be
-    removed between containers.run() raising 409 and this containers.get()
-    -- most plausibly by an operator following this very function's own
-    `docker rm -f` remediation advice, or a `--rm` auto-removal. That's
-    NotFound, not an inspection failure, and it's benign and self-healing
-    (the name is free again; the next pass creates the container) -- it
-    must not log the same "docker-proxy issue?" ERROR a genuine inspect
-    failure gets, which would read as "the remediation didn't work" at the
-    exact moment it did.
+    The squatter is read from a name-filtered list payload (labels only, never
+    its `Env`: see `find_container_summary_by_name`). The 409-then-read sequence is
+    inherently racy: the squatter can be removed between containers.run()
+    raising 409 and this read -- most plausibly by an operator following this
+    very function's own `docker rm -f` remediation advice, or a `--rm`
+    auto-removal. An empty read is benign and self-healing (the name is free
+    again; the next pass creates the container) -- it must not log the same
+    "docker-proxy issue?" ERROR a genuine read failure gets, which would read
+    as "the remediation didn't work" at the exact moment it did.
     """
     try:
-        squatter = client.containers.get(name)
-        squatter_labels = squatter.labels or {}
-    except docker.errors.NotFound:
-        logger.info(
-            "Container name %s conflict resolved itself (the squatter was removed between the "
-            "create attempt and this check); the next reconcile pass will create it",
-            name,
-        )
-        return
+        squatter = find_container_summary_by_name(client, name)
     except Exception:
         logger.error(
             "Container name %s is already in use, but the conflicting container could not be "
@@ -412,6 +459,14 @@ def _log_name_conflict(client: docker.DockerClient, name: str, instance_id: str)
             exc_info=True,
         )
         return
+    if squatter is None:
+        logger.info(
+            "Container name %s conflict resolved itself (the squatter was removed between the "
+            "create attempt and this check); the next reconcile pass will create it",
+            name,
+        )
+        return
+    squatter_labels = squatter.labels
 
     if _owned_by_instance(squatter_labels, instance_id):
         logger.warning(
@@ -451,90 +506,6 @@ def _create_container_logged(
             logger.exception("Failed to create container %s", name)
     except Exception:
         logger.exception("Failed to create container %s", name)
-
-
-def _report_legacy_running_containers(
-    client: docker.DockerClient,
-    desired_names: set[str],
-    connections_by_name: dict[str, Connection],
-) -> None:
-    """Read-only: for every managed-but-unlabelled container that ISN'T
-    among this pass's desired (enabled) names, check whether it's still
-    running and warn if so. Never removes anything -- same non-destructive
-    rule as `_log_name_conflict`, applied to the case that otherwise gets NO
-    signal at all: a container is only ever the target of a create() call
-    (and hence `_log_name_conflict`'s 409-triggered logging) when its name
-    IS in `desired_names`. A disabled connection's container, or a fully
-    DELETED connection's container (e.g. after `postern user delete`,
-    which cascades the row away entirely), is never a create() target and
-    would otherwise get no signal at all -- without this, revoking or
-    deleting a pre-upgrade connection could silently leave its tunnel
-    running forever.
-
-    `connections_by_name` looks up the connection (if the DB row still
-    exists -- disabled connections keep their row, deleted ones don't) so
-    the warning can cite a connection id when it can; when it can't
-    (deleted), the message says so instead of guessing.
-
-    One `containers.list()` CALL regardless of how many candidates there
-    are -- but NOT O(1) cost: docker-py's default `sparse=False` behavior
-    inspects every matched container individually (one `GET
-    /containers/{id}/json` per container carrying `postern.managed=true`,
-    daemon-wide, across every Postern deployment -- the filter here is
-    deliberately unscoped, see below). This is unavoidable: `.labels` needs
-    the full inspect payload, which the bare list response doesn't carry.
-    Still strictly better than one `containers.get()` per DESIRED NAME
-    (which would scale with connection count, not with what's actually on
-    the daemon), and this runs every pass regardless.
-
-    The listing filter is deliberately `MANAGED_LABEL` alone, not the usual
-    instance conjunction -- this function needs to SEE containers from
-    other deployments to tell them apart from legacy (pre-fix, unlabelled)
-    ones. But it must then only ever warn about the unlabelled case: a
-    container carrying ANY instance label -- ours (handled by the ordinary
-    sweep already) or a genuinely different deployment's -- is skipped
-    outright, never just "not owned by us" (see `is_unlabelled_and_running`).
-    The same cloned-database name-collision hazard `_log_name_conflict`
-    documents applies here too: a colliding name could be a different,
-    live deployment's legitimate tunnel, so this never assumes "not
-    desired" means "safe to flag."
-    """
-    try:
-        candidates = client.containers.list(
-            all=True, ignore_removed=True, filters={"label": f"{MANAGED_LABEL}={MANAGED_VALUE}"}
-        )
-    except Exception:
-        # Same disposition as _log_name_conflict's equivalent lookup-failure
-        # branch: unconfirmed is a different, more urgent fact (possible
-        # docker-proxy issue) than "nothing to report" -- log it at a level
-        # that doesn't get lost, not DEBUG.
-        logger.warning("Could not check for legacy containers outside the desired set", exc_info=True)
-        return
-    for container in candidates:
-        if container.name in desired_names:
-            continue  # this pass's create-sweep already handles it (409 -> _log_name_conflict)
-        if not is_unlabelled_and_running(container.labels or {}, container.status):
-            continue
-        conn = connections_by_name.get(container.name)
-        if conn is not None:
-            logger.warning(
-                "Connection %s is disabled but its container %s is still running and is not "
-                "provably this instance's own (predates instance labelling, or belongs to a "
-                "different deployment) -- it will NOT be stopped automatically. If you're sure "
-                "it's safe, remove it manually (`docker rm -f %s`).",
-                conn.id,
-                container.name,
-                container.name,
-            )
-        else:
-            logger.warning(
-                "Container %s is still running but matches no connection currently in the "
-                "database (a deleted connection's leftover?) and is not provably this "
-                "instance's own -- it will NOT be stopped automatically. If you're sure it's "
-                "safe, remove it manually (`docker rm -f %s`).",
-                container.name,
-                container.name,
-            )
 
 
 def _remove_container(container: Container) -> bool:
@@ -678,34 +649,17 @@ def _reconcile_once(
 def _reconcile_pass(
     client: docker.DockerClient,
     connections: list[Connection],
-    all_connections: list[Connection],
     settings: Settings,
     instance_id: str,
 ) -> None:
     """Everything reconcile() dispatches to the executor thread: the
-    ordinary pass, a read-only check for legacy containers outside the
-    desired set (see _report_legacy_running_containers's docstring for why
-    that needs its own pass), and closing `client` -- owned here, not by
+    ordinary pass, and closing `client` -- owned here, not by
     reconcile()'s own coroutine, so a cancelled awaiting task can never
     race a close() against Docker calls this same thread still has in
     flight.
-
-    The legacy-container scan is skipped once shutdown has been requested:
-    it's an unbounded, daemon-wide Docker inspect scan (see
-    _report_legacy_running_containers's docstring on its real cost) that
-    the cooperative-abort checkpoints inside _reconcile_once do nothing to
-    bound -- running it anyway during shutdown could burn through
-    stop_grace_period and get this container SIGKILLed before
-    cleanup_all_containers ever runs, the exact outcome those checkpoints
-    exist to avoid. It's advisory logging only, so skipping it here loses
-    nothing; the next pass after restart re-runs it.
     """
     try:
         _reconcile_once(client, connections, settings, instance_id)
-        if not _shutdown_requested.is_set():
-            desired_names = {_container_name(c) for c in connections}
-            connections_by_name = {_container_name(c): c for c in all_connections}
-            _report_legacy_running_containers(client, desired_names, connections_by_name)
     finally:
         client.close()
 
@@ -720,6 +674,15 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                 _log_resolved_identity_once(settings, instance_id)
                 _startup_identity_logged = True
 
+            if instance_id is None:
+                # Reported here, once per pass, so a missing image cannot hide it.
+                logger.error(
+                    "Skipping container reconciliation this pass (session/OTP cleanup still runs): "
+                    "could not determine the instance id (%s). Fix INSTANCE_ID, or COMPOSE_PROJECT_NAME "
+                    "when INSTANCE_ID is empty.",
+                    instance_id_fault(settings),
+                )
+
             client = _get_docker_client()
             try:
                 if not _image_exists(client, settings.shadowsocks_image):
@@ -731,16 +694,11 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                         settings.shadowsocks_image,
                     )
                 elif instance_id is not None:
-                    all_connections = await db.list_connections(database)
-                    connections = [c for c in all_connections if c.enabled]
-                    future = _executor.submit(
-                        _reconcile_pass, client, connections, all_connections, settings, instance_id
-                    )
+                    connections = [c for c in await db.list_connections(database) if c.enabled]
+                    future = _executor.submit(_reconcile_pass, client, connections, settings, instance_id)
                     _inflight_reconcile_future = future
                     client = None  # ownership transferred to _reconcile_pass; the finally below must not close it
                     await asyncio.shield(asyncio.wrap_future(future))
-                else:
-                    logger.error("Skipping container reconciliation this pass (session/OTP cleanup still runs)")
             finally:
                 if client is not None:
                     client.close()
@@ -805,7 +763,7 @@ async def cleanup_all_containers(settings: Settings) -> None:
     logger.info("Cleaning up all managed containers")
     instance_id = resolve_instance_id(settings)
     if instance_id is None:
-        logger.error("Skipping shutdown cleanup: could not determine own instance identity")
+        logger.error("Skipping shutdown cleanup: could not determine the instance id (%s)", instance_id_fault(settings))
         return
     try:
         client = _get_docker_client()

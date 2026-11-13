@@ -38,7 +38,9 @@ MUST_KEEP = {
     "operations/rename.md": ["_domainkey", "docker compose down"],
     "operations/index.md": ["postern reconcile", "scripts/verify-deploy.py"],
     "operations/cli.md": ["Never set `POSTERN_REVISION`"],
-    "development/architecture.md": ["`CONTAINERS`, `NETWORKS`, `IMAGES`"],
+    "development/architecture.md": [
+        "default-deny allow-list written in Lua", "The allow-list is exactly the reconciler's traffic"
+    ],
     "getting-started.md": ["local/shadowsocks-server", "requires HTTPS"],
     "connecting.md": ["galoshes", "127.0.0.1:1080"],
     "security.md": ["on-path fingerprinting", "what Cloudflare sees"],

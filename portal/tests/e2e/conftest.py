@@ -48,7 +48,7 @@ from ._helpers import (
     postern_cli,
 )
 from ._mta_helpers import compose_mta
-from ._mta_real_selector import EnvError, require_env, resolve_mta_test_env
+from ._mta_real_dns import EnvError, require_env, resolve_mta_test_env
 
 # Marker map: filename -> pytest marker name. Adding a new MTA test file requires
 # registering it here (intentional -- forces the author to think about which tier

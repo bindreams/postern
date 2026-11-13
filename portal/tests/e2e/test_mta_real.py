@@ -43,12 +43,10 @@ import pytest
 # postern is installed via `uv sync` in CI; locally it must be available too.
 from postern.mta import dnssec as mta_dnssec
 
-from ._mta_real_selector import postern_dns, run_selector
+from ._mta_real_dns import describe_failure, postern_dns, run_selector
 
 logger = logging.getLogger(__name__)
 
-# Unique per run, so concurrent runs never touch each other's record (see _mta_real_selector).
-SELECTOR = run_selector(os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", ""))
 PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8")
 
 
@@ -120,17 +118,30 @@ def _resolve_txt_eventually(
     return last_state
 
 
+def _delete_record(env: dict[str, str], fqdn: str, record_value: str) -> None:
+    """Best-effort ``txt-delete``; a failure is logged as a possibly leaked record, never raised."""
+    try:
+        postern_dns(env, "txt-delete", fqdn, record_value)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+        logger.error(
+            "txt-delete of %s FAILED -- the record may be leaked; manual cleanup may be required on the test domain: %s",
+            fqdn,
+            describe_failure(e),
+        )
+
+
 # Fixtures =============================================================================================================
 @pytest.fixture(scope="module")
 def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, str, str]]:
-    """Publish ``<SELECTOR>._domainkey.<MTA_TEST_DOMAIN>`` with an ephemeral
+    """Publish ``<selector>._domainkey.<MTA_TEST_DOMAIN>`` with an ephemeral
     pubkey via libdns; yield ``(selector, fqdn, pubkey_b64)``; retire on exit.
 
-    ``SELECTOR`` is unique to this run, so teardown deletes only this run's record.
+    The selector is unique to this run (see ``_mta_real_dns``), so teardown deletes only this run's record.
     Records crashed CI runs left behind are swept by a CI step before pytest.
     """
+    selector = run_selector(os.environ)
     domain = mta_test_env["MTA_TEST_DOMAIN"]
-    fqdn = f"{SELECTOR}._domainkey.{domain}"
+    fqdn = f"{selector}._domainkey.{domain}"
     pubkey = _generate_test_pubkey_b64()
     record_value = f"v=DKIM1; k=rsa; p={pubkey}"
     propagation = float(mta_test_env["MTA_TEST_DNS_PROPAGATION_SECONDS"])
@@ -141,10 +152,7 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
     # time so flakes have actionable diagnostics.
     seen = _resolve_txt_eventually(fqdn, expected_substring=pubkey, timeout=propagation + 60)
     if not seen or not any(pubkey in t for t in seen):
-        try:
-            postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
-        except subprocess.CalledProcessError:
-            pass
+        _delete_record(mta_test_env, fqdn, record_value)
         pytest.fail(
             f"DKIM TXT for {fqdn} did not propagate to public resolvers within "
             f"{propagation + 60:.0f}s after txt-set; last observed: {seen!r}.\n"
@@ -153,16 +161,9 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
         )
 
     try:
-        yield (SELECTOR, fqdn, pubkey)
+        yield (selector, fqdn, pubkey)
     finally:
-        try:
-            postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
-        except subprocess.CalledProcessError as e:
-            logger.error(
-                "txt-delete cleanup of %s FAILED -- manual cleanup may be required on the test domain: %s",
-                fqdn,
-                e.stderr,
-            )
+        _delete_record(mta_test_env, fqdn, record_value)
 
 
 # Tests ================================================================================================================

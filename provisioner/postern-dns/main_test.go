@@ -241,9 +241,11 @@ type fakeProvider struct {
 	appendErr             error // if non-nil, AppendRecords returns this without storing.
 	getRecordsErr         error // if non-nil, GetRecords returns this without listing.
 	strictDataEqualDelete bool
+	listedZone            string // the zone of the last GetRecords call.
 }
 
-func (f *fakeProvider) GetRecords(_ context.Context, _ string) ([]libdns.Record, error) {
+func (f *fakeProvider) GetRecords(_ context.Context, zone string) ([]libdns.Record, error) {
+	f.listedZone = zone
 	if f.getRecordsErr != nil {
 		return nil, f.getRecordsErr
 	}
@@ -496,7 +498,7 @@ func TestDoTxtList_FiltersByTypeAndPrefix(t *testing.T) {
 	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
 		t.Fatalf("doTxtList: %v", err)
 	}
-	// The mixed-case name keeps its case so txt-delete (case-sensitive) can match it.
+	// Names keep the provider's case.
 	want := `[{"fqdn":"postern-e2e-1-1._domainkey.example.com","value":"v=DKIM1; p=a"},` +
 		`{"fqdn":"Postern-E2E-2-1._domainkey.example.com","value":"v=DKIM1; p=b"}]` + "\n"
 	if buf.String() != want {
@@ -531,6 +533,40 @@ func TestDoTxtList_NoMatchIsEmptyArray(t *testing.T) {
 	}
 	if buf.String() != "[]\n" {
 		t.Errorf("got %q; want []", buf.String())
+	}
+}
+
+func TestRunCmd_TxtList(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "postern-e2e-1-2-3._domainkey", Text: "v=DKIM1; p=a"},
+		libdns.TXT{Name: "other._domainkey", Text: "v=DKIM1; p=b"},
+	}}
+	// runCmd prints to os.Stdout; capture it through a pipe.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	runErr := runCmd(context.Background(), "cloudflare", fp, "txt-list", "mta-test.example.com", []string{"postern-e2e-"})
+	os.Stdout = stdout
+	w.Close()
+	out, readErr := io.ReadAll(r)
+	r.Close()
+	if runErr != nil || readErr != nil {
+		t.Fatalf("runCmd: %v; read: %v", runErr, readErr)
+	}
+	if fp.listedZone != "example.com." {
+		t.Errorf("listed zone %q; want the zone of the domain arg, %q", fp.listedZone, "example.com.")
+	}
+	want := `[{"fqdn":"postern-e2e-1-2-3._domainkey.example.com","value":"v=DKIM1; p=a"}]` + "\n"
+	if string(out) != want {
+		t.Errorf("got %q; want %q", out, want)
+	}
+	for _, args := range [][]string{nil, {"a", "b"}} {
+		if err := runCmd(context.Background(), "cloudflare", fp, "txt-list", "example.com", args); err == nil {
+			t.Errorf("txt-list with %d arg(s): want an error", len(args))
+		}
 	}
 }
 

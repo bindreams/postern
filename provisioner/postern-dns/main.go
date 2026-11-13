@@ -633,12 +633,10 @@ func doTxtSet(ctx context.Context, provider providerOps, zone, name, value strin
 }
 
 // doTxtList prints, as a JSON array of {"fqdn", "value"} objects, every TXT
-// record in the zone whose FQDN starts with prefix (compared case-insensitively).
-// "fqdn" keeps the name's case exactly as the provider returned it (no trailing
-// dot); txt-delete matches names case-insensitively, so case is not load-bearing; "value" is the
-// provider's raw rr.Data, which txt-delete accepts back verbatim (matchTXT
-// compares the raw form first). A caller can therefore delete exactly what it
-// listed. An empty result is "[]", not an error.
+// record in the zone whose FQDN starts with prefix (case-insensitive). "fqdn"
+// has no trailing dot and keeps the provider's case. "value" is the raw
+// rr.Data, which txt-delete accepts verbatim, so a caller can delete exactly
+// what it listed. No match prints "[]".
 func doTxtList(ctx context.Context, provider providerOps, zone, prefix string, w io.Writer) error {
 	all, err := provider.GetRecords(ctx, zone)
 	if err != nil {
@@ -782,10 +780,9 @@ func normalizeTXTData(s string) string {
 }
 
 // matchTXT returns the records from `all` whose RR is a TXT at the given
-// name (compared case-insensitively, as DNS names are) and whose Data equals
-// `text`. To stay safe against TXT values that
-// legitimately contain the byte sequence `" "` mid-string, we accept
-// EITHER the raw rr.Data or its chunk-stripped form; that way:
+// name (case-insensitive) and whose Data equals `text`. To stay safe against
+// TXT values that legitimately contain the byte sequence `" "` mid-string, we
+// accept EITHER the raw rr.Data or its chunk-stripped form; that way:
 //
 //   - Cloudflare's chunked form `<chunk1>" "<chunk2>` matches `text`
 //     after normalization (the bug we have to work around).

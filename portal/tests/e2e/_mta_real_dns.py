@@ -2,17 +2,16 @@
 runs leave behind.
 
 Every run publishes its own ``<selector>._domainkey.<MTA_TEST_DOMAIN>`` record, so concurrent runs share nothing on the
-zone and need no CI concurrency group. A run's selector is ``postern-e2e-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`` in CI and
-``postern-e2e-local-<random>`` elsewhere.
+zone and need no CI concurrency group. A run's selector is
+``postern-e2e-<GITHUB_REPOSITORY_ID>-<GITHUB_RUN_ID>-<GITHUB_RUN_ATTEMPT>`` in CI and ``postern-e2e-local-<random>``
+elsewhere. The repository id keeps another repository's runs on the same zone out of this repository's sweep.
 
 A run that dies before teardown (cancelled job, runner loss) leaves its record behind. The next CI run sweeps those: a
-CI selector is stale when this repo's GitHub reports its run completed or no longer knows it (404: deleted; a fork PR's
-runs belong to this repo, and a fork's own runs have no zone credentials, so they never publish a record), or when it
-is an earlier attempt of this very run. Local selectors carry no run to ask about and are never swept; their owner
+CI selector is stale when this repository's GitHub reports its run completed or no longer knows it (404), or when it is
+an earlier attempt of this very run. Local selectors carry no run to ask about and are never swept; their owner
 removes them.
 
-``python -m tests.e2e._mta_real_selector`` is CI's sweep step; it runs ahead of pytest so a backlog cannot eat the test
-timeout.
+``python -m tests.e2e._mta_real_dns`` is CI's sweep step.
 """
 
 from __future__ import annotations
@@ -34,34 +33,61 @@ from ._helpers import E2E_PROVISIONER_IMAGE
 logger = logging.getLogger(__name__)
 
 SELECTOR_PREFIX = "postern-e2e-"
-_CI_SELECTOR_RE = re.compile(rf"^{re.escape(SELECTOR_PREFIX)}(\d+)-(\d+)$")
+_CI_SELECTOR_RE = re.compile(rf"^{re.escape(SELECTOR_PREFIX)}(\d+)-(\d+)-(\d+)$")
+_RUN_ENV = ("GITHUB_REPOSITORY_ID", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT")
 
 
 # Selectors ============================================================================================================
-def run_selector(run_id: str, run_attempt: str) -> str:
+class RunEnvError(Exception):
+    """The CI run env (repository id, run id, attempt) is partly set or not numeric."""
+
+
+def ci_run_ids(environ: Mapping[str, str]) -> tuple[int, int, int] | None:
+    """``(repo_id, run_id, attempt)`` from the CI env, or None when none of it is set (a local run).
+
+    Setting only some of it, or a non-numeric value, raises ``RunEnvError``: treating a half-set CI env as a local run
+    would publish a record no sweep can attribute.
+    """
+    values = {name: environ.get(name, "").strip() for name in _RUN_ENV}
+    if not any(values.values()):
+        return None
+    unset = [name for name, v in values.items() if not v]
+    if unset:
+        raise RunEnvError("CI run env must be all set or all unset; missing: " + ", ".join(unset))
+    bad = [name for name, v in values.items() if not (v.isascii() and v.isdigit())]
+    if bad:
+        raise RunEnvError("CI run env must be numeric; not a number: " + ", ".join(bad))
+    repo_id, run_id, attempt = (int(values[name]) for name in _RUN_ENV)
+    return repo_id, run_id, attempt
+
+
+def run_selector(environ: Mapping[str, str]) -> str:
     """The DKIM selector for this run (a valid DNS label: lowercase alphanumerics and hyphens)."""
-    if run_id.strip() and run_attempt.strip():
-        return f"{SELECTOR_PREFIX}{int(run_id)}-{int(run_attempt)}"
-    return f"{SELECTOR_PREFIX}local-{secrets.token_hex(4)}"
+    ids = ci_run_ids(environ)
+    if ids is None:
+        return f"{SELECTOR_PREFIX}local-{secrets.token_hex(4)}"
+    return SELECTOR_PREFIX + "-".join(map(str, ids))
 
 
-def parse_ci_selector(selector: str) -> tuple[int, int] | None:
-    """``(run_id, attempt)`` of a CI selector, or None for anything else (local selectors, foreign records)."""
+def parse_ci_selector(selector: str) -> tuple[int, int, int] | None:
+    """``(repo_id, run_id, attempt)`` of a CI selector, or None for anything else (local selectors, foreign records)."""
     m = _CI_SELECTOR_RE.match(selector)
-    return (int(m.group(1)), int(m.group(2))) if m else None
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
 def stale_selectors(
     listing_json: str,
     domain: str,
+    own_repo_id: int,
     own_run_id: int,
     own_attempt: int,
     run_is_finished: Callable[[int], bool],
 ) -> list[tuple[str, str]]:
-    """``(fqdn, value)`` of every listed DKIM record that a crashed run left behind.
+    """``(fqdn, value)`` of every listed DKIM record that a crashed run of this repository left behind.
 
     ``listing_json`` is the output of ``postern-dns txt-list <domain> postern-e2e-``. Each ``fqdn`` is returned exactly
-    as listed; ``txt-delete`` matches names case-insensitively.
+    as listed; ``txt-delete`` matches names case-insensitively. Records of other repositories are skipped: their run
+    ids are not ours to look up.
     """
     suffix = f"._domainkey.{domain.lower().rstrip('.')}"
     stale: list[tuple[str, str]] = []
@@ -73,7 +99,9 @@ def stale_selectors(
         parsed = parse_ci_selector(lowered.removesuffix(suffix))
         if parsed is None:
             continue
-        run_id, attempt = parsed
+        repo_id, run_id, attempt = parsed
+        if repo_id != own_repo_id:
+            continue
         if run_id == own_run_id:
             # A re-run starts only after every earlier attempt has finished.
             is_stale = attempt < own_attempt
@@ -84,12 +112,21 @@ def stale_selectors(
     return stale
 
 
+def warn(message: str) -> None:
+    """Print a GitHub Actions ``::warning::`` annotation, so a failed best-effort step shows on the run page."""
+    escaped = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::warning::{escaped}", flush=True)
+
+
 @contextmanager
-def github_run_finished(repo: str, token: str) -> Iterator[Callable[[int], bool]]:
+def github_run_finished(repo: str, token: str, own_run_id: int) -> Iterator[Callable[[int], bool]]:
     """Yield a ``run_is_finished(run_id)`` backed by the GitHub API.
 
     True when ``repo`` reports the run completed or no longer knows it (404). Any other failure, including a reply that
     is not the expected JSON, counts as not finished: that run's record is left alone and the sweep carries on.
+
+    A token that cannot see runs answers 404 for every id, which would read as "all finished". So the caller's own run,
+    which certainly exists, is looked up first; anything but 200 raises ``RuntimeError``.
     """
     with httpx.Client(
         base_url="https://api.github.com",
@@ -100,6 +137,11 @@ def github_run_finished(repo: str, token: str) -> Iterator[Callable[[int], bool]
         },
         timeout=30.0,
     ) as client:
+        own = client.get(f"/repos/{repo}/actions/runs/{own_run_id}")
+        if own.status_code != 200:
+            raise RuntimeError(
+                f"GitHub answered {own.status_code} for this run ({own_run_id}); the token cannot see runs"
+            )
         seen: dict[int, bool] = {}
 
         def run_is_finished(run_id: int) -> bool:
@@ -112,7 +154,7 @@ def github_run_finished(repo: str, token: str) -> Iterator[Callable[[int], bool]
                         resp.raise_for_status()
                         seen[run_id] = resp.json()["status"] == "completed"
                 except (httpx.HTTPError, ValueError, LookupError, TypeError) as e:
-                    logger.warning("could not look up run %s, leaving its record: %s", run_id, e)
+                    warn(f"could not look up run {run_id}, leaving its record: {e}")
                     seen[run_id] = False
             return seen[run_id]
 
@@ -190,7 +232,7 @@ def postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
     --network bridge (not --network none): the libdns API call needs HTTPS to
     reach the provider's API endpoint. We don't mount the docker socket or pass
     other capabilities -- network access is the only deviation from the safe
-    default (CLAUDE.md global rule about explicit-safety).
+    default.
 
     --entrypoint postern-dns: the image's ENTRYPOINT is the rotation-state
     Python driver, which requires DOMAIN/DNS_PROVIDER and starts the full
@@ -232,32 +274,50 @@ def postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
 
 
 # Sweep ================================================================================================================
+def _still_listed(env: dict[str, str], domain: str, fqdn: str, value: str) -> bool:
+    """Whether the ``(fqdn, value)`` record is still on the zone (names compare case-insensitively)."""
+    listing = postern_dns(env, "txt-list", domain, SELECTOR_PREFIX).stdout
+    return any(e["fqdn"].lower() == fqdn.lower() and e["value"] == value for e in json.loads(listing))
+
+
 def sweep_stale_records(environ: Mapping[str, str]) -> None:
     """Delete DKIM records left by crashed CI runs (best-effort; a failed sweep only leaves clutter).
 
-    Needs ``GITHUB_RUN_ID`` / ``GITHUB_RUN_ATTEMPT`` / ``GITHUB_REPOSITORY`` / ``GITHUB_TOKEN``, i.e. CI. A local run
-    has no run to ask GitHub about and sweeps nothing.
+    Needs the CI run env plus ``GITHUB_REPOSITORY`` and ``GITHUB_TOKEN``. A local run has no run to ask GitHub about
+    and sweeps nothing. Every skip and failure is a ``::warning::`` annotation: the step is ``continue-on-error``, so
+    nothing else would show it.
     """
-    run_id, attempt = environ.get("GITHUB_RUN_ID", ""), environ.get("GITHUB_RUN_ATTEMPT", "")
     repo, token = environ.get("GITHUB_REPOSITORY", ""), environ.get("GITHUB_TOKEN", "")
-    if not (run_id and attempt and repo and token):
-        logger.info("not in CI (no GITHUB_RUN_ID/GITHUB_TOKEN): skipping the stale-record sweep")
-        return
     try:
+        ids = ci_run_ids(environ)
+        if ids is None or not (repo and token):
+            logger.info("not in CI (no GITHUB_RUN_ID/GITHUB_TOKEN): skipping the stale-record sweep")
+            return
+        repo_id, run_id, attempt = ids
         env = resolve_mta_test_env(environ)
         domain = env["MTA_TEST_DOMAIN"]
         listing = postern_dns(env, "txt-list", domain, SELECTOR_PREFIX).stdout
-        with github_run_finished(repo, token) as run_is_finished:
-            stale = stale_selectors(listing, domain, int(run_id), int(attempt), run_is_finished)
+        with github_run_finished(repo, token, run_id) as run_is_finished:
+            stale = stale_selectors(listing, domain, repo_id, run_id, attempt, run_is_finished)
     except Exception as e:  # noqa: BLE001 -- hygiene must not fail the job
-        logger.warning("stale DKIM record sweep skipped: %s", describe_failure(e))
+        warn(f"stale DKIM record sweep skipped: {describe_failure(e)}")
         return
     for fqdn, value in stale:
         logger.info("sweeping stale record %s", fqdn)
         try:
             postern_dns(env, "txt-delete", fqdn, value)
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-            logger.warning("could not sweep stale record %s: %s", fqdn, describe_failure(e))
+            # A concurrent sweeper may have deleted it first; only a record still on the zone is a failure.
+            try:
+                leaked = _still_listed(env, domain, fqdn, value)
+            except Exception as relist_error:  # noqa: BLE001
+                warn(
+                    f"could not sweep stale record {fqdn} ({describe_failure(e)}); "
+                    f"re-listing failed: {describe_failure(relist_error)}"
+                )
+                continue
+            if leaked:
+                warn(f"could not sweep stale record {fqdn}: {describe_failure(e)}")
 
 
 if __name__ == "__main__":

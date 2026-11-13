@@ -445,11 +445,13 @@ def test_directory_switch_runs_lego_run_not_renew(prod_settings, lego_mock, now,
     assert next_state.acme_directory == STAGING
 
 
-def test_directory_switch_keeps_the_other_directorys_account(prod_settings, lego_mock, now, cert_dir):
-    """Lego keys accounts by directory host, so the switch registers a new one and leaves staging's alone."""
+def test_directory_switch_discards_the_other_directorys_account(prod_settings, lego_mock, now, cert_dir):
+    """Changing the directory discards every account, so Lego registers afresh under the new one."""
     staging_account = _register_account(cert_dir, STAGING, "ops@postern.test")
+    registered_at_run = _record_account_presence_at_run(lego_mock, staging_account)
     _advance(_staging_issued(now), prod_settings, lego_mock, now)
-    assert (staging_account / "account.json").exists()
+    assert registered_at_run == [False]
+    assert not staging_account.exists()  # the account Lego registered under the new directory is all that remains
 
 
 def test_directory_switch_ignores_24h_guard_of_the_old_directory(prod_settings, lego_mock, now):
@@ -624,11 +626,16 @@ def test_dropped_renew_trigger_under_an_active_guard_is_logged(settings, lego_mo
     assert "CERT_FORCE_REISSUE" in caplog.text
 
 
-def test_no_cert_with_a_trigger_under_an_active_guard_logs_the_dropped_request(prod_settings, lego_mock, now, caplog):
+def test_no_cert_with_a_trigger_under_an_active_guard_does_not_claim_it_stayed_or_dropped(
+    prod_settings, lego_mock, now, caplog
+):
+    """With no cert on disk the state goes to ISSUING, whose own deferral logs; INSTALLED did not stay."""
     issued = (now - dt.timedelta(hours=1)).isoformat()
     state = _staging_issued(now, state="INSTALLED", last_issued_by_directory={PROD: issued})
-    _advance(state, prod_settings, lego_mock, now, trigger_present=True)
-    assert ".renew-cert request was dropped" in caplog.text
+    state = _advance(state, prod_settings, lego_mock, now, trigger_present=True)
+    assert state.state == "ISSUING"
+    assert "request was dropped" not in caplog.text
+    assert "staying INSTALLED" not in caplog.text
 
 
 def test_drift_with_a_trigger_under_an_active_guard_logs_one_accurate_line(
@@ -742,7 +749,7 @@ def test_full_staging_to_production_switch(settings, prod_settings, lego_mock, n
     assert state.acme_directory == PROD
     lego_mock.issue_or_renew.assert_called_once()
     assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-    assert (staging_account / "account.json").exists()
+    assert not staging_account.exists()  # the switch discarded it
 
 
 # Install under the directory lego ran with ============================================================================
@@ -787,7 +794,6 @@ def test_account_path_of_a_host_with_a_port_replaces_the_colon(prod_settings, le
 
 STEP_CA_OLD = "https://ca.internal/acme/old/directory"
 STEP_CA_NEW = "https://ca.internal/acme/new/directory"
-STEP_CA_HOST = "ca.internal"
 
 
 def _record_account_presence_at_run(lego_mock: MagicMock, account: Path, *, fail: bool = False) -> list[bool]:
@@ -816,77 +822,55 @@ def _step_ca_switch(prod_settings: CertSettings, now: dt.datetime) -> cert_state
         acme_directory=STEP_CA_OLD,
         acme_account_email="ops@postern.test",
         last_issued_by_directory={STEP_CA_OLD: issued},
-        account_directory_by_host={STEP_CA_HOST: STEP_CA_OLD},
     )
 
 
-def test_switch_between_directories_on_one_host_moves_the_old_account_aside(prod_settings, lego_mock, now, cert_dir):
+def test_switch_between_directories_on_one_host_discards_the_old_account(prod_settings, lego_mock, now, cert_dir):
     """Lego keys accounts by host alone, so the old directory's account would be reused for the new one."""
     old_account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
     registered_at_run = _record_account_presence_at_run(lego_mock, old_account)
     _advance(_step_ca_switch(prod_settings, now), prod_settings, lego_mock, now)
     assert registered_at_run == [False]  # gone before Lego ran, so it registers afresh
-    asides = list((cert_dir / "lego" / "accounts-aside").iterdir())
-    assert len(asides) == 1
-    assert (asides[0] / "account.json").exists()
 
 
 def test_retry_after_a_failed_switch_attempt_keeps_the_account_the_attempt_registered(
     prod_settings, lego_mock, now, cert_dir
 ):
-    """The failed attempt already registered an account under the new directory; moving it aside again is waste."""
+    """The failed attempt already registered an account under the new directory; discarding it again is waste."""
     state = _step_ca_switch(prod_settings, now)
     state = dataclasses.replace(
         state,
         last_issued_by_directory={
             **state.last_issued_by_directory, STEP_CA_NEW: (now - dt.timedelta(days=2)).isoformat()
         },
-        account_directory_by_host={STEP_CA_HOST: STEP_CA_NEW},
     )
     account = _register_account(cert_dir, STEP_CA_NEW, "ops@postern.test")
     _advance(state, prod_settings, lego_mock, now)
     assert (account / "account.json").exists()
-    assert not (cert_dir / "lego" / "accounts-aside").exists()
-
-
-def test_switch_between_hosts_leaves_accounts_alone(prod_settings, lego_mock, now, cert_dir):
-    old_account = _register_account(cert_dir, STAGING, "ops@postern.test")
-    state = _staging_issued(now, account_directory_by_host={"acme-staging-v02.api.letsencrypt.org": STAGING})
-    _advance(state, prod_settings, lego_mock, now)
-    assert (old_account / "account.json").exists()
-    assert not (cert_dir / "lego" / "accounts-aside").exists()
 
 
 def test_reissue_without_a_switch_leaves_the_account_alone(settings, lego_mock, now, cert_dir):
     account = _register_account(cert_dir, STAGING, "ops@postern.test")
-    state = cert_state.CertState(
-        state="ISSUING",
-        acme_directory=STAGING,
-        acme_account_email="ops@postern.test",
-        account_directory_by_host={"acme-staging-v02.api.letsencrypt.org": STAGING},
-    )
+    state = cert_state.CertState(state="ISSUING", acme_directory=STAGING, acme_account_email="ops@postern.test")
     _advance(state, settings, lego_mock, now)
     assert (account / "account.json").exists()
 
 
-def test_switch_away_to_another_host_and_on_to_the_first_hosts_new_directory_moves_its_account_aside(
-    prod_settings, lego_mock, now, cert_dir
-):
-    """A (host H1) -> S (host H2, fails) -> B (host H1): the latest attempt is on H2, but H1's account is still A's."""
-    h1_account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
+def test_switch_through_a_failing_directory_discards_the_account_at_both_steps(prod_settings, lego_mock, now, cert_dir):
+    """A -> S (fails after registering) -> B on one host: S's registration is not B's, so B starts clean too."""
+    account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
     state = _step_ca_switch(prod_settings, now)
     prod_settings.cert_acme_directory = STAGING
-    on_other_host = _record_account_presence_at_run(lego_mock, h1_account, fail=True)
+    first = _record_account_presence_at_run(lego_mock, account, fail=True)
     state = _advance(state, prod_settings, lego_mock, now)
-    assert on_other_host == [True]  # a different host: H1's account stays where it is
-    assert h1_account.exists()
+    assert first == [False]
     assert state.consecutive_failures == 1
+    account = _register_account(cert_dir, STAGING, "ops@postern.test")  # what S's failed run left behind
 
     prod_settings.cert_acme_directory = STEP_CA_NEW
-    present = _record_account_presence_at_run(lego_mock, h1_account)
+    second = _record_account_presence_at_run(lego_mock, account)
     _advance(state, prod_settings, lego_mock, now + dt.timedelta(minutes=5))
-    assert present == [False]
-    assert len(list((cert_dir / "lego" / "accounts-aside").iterdir())) == 1
+    assert second == [False]
 
 
 def test_failed_switch_then_revert_does_not_reuse_the_account_the_failed_attempt_registered(
@@ -895,10 +879,11 @@ def test_failed_switch_then_revert_does_not_reuse_the_account_the_failed_attempt
     """A -> B (same host, Lego registers B's account, then fails) -> config back to A: B's account is not A's."""
     account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
     state = _step_ca_switch(prod_settings, now)
-    _record_account_presence_at_run(lego_mock, account, fail=True)
+    first = _record_account_presence_at_run(lego_mock, account, fail=True)
     state = _advance(state, prod_settings, lego_mock, now)  # configured STEP_CA_NEW
+    assert first == [False]
     assert state.consecutive_failures == 1
-    assert state.account_directory_by_host == {STEP_CA_HOST: STEP_CA_NEW}
+    account = _register_account(cert_dir, STEP_CA_NEW, "ops@postern.test")  # what B's failed run left behind
 
     prod_settings.cert_acme_directory = STEP_CA_OLD
     present = _record_account_presence_at_run(lego_mock, account)
@@ -907,28 +892,34 @@ def test_failed_switch_then_revert_does_not_reuse_the_account_the_failed_attempt
     assert present == [False]
 
 
-def test_attempt_records_the_directory_that_owns_the_hosts_account_before_lego_runs(
-    prod_settings, lego_mock, now, cert_dir
-):
-    state = _step_ca_switch(prod_settings, now)
-    account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
-    _record_account_presence_at_run(lego_mock, account, fail=True)
-    state = _advance(state, prod_settings, lego_mock, now)
-    assert state.consecutive_failures == 1
-    assert state.account_directory_by_host == {STEP_CA_HOST: STEP_CA_NEW}
+def test_account_reset_log_names_the_directory(prod_settings, lego_mock, now, cert_dir, caplog):
+    caplog.set_level("INFO", logger=cert_driver.logger.name)
+    _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
+    _advance(_step_ca_switch(prod_settings, now), prod_settings, lego_mock, now)
+    assert "ACME directory changed; resetting lego account dir" in caplog.text
 
 
-def test_state_without_the_account_directory_map_moves_nothing(prod_settings, lego_mock, now, cert_dir):
-    """State from before the map existed: no record of whose account it is, so it is left alone (documented limit)."""
-    account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
-    state = dataclasses.replace(_step_ca_switch(prod_settings, now), account_directory_by_host={})
-    state = _advance(state, prod_settings, lego_mock, now)
-    assert (account / "account.json").exists()
-    assert not (cert_dir / "lego" / "accounts-aside").exists()
-    assert state.account_directory_by_host == {STEP_CA_HOST: STEP_CA_NEW}
+def test_account_path_ignores_userinfo_in_the_directory_url(prod_settings, lego_mock, now, cert_dir):
+    """Lego names the account directory by the URL's host and port, without `user:pass@`."""
+    prod_settings.cert_acme_directory = "https://user:pass@ca.internal:9000/acme/dir"
+    account = cert_dir / "lego" / "accounts" / "ca.internal_9000" / "ops@postern.test"
+    account.mkdir(parents=True)
+    (account / "account.json").write_text("{}")
+    _lego_cert(cert_dir, prod_settings)
+    state = cert_state.CertState(state="RENEWING", acme_directory=prod_settings.cert_acme_directory)
+    _advance(state, prod_settings, lego_mock, now)
+    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "renew"
 
 
 # ACME account email change ============================================================================================
+def test_email_change_log_names_the_email(settings, lego_mock, now, cert_dir, caplog):
+    caplog.set_level("INFO", logger=cert_driver.logger.name)
+    _register_account(cert_dir, STAGING, "previous@old.example")
+    state = cert_state.CertState(state="ISSUING", acme_account_email="previous@old.example", acme_directory=STAGING)
+    _advance(state, settings, lego_mock, now)
+    assert "ACME account email changed; resetting lego account dir" in caplog.text
+
+
 def test_email_change_resets_lego_account_dir(settings, lego_mock, now, cert_dir):
     old_account = _register_account(cert_dir, STAGING, "previous@old.example")
     state = cert_state.CertState(

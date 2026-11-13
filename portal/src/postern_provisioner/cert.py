@@ -165,6 +165,9 @@ def advance_cert_state(
         # Checked here, not after leaving INSTALLED: otherwise every tick of an active guard would flip the state
         # to ISSUING and back, and the healthcheck with it.
         if not _rate_limit_guard_clear(state, settings, now):
+            # INSTALLED reports a cert on disk: with none, ISSUING (whose deferral below logs and holds it) stands in.
+            if live is None:
+                return _begin_issuance(state, "ISSUING", now)
             if trigger_present:
                 logger.warning(
                     "cert: 24h rate-limit guard active; the .renew-cert request was dropped. "
@@ -174,8 +177,7 @@ def advance_cert_state(
                 logger.warning(
                     "cert: 24h rate-limit guard active; staying INSTALLED. Set CERT_FORCE_REISSUE=true to override."
                 )
-            # INSTALLED reports a cert on disk: with none, ISSUING (whose deferral below holds it) stands in.
-            return state if live is not None else _begin_issuance(state, "ISSUING", now)
+            return state
         logger.info("cert: %s; transitioning to %s", reason, target)
         if trigger_present and directory_drift:
             logger.info("cert: .renew-cert trigger is served by this reissue")
@@ -193,28 +195,26 @@ def advance_cert_state(
                 return state
             return replace(state, state="INSTALLED")
 
-        # Accounts are keyed by directory host and email: an email change resets them, and a directory that shares a
-        # host with the one that last registered the account must not reuse it.
-        if bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email:
-            _reset_lego_account_dir()
-        _move_aside_account_of_another_directory(state, settings, now)
+        # Lego keys an account by directory host and email, so a directory on a host shared with the previous one would
+        # reuse an account registered with the other URL: either change discards every account.
+        email_changed = bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email
+        # Failures counted under another directory say nothing about this one.
+        under_new_directory = _latest_attempt_directory(state) not in ("", settings.cert_acme_directory)
+        if email_changed or under_new_directory:
+            _reset_lego_account_dir(
+                "ACME account email and directory" if email_changed and under_new_directory else
+                "ACME account email" if email_changed else "ACME directory"
+            )
 
         # `renew` is a no-op on a fresh cert and fatal without a registered account or a cert under Lego's path (an
         # adopted BYO cert has neither), so it is only for a due cert Lego itself issued.
         renewable = _lego_account_registered(settings) and _lego_cert_exists(settings)
         action = "run" if state.state == "ISSUING" or directory_drift or not renewable else "renew"
-        # Failures counted under another directory say nothing about this one.
-        under_new_directory = _latest_attempt_directory(state) not in ("", settings.cert_acme_directory)
         # Record the attempt BEFORE Lego: defends rate limits even on post-issuance failures (rename, etc.).
         attempt_state = replace(
             state,
             last_attempt_iso=now.isoformat(),
             last_issued_by_directory={**state.last_issued_by_directory, settings.cert_acme_directory: now.isoformat()},
-            # Before Lego too: a failed run may already have registered an account for this directory.
-            account_directory_by_host={
-                **state.account_directory_by_host,
-                _account_host(settings.cert_acme_directory): settings.cert_acme_directory
-            },
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
@@ -320,8 +320,9 @@ def _latest_attempt_directory(state: cert_state.CertState) -> str:
 
 
 def _account_host(directory: str) -> str:
-    """Lego keeps accounts at `<path>/accounts/<server host, ':' -> '_'>/<email>/account.json`."""
-    return urlparse(directory).netloc.replace(":", "_")
+    """Lego keeps accounts at `<path>/accounts/<url.Host, ':' -> '_'>/<email>/account.json`; Go's `url.Host` is the
+    authority without userinfo, with the port and IPv6 brackets as written (lego v4.35.2, cmd/accounts_storage.go)."""
+    return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
 def _lego_server_dir(settings: CertSettings) -> Path:
@@ -334,27 +335,6 @@ def _lego_account_registered(settings: CertSettings) -> bool:
 
 def _lego_cert_exists(settings: CertSettings) -> bool:
     return (LEGO_PATH / "certificates" / f"{settings.domain}.crt").exists()
-
-
-def _move_aside_account_of_another_directory(
-    state: cert_state.CertState, settings: CertSettings, now: dt.datetime
-) -> None:
-    """Lego names an account directory by the server's host alone, so two directories on one host (a private CA
-    serving several ACME paths) share one: `run` would reuse the account registered with the other directory's URL,
-    which this one does not know. When the state records another directory as the host's account owner, move the
-    account aside so Lego registers afresh. State without a record (written before the map existed) moves nothing.
-    A retry after a failed run moves the fresh account aside only if another directory has run since; Lego
-    re-registers on every run, so a needless move costs nothing."""
-    owner = state.account_directory_by_host.get(_account_host(settings.cert_acme_directory))
-    if owner is None or owner == settings.cert_acme_directory:
-        return
-    account = _lego_server_dir(settings) / settings.cert_acme_email
-    if not account.exists():
-        return
-    aside = LEGO_PATH / "accounts-aside" / f"{account.parent.name}-{settings.cert_acme_email}-{now:%Y%m%dT%H%M%SZ}"
-    logger.info("cert: Lego account on this host belongs to %s; setting it aside at %s", owner, aside)
-    aside.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(account), str(aside))
 
 
 def _rate_limit_guard_clear(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> bool:
@@ -404,10 +384,10 @@ def _failed_or_increment(state: cert_state.CertState, settings: CertSettings, no
     return replace(state, consecutive_failures=failures, last_attempt_iso=now.isoformat())
 
 
-def _reset_lego_account_dir() -> None:
+def _reset_lego_account_dir(changed: str) -> None:
     accounts = LEGO_PATH / "accounts"
     if accounts.exists():
-        logger.info("cert: ACME account email changed; resetting lego account dir")
+        logger.info("cert: %s changed; resetting lego account dir", changed)
         try:
             shutil.rmtree(accounts)
         except OSError as e:

@@ -39,8 +39,7 @@ def test_doh_backend_available():
 def test_has_ech_param_against_real_dnspython_rdata():
     # Exercise _has_ech_param against REAL dnspython HTTPS rdata (not a mock), so the
     # rr.params key type and the ech-value attribute shape are pinned to the library.
-    # dnspython >= 2.9 validates the ECHConfigList, so the value must be well-formed
-    # ("AAQAAAAA" = 2-byte length prefix 4, then 4 bytes); "AAAA" is rejected.
+    # dnspython >= 2.9 validates the ECHConfigList, so use a well-formed value (see VALID_ECH).
     with_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech="AAQAAAAA"')
     without_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . alpn="h2"')
     assert ech._has_ech_param(with_ech) is True
@@ -67,15 +66,15 @@ def _https_rdata_wire(*params: tuple[int, bytes]) -> bytes:
     return struct.pack("!HB", 1, 0) + b"".join(struct.pack("!HH", key, len(value)) + value for key, value in params)
 
 
-def _raw_reply(*rrs: tuple[int, bytes]):
-    """A reply whose answer section holds the given (rrtype, rdata bytes) records verbatim."""
+def _raw_reply(*rrs: tuple[int, bytes], owner: bytes = b"\xc0\x0c"):
+    """A reply whose answer section holds the given (rrtype, rdata bytes) records verbatim,
+    all owned by `owner` (wire form; default: a pointer to the question name)."""
 
     def build(query: dns.message.Message) -> bytes:
         head = bytearray(dns.message.make_response(query).to_wire())
         head[6:8] = struct.pack("!H", len(rrs))
         body = b"".join(
-            b"\xc0\x0c" + struct.pack("!HHIH", rrtype, dns.rdataclass.IN, 300, len(rdata)) + rdata
-            for rrtype, rdata in rrs
+            owner + struct.pack("!HHIH", rrtype, dns.rdataclass.IN, 300, len(rdata)) + rdata for rrtype, rdata in rrs
         )
         return bytes(head) + body
 
@@ -116,8 +115,7 @@ def _serve_doh(monkeypatch, body_for, *, status: int = 200):
     dnspython's own).
 
     `body_for(query)` returns the DNS reply wire for the parsed query (or raw bytes to
-    serve verbatim, or raises to fail the transport). Only the network is replaced: the
-    request, the status check and the reply parsing all run for real."""
+    serve verbatim, or raises to fail the transport)."""
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = body_for(dns.message.from_wire(request.content))
@@ -156,22 +154,33 @@ def test_absent_when_wire_reply_ech_is_unusable(monkeypatch, value):
     assert ech.check_apex_ech("postern.test", DOH_URL) == "absent"
 
 
-def test_present_when_valid_ech_sits_beside_an_unrelated_bad_param(monkeypatch):
-    # dnspython rejects the whole reply over the ipv6hint, but a usable ech= is there.
+def test_absent_when_valid_ech_sits_beside_an_unrelated_bad_param(monkeypatch):
+    # RFC 9460 s2.2: a malformed record makes the client discard the whole HTTPS RRset, so a
+    # usable ech= in the same record is not served.
     build = _raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, ECH, BAD_IPV6HINT)))
     _assert_dnspython_rejects(build)
     _serve_doh(monkeypatch, build)
-    assert ech.check_apex_ech("postern.test", DOH_URL) == "present"
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "absent"
 
 
-def test_present_when_valid_ech_is_in_another_record_than_the_bad_one(monkeypatch):
+def test_absent_when_valid_ech_is_in_another_record_than_the_bad_one(monkeypatch):
+    # Same RRset, so the rejected record takes the valid one down with it.
     build = _raw_reply(
         (HTTPS_TYPE, _https_rdata_wire(ALPN_H2, BAD_IPV6HINT)),
         (HTTPS_TYPE, _https_rdata_wire(ECH)),
     )
     _assert_dnspython_rejects(build)
     _serve_doh(monkeypatch, build)
-    assert ech.check_apex_ech("postern.test", DOH_URL) == "present"
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "absent"
+
+
+def test_inconclusive_when_the_rejected_https_record_is_owned_by_an_unrelated_name(monkeypatch):
+    # An HTTPS record for another name is not the RRset this query asked for.
+    other = b"\x09elsewhere\x04test\x00"
+    build = _raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, BAD_IPV6HINT)), owner=other)
+    _assert_dnspython_rejects(build)
+    _serve_doh(monkeypatch, build)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
 
 
 def test_absent_when_an_unrelated_bad_param_and_no_ech(monkeypatch):
@@ -197,13 +206,13 @@ def test_inconclusive_when_only_a_non_https_record_is_bad(monkeypatch):
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
 
 
-def test_inconclusive_when_svcparam_framing_overruns_the_record(monkeypatch):
-    # A param claiming more bytes than the record holds: ech= (if any) cannot be located.
+def test_absent_when_svcparam_framing_overruns_the_record(monkeypatch):
+    # A malformed SvcParam list is a rejected record of the answer RRset, whatever it would have held.
     rdata = struct.pack("!HB", 1, 0) + struct.pack("!HH", int(ParamKey.IPV6HINT), 40) + b"\x00" * 3
     build = _raw_reply((HTTPS_TYPE, rdata))
     _assert_dnspython_rejects(build)
     _serve_doh(monkeypatch, build)
-    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "absent"
 
 
 def test_inconclusive_when_reply_is_truncated(monkeypatch):
@@ -320,9 +329,7 @@ def _record_transport(monkeypatch):
 
 
 def test_exchange_uses_dnspythons_transport_and_ignores_the_environment(monkeypatch):
-    # An env proxy must not steer the DoH lookup (the Client's trust_env), nor may
-    # SSL_CERT_FILE / SSL_CERT_DIR (the transport builds the SSL context, so it needs
-    # trust_env=False itself). The transport is the one dnspython builds (its resolver/bootstrap).
+    # Env proxy and SSL_CERT_* must not steer the lookup: trust_env=False on both client and transport.
     seen = _spy_on_https(monkeypatch)
     transport_kwargs, built = _record_transport(monkeypatch)
     assert ech.check_apex_ech("postern.test", DOH_URL, timeout=2.5) == "inconclusive"
@@ -417,3 +424,25 @@ def test_failed_exchange_logs_its_cause_at_warning(monkeypatch, caplog):
     caplog.set_level(logging.WARNING, logger="postern.ech")
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
     assert "doh down" in caplog.text
+
+
+def test_reply_without_https_records_logs_why_it_is_inconclusive(monkeypatch, caplog):
+    _serve_doh(monkeypatch, lambda query: dns.message.make_response(query).to_wire())
+    caplog.set_level(logging.DEBUG, logger="postern.ech")
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+    assert "postern.test: reply has no HTTPS records (rcode=0); inconclusive" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "build,verdict", [
+        (_raw_reply((HTTPS_TYPE, _https_rdata_wire(ALPN_H2, BAD_IPV6HINT))), "absent"),
+        (_raw_reply((int(dns.rdatatype.A), b"\x01\x02\x03")), "inconclusive"),
+        (_answering(_REJECTED_ECH_REPLY, id_xor=1), "inconclusive"),
+    ],
+    ids=["rejected-https", "bad-elsewhere", "other-query"]
+)
+def test_unparsed_reply_logs_its_verdict_and_reason(monkeypatch, caplog, build, verdict):
+    _serve_doh(monkeypatch, build)
+    caplog.set_level(logging.DEBUG, logger="postern.ech")
+    assert ech.check_apex_ech("postern.test", DOH_URL) == verdict
+    assert f"unparsed reply classified {verdict}: " in caplog.text

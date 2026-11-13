@@ -43,10 +43,8 @@ DOCKERFILES = (
     "mta/Dockerfile", "provisioner/Dockerfile", "shadowsocks/Dockerfile", "portal/tests/e2e/ssclient.Dockerfile"
 )
 
-# Run inside the portal image. Its TLS clients take their trust anchors from the image's
-# system CA bundle, not from certifi: dnspython's DoH client (httpx2/httpcore2), the
-# MTA-STS policy fetch (urllib, mta/dns.py), and the `postern doctor` / cli.py TLS probes
-# (ssl.create_default_context).
+# Run inside the portal image: its TLS clients (DoH via httpcore2, urllib, ssl default
+# contexts) trust the image's system CA bundle, not certifi.
 _IMAGE_CA_PROBE = """
 import hashlib, json, ssl
 import httpcore2
@@ -55,7 +53,7 @@ def fingerprints(ctx):
     return sorted(hashlib.sha256(der).hexdigest().upper() for der in ctx.get_ca_certs(binary_form=True))
 
 print(json.dumps({
-    "httpcore2 default context (DoH)": fingerprints(httpcore2.default_ssl_context()),
+    "httpcore2 default context (DoH)": fingerprints(httpcore2.default_ssl_context(_trust_env=False)),
     "ssl.create_default_context (urllib, TLS probes)": fingerprints(ssl.create_default_context()),
 }))
 """
@@ -64,8 +62,7 @@ print(json.dumps({
 @pytest.mark.e2e
 def test_portal_image_trust_store_excludes_compromised_chain_roots():
     """The CA bundle the portal image's own HTTPS clients verify against, measured by
-    running them in the built image (build local/postern-portal-test first). A source
-    grep of one library cannot see the base image's bundle going stale."""
+    running them in the built image (build local/postern-portal-test first)."""
     result = subprocess.run(
         [
             "docker", "run", "--rm", "--network", "none", "--entrypoint", "python", E2E_PORTAL_IMAGE, "-c",

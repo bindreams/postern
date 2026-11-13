@@ -4,8 +4,7 @@ Packages raised for security advisories carry their floor in pyproject.toml, not
 in whatever uv.lock happens to pin: a hand-edited or re-resolved lock that slips below
 it fails here. Transitive packages are floored through `[tool.uv] constraint-dependencies`
 (the lock alone says nothing about them to a later resolution); direct ones in
-`[project] dependencies`. The numbers live in pyproject.toml; ADVISORY_FLOORS pins the
-advisory ones so a floor cannot be loosened there.
+`[project] dependencies`. The numbers live in pyproject.toml.
 """
 from __future__ import annotations
 
@@ -19,8 +18,7 @@ from packaging.version import Version
 
 PORTAL = Path(__file__).resolve().parent.parent
 
-# Packages raised for advisories, at the versions that fixed them: pyproject.toml must not
-# loosen a floor below these (a lock bump alone would otherwise be the only guard).
+# Advisory fix versions; pyproject.toml must not loosen below these.
 ADVISORY_FLOORS = {
     "anyio": Version("4.14.2"),
     "urllib3": Version("2.8.0"),
@@ -29,8 +27,6 @@ ADVISORY_FLOORS = {
     "idna": Version("3.15"),
     "dnspython": Version("2.9.2"),
 }
-# Of those, the ones that are transitive (every one but the direct dependency): floored through
-# `constraint-dependencies`.
 ADVISORY_TRANSITIVES = ADVISORY_FLOORS.keys() - {"dnspython"}
 
 
@@ -50,16 +46,25 @@ def _lower_bounds(specs: list[str]) -> dict[str, Version]:
 
 
 def _declared_floors() -> dict[str, Version]:
+    """Package -> the highest floor declared across dependencies and constraint-dependencies."""
     pyproject = _pyproject()
-    return {
-        **_lower_bounds(pyproject["project"]["dependencies"]),
-        **_lower_bounds(pyproject["tool"]["uv"].get("constraint-dependencies", [])),
-    }
+    floors: dict[str, Version] = {}
+    for bounds in (
+        _lower_bounds(pyproject["project"]["dependencies"]),
+        _lower_bounds(pyproject["tool"]["uv"].get("constraint-dependencies", [])),
+    ):
+        for name, version in bounds.items():
+            floors[name] = max(version, floors.get(name, version))
+    return floors
 
 
-def _locked_versions() -> dict[str, Version]:
+def _locked_versions() -> dict[str, list[Version]]:
+    """Package -> every version uv.lock holds for it (a lock may hold several)."""
     lock = tomllib.loads((PORTAL / "uv.lock").read_text())
-    return {pkg["name"]: Version(pkg["version"]) for pkg in lock["package"]}
+    locked: dict[str, list[Version]] = {}
+    for pkg in lock["package"]:
+        locked.setdefault(canonicalize_name(pkg["name"]), []).append(Version(pkg["version"]))
+    return locked
 
 
 def test_advisory_transitives_are_floored_by_uv_constraints():
@@ -74,4 +79,4 @@ def test_advisory_floor_is_not_loosened(package, floor):
 
 @pytest.mark.parametrize("package,floor", sorted(_declared_floors().items()))
 def test_lock_meets_declared_floor(package, floor):
-    assert _locked_versions()[package] >= floor
+    assert min(_locked_versions()[package]) >= floor

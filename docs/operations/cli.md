@@ -46,7 +46,7 @@ docker compose exec portal postern connection add alice@example.com "phone" --pl
 when the front serves it, else falls back to plaintext), or `always`
 (fail-closed — refuses to connect if ECH is unavailable). `--ech always`
 self-checks the front over DoH before creating the connection: refuses if the
-front is confirmed not serving ECH (no `ech=`, or an empty or malformed one), warns and proceeds if inconclusive. See
+front is confirmed not serving ECH, warns and proceeds if inconclusive. See
 [Enabling ECH](../deployment/edge.md#enabling-ech).
 
 ```bash
@@ -151,7 +151,7 @@ Check whether the front actually serves Encrypted Client Hello — see [Enabling
 
 ### postern ech verify
 
-Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present — always runs, independent of any connection's ECH mode. Exits 0 when present, 1 when absent (no `ech=`, or an empty or malformed one), 2 when inconclusive (no record yet, DoH unreachable, or an unreadable reply).
+Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present — always runs, independent of any connection's ECH mode. Exits 0 when present, 1 when absent (no usable `ech=`: none, an empty or malformed one, or a malformed HTTPS record, which makes clients discard the whole record set), 2 when inconclusive (no record yet, DoH unreachable, or an unreadable reply).
 
 ### postern ech show
 

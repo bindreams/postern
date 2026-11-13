@@ -342,7 +342,7 @@ jobs:
       # to this step; the tests never see it.
       - name: Sweep DKIM records left by crashed runs
         continue-on-error: true
-        run: uv run python -m tests.e2e.test_mta_real
+        run: uv run python -m tests.e2e._mta_real_selector
         working-directory: portal
         env:
           GITHUB_TOKEN: ${{ github.token }}

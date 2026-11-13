@@ -33,7 +33,6 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-import sys
 import time
 from collections.abc import Iterator
 
@@ -44,8 +43,7 @@ import pytest
 # postern is installed via `uv sync` in CI; locally it must be available too.
 from postern.mta import dnssec as mta_dnssec
 
-from ._helpers import E2E_PROVISIONER_IMAGE
-from ._mta_real_selector import SELECTOR_PREFIX, github_run_finished, run_selector, stale_selectors
+from ._mta_real_selector import postern_dns, run_selector
 
 logger = logging.getLogger(__name__)
 
@@ -82,82 +80,6 @@ def _generate_test_pubkey_b64() -> str:
     )
     import base64
     return base64.b64encode(spki).decode("ascii")
-
-
-def _provider_env_dict(env: dict[str, str]) -> list[str]:
-    """Render `-e KEY=VAL` args for `docker run` based on the resolved env."""
-    pass_through = (
-        "DNS_PROVIDER",
-        "CLOUDFLARE_API_TOKEN",
-        "AWS_REGION",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "GANDI_API_TOKEN",
-        "DO_AUTH_TOKEN",
-        "OVH_ENDPOINT",
-        "OVH_APPLICATION_KEY",
-        "OVH_APPLICATION_SECRET",
-        "OVH_CONSUMER_KEY",
-        "HETZNER_API_TOKEN",
-        "LINODE_TOKEN",
-        "NAMECHEAP_API_KEY",
-        "NAMECHEAP_API_USER",
-        "NAMECHEAP_CLIENT_IP",
-    )
-    args: list[str] = []
-    for k in pass_through:
-        v = env.get(k) if k in env else os.environ.get(k, "").strip()
-        if v:
-            args.extend(("-e", f"{k}={v}"))
-    # DNS_PROVIDER comes from the test fixture as MTA_TEST_DNS_PROVIDER;
-    # postern-dns reads DNS_PROVIDER. Bridge the name here.
-    args.extend(("-e", f"DNS_PROVIDER={env['MTA_TEST_DNS_PROVIDER']}"))
-    return args
-
-
-def _postern_dns(env: dict[str, str], *args: str) -> subprocess.CompletedProcess:
-    """Run the postern-dns binary in a one-off ``local/postern-provisioner-test`` container.
-
-    --network bridge (not --network none): the libdns API call needs HTTPS to
-    reach the provider's API endpoint. We don't mount the docker socket or pass
-    other capabilities -- network access is the only deviation from the safe
-    default (CLAUDE.md global rule about explicit-safety).
-
-    --entrypoint postern-dns: the image's ENTRYPOINT is the rotation-state
-    Python driver, which requires DOMAIN/DNS_PROVIDER and starts the full
-    state machine. We just want the libdns wrapper, so we bypass the
-    entrypoint and exec the binary directly.
-    """
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--network",
-        "bridge",
-        "--entrypoint",
-        "postern-dns",
-        *_provider_env_dict(env),
-        E2E_PROVISIONER_IMAGE,
-        *args,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=120)
-    except subprocess.CalledProcessError as e:
-        # Surface the captured streams unconditionally on failure so
-        # postern-dns's stderr diagnostics survive pytest's rendering.
-        sys.stderr.write(
-            f"\n--- _postern_dns({args!r}) FAILED stdout ---\n{e.stdout}\n--- stderr ---\n{e.stderr}\n--- end ---\n"
-        )
-        sys.stderr.flush()
-        raise
-    # Even on success, postern-dns may emit warnings on stderr (the
-    # idempotency-recovery path on txt-set, for example). Surface those
-    # so they appear in the test log next to the operation that produced
-    # them.
-    if result.stderr:
-        sys.stderr.write(f"\n--- _postern_dns({args[:2]!r}, ...) stderr ---\n{result.stderr}--- end ---\n")
-        sys.stderr.flush()
-    return result
 
 
 def _resolve_txt_eventually(
@@ -198,34 +120,6 @@ def _resolve_txt_eventually(
     return last_state
 
 
-def _sweep_stale_records(env: dict[str, str]) -> None:
-    """Delete DKIM records left by crashed CI runs (best-effort; a failed sweep only leaves clutter).
-
-    Needs ``GITHUB_RUN_ID`` / ``GITHUB_RUN_ATTEMPT`` / ``GITHUB_REPOSITORY`` / ``GITHUB_TOKEN``, i.e. CI. A local run
-    has no run to ask GitHub about and sweeps nothing. CI runs it as its own step ahead of pytest (``__main__`` below),
-    so a backlog cannot eat the test timeout.
-    """
-    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
-    repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", "")
-    if not (run_id and attempt and repo and token):
-        logger.info("not in CI (no GITHUB_RUN_ID/GITHUB_TOKEN): skipping the stale-record sweep")
-        return
-    try:
-        domain = env["MTA_TEST_DOMAIN"]
-        listing = _postern_dns(env, "txt-list", domain, SELECTOR_PREFIX).stdout
-        with github_run_finished(repo, token) as run_is_finished:
-            stale = stale_selectors(listing, domain, int(run_id), int(attempt), run_is_finished)
-    except Exception as e:  # noqa: BLE001 -- hygiene must not fail the test run
-        logger.warning("stale DKIM record sweep skipped: %s", e)
-        return
-    for fqdn, value in stale:
-        logger.info("sweeping stale record %s", fqdn)
-        try:
-            _postern_dns(env, "txt-delete", fqdn, value)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
-            logger.warning("could not sweep stale record %s: %s", fqdn, getattr(e, "stderr", None) or e)
-
-
 # Fixtures =============================================================================================================
 @pytest.fixture(scope="module")
 def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, str, str]]:
@@ -241,14 +135,14 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
     record_value = f"v=DKIM1; k=rsa; p={pubkey}"
     propagation = float(mta_test_env["MTA_TEST_DNS_PROPAGATION_SECONDS"])
 
-    _postern_dns(mta_test_env, "txt-set", fqdn, record_value)
+    postern_dns(mta_test_env, "txt-set", fqdn, record_value)
 
     # Wait for the record to be visible via public resolvers; surface the wait
     # time so flakes have actionable diagnostics.
     seen = _resolve_txt_eventually(fqdn, expected_substring=pubkey, timeout=propagation + 60)
     if not seen or not any(pubkey in t for t in seen):
         try:
-            _postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
+            postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
         except subprocess.CalledProcessError:
             pass
         pytest.fail(
@@ -262,7 +156,7 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
         yield (SELECTOR, fqdn, pubkey)
     finally:
         try:
-            _postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
+            postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
         except subprocess.CalledProcessError as e:
             logger.error(
                 "txt-delete cleanup of %s FAILED -- manual cleanup may be required on the test domain: %s",
@@ -291,14 +185,14 @@ def test_libdns_provider_round_trip(
     # tests in this module; calling delete here first lets the "absence"
     # assertion run with the propagation budget we already have.
     record_value = f"v=DKIM1; k=rsa; p={pubkey}"
-    _postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
+    postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
     propagation = float(mta_test_env["MTA_TEST_DNS_PROPAGATION_SECONDS"])
     txts_after = _resolve_txt_eventually(fqdn, expected_substring=None, timeout=propagation + 60)
     assert txts_after is None or not any(pubkey in t for t in txts_after
                                          ), (f"DKIM TXT still resolves at {fqdn} after txt-delete: {txts_after!r}")
 
     # Re-publish so the rest of the module's tests still see the record.
-    _postern_dns(mta_test_env, "txt-set", fqdn, record_value)
+    postern_dns(mta_test_env, "txt-set", fqdn, record_value)
     re_seen = _resolve_txt_eventually(fqdn, expected_substring=pubkey, timeout=propagation + 60)
     assert re_seen is not None and any(pubkey in t
                                        for t in re_seen), (f"re-published DKIM TXT did not propagate: {re_seen!r}")
@@ -323,9 +217,3 @@ def test_dnssec_status_detects_signed_domain():
             pytrace=False,
         )
     assert failures == [], (f"DNSSEC AD-bit check failed against {domain!r}:\n  " + "\n  ".join(failures))
-
-
-if __name__ == "__main__":
-    # `python -m tests.e2e.test_mta_real` is CI's pre-pytest sweep step; the provider env is the job's own.
-    logging.basicConfig(level=logging.INFO)
-    _sweep_stale_records(dict(os.environ))

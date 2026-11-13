@@ -48,6 +48,7 @@ from ._helpers import (
     postern_cli,
 )
 from ._mta_helpers import compose_mta
+from ._mta_real_selector import EnvError, require_env, resolve_mta_test_env
 
 # Marker map: filename -> pytest marker name. Adding a new MTA test file requires
 # registering it here (intentional -- forces the author to think about which tier
@@ -398,33 +399,10 @@ def fresh_connection(e2e_stack):
 # Real-infra env validation ============================================================================================
 def _require_env(*names: str) -> dict[str, str]:
     """Resolve required env vars or fail loudly with an actionable message."""
-    missing = [n for n in names if not os.environ.get(n, "").strip()]
-    if missing:
-        pytest.fail(
-            "Missing env for real-infra MTA tests: " + ", ".join(missing) +
-            ".\nThese tests require a maintainer-owned test domain and DNS provider creds.\n"
-            "See docs/development/testing.md > 'Real-infrastructure MTA suite' for the full checklist.\n"
-            "Opt out instead: `pytest -m 'not e2e_mta_real'`.",
-            pytrace=False,
-        )
-    return {n: os.environ[n].strip() for n in names}
-
-
-_PROVIDER_ENV: dict[str, tuple[str, ...]] = {
-    "cloudflare": ("CLOUDFLARE_API_TOKEN", ),
-    "route53": ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"),
-    "gandi": ("GANDI_API_TOKEN", ),
-    "digitalocean": ("DO_AUTH_TOKEN", ),
-    "ovh": (
-        "OVH_ENDPOINT",
-        "OVH_APPLICATION_KEY",
-        "OVH_APPLICATION_SECRET",
-        "OVH_CONSUMER_KEY",
-    ),
-    "hetzner": ("HETZNER_API_TOKEN", ),
-    "linode": ("LINODE_TOKEN", ),
-    "namecheap": ("NAMECHEAP_API_KEY", "NAMECHEAP_API_USER", "NAMECHEAP_CLIENT_IP"),
-}
+    try:
+        return require_env(os.environ, *names)
+    except EnvError as e:
+        pytest.fail(str(e), pytrace=False)
 
 
 @pytest.fixture(scope="session")
@@ -434,20 +412,10 @@ def mta_test_env() -> dict[str, str]:
     Returns a dict with the resolved values. Calls ``pytest.fail`` if anything
     required is missing -- intentional, per CLAUDE.md's "fail loudly" rule.
     """
-    base = _require_env("MTA_TEST_DOMAIN", "MTA_TEST_DNS_PROVIDER")
-    provider = base["MTA_TEST_DNS_PROVIDER"].lower()
-    provider_envs = _PROVIDER_ENV.get(provider)
-    if provider_envs is None:
-        pytest.fail(
-            f"Unknown MTA_TEST_DNS_PROVIDER {provider!r}. Supported: " + ", ".join(sorted(_PROVIDER_ENV)) + ".",
-            pytrace=False,
-        )
-    base.update(_require_env(*provider_envs))
-    base.setdefault(
-        "MTA_TEST_DNS_PROPAGATION_SECONDS",
-        os.environ.get("MTA_TEST_DNS_PROPAGATION_SECONDS", "60").strip(),
-    )
-    return base
+    try:
+        return resolve_mta_test_env(os.environ)
+    except EnvError as e:
+        pytest.fail(str(e), pytrace=False)
 
 
 @pytest.fixture(scope="session")

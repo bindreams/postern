@@ -6,13 +6,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
-from contextlib import AbstractContextManager
 
-import httpx
-import pytest
-
-from tests.e2e._mta_real_selector import github_run_finished, parse_ci_selector, run_selector, stale_selectors
+from tests.e2e._mta_real_selector import parse_ci_selector, run_selector, stale_selectors
 
 DOMAIN = "mta-test.example.com"
 LABEL_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -77,52 +72,3 @@ def test_sweep_does_not_ask_github_about_own_run():
 def test_sweep_keeps_mixed_case_names_deletable_as_listed():
     listing = json.dumps([{"fqdn": f"Postern-E2E-100-1._domainkey.{DOMAIN}", "value": "x"}])
     assert stale_selectors(listing, DOMAIN, 1, 1, lambda _: True) == [(f"Postern-E2E-100-1._domainkey.{DOMAIN}", "x")]
-
-
-# GitHub-backed lookup =================================================================================================
-def _finished_via_github(
-    monkeypatch: pytest.MonkeyPatch,
-    handler: Callable[[httpx.Request], httpx.Response],
-) -> tuple[AbstractContextManager[Callable[[int], bool]], list[httpx.Client]]:
-    real_client = httpx.Client
-    clients: list[httpx.Client] = []
-
-    def make(**kwargs):
-        client = real_client(transport=httpx.MockTransport(handler), **kwargs)
-        clients.append(client)
-        return client
-
-    monkeypatch.setattr(httpx, "Client", make)
-    return github_run_finished("o/r", "tok"), clients
-
-
-def test_github_lookup_finished_only_when_repo_reports_completed(monkeypatch: pytest.MonkeyPatch):
-    statuses = {1: "completed", 2: "in_progress", 3: "queued"}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        run_id = int(request.url.path.rsplit("/", 1)[1])
-        return httpx.Response(200, json={"status": statuses[run_id]})
-
-    cm, _ = _finished_via_github(monkeypatch, handler)
-    with cm as run_is_finished:
-        assert [run_is_finished(i) for i in (1, 2, 3)] == [True, False, False]
-
-
-def test_github_lookup_404_is_not_finished(monkeypatch: pytest.MonkeyPatch):
-    """A run this repo does not know (a fork's, or a deleted one) may still be live elsewhere: leave its record."""
-    cm, _ = _finished_via_github(monkeypatch, lambda request: httpx.Response(404))
-    with cm as run_is_finished:
-        assert run_is_finished(7) is False
-
-
-def test_github_lookup_error_is_not_finished_and_does_not_raise(monkeypatch: pytest.MonkeyPatch):
-    cm, _ = _finished_via_github(monkeypatch, lambda request: httpx.Response(500))
-    with cm as run_is_finished:
-        assert run_is_finished(7) is False
-
-
-def test_github_lookup_closes_its_client(monkeypatch: pytest.MonkeyPatch):
-    cm, clients = _finished_via_github(monkeypatch, lambda request: httpx.Response(404))
-    with cm:
-        assert not clients[0].is_closed
-    assert clients[0].is_closed

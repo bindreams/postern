@@ -36,6 +36,7 @@ local function fake_io(over)
   return {
     version = over.version or function() return VERSION_REPLY end,
     probe = over.probe or function(id) return owned_reply(id, INSTANCE) end,
+    version_fresh = over.version_fresh, owned = over.owned, remember = over.remember,
   }
 end
 
@@ -185,6 +186,49 @@ check("version reply ApiVersion is a number", 403, req{path = v("/containers/jso
   fake_io{version = function() return "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":1.56}" end})
 check("version reply status 500", 403, req{path = v("/containers/json"), query = lq}, CFG,
   fake_io{version = function() return "HTTP/1.0 500 Error\r\n\r\n{\"ApiVersion\":\"" .. API .. "\"}" end})
+-- The caches: a stale version is refreshed once on a mismatch, an id the daemon vouched for is not asked about twice.
+local OLD_REPLY = "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":\"1.40\"}"
+local function stale_cache(fresh) return fake_io{version = function() return OLD_REPLY end, version_fresh = fresh} end
+check("version equal to the cached one needs no fresh read", "allow", req{path = v("/containers/json"), query = lq}, CFG,
+  fake_io{version_fresh = function() error("must not be called") end})
+check("cached version stale, fresh read matches (the daemon was upgraded)", "allow", req{path = v("/containers/json"), query = lq}, CFG,
+  stale_cache(function() return VERSION_REPLY end))
+check("cached version stale, fresh read differs too", 403, req{path = "/v1.99/containers/json", query = lq}, CFG,
+  stale_cache(function() return VERSION_REPLY end))
+check("cached version stale, fresh read fails", 403, req{path = v("/containers/json"), query = lq}, CFG,
+  stale_cache(function() return nil, "boom" end))
+check("cached version stale, fresh read raises", 403, req{path = v("/containers/json"), query = lq}, CFG,
+  stale_cache(function() error("boom") end))
+check("cached version stale, fresh read garbage", 403, req{path = v("/containers/json"), query = lq}, CFG,
+  stale_cache(function() return "garbage" end))
+check("stale cache without a refresh function", 403, req{path = v("/containers/json"), query = lq}, CFG, stale_cache(nil))
+
+local remembered = {}
+local function remembering() return fake_io{remember = function(id) remembered[#remembered + 1] = id end} end
+check("owned id: allowed and remembered", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG, remembering())
+eq("owned id: remembered exactly once", #remembered, 1)
+eq("owned id: remembered by its full id", remembered[1], ID)
+check("remembered id skips the probe", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{owned = function(id) return id == ID end, probe = function() error("must not be called") end})
+check("another id is still probed", 403, req{path = v("/containers/" .. string.rep("b", 64) .. "/json")}, CFG,
+  fake_io{owned = function(id) return id == ID end, probe = function(id) return owned_reply(id, "other") end})
+check("remembered id still obeys the route and query rules", 403, req{method = "POST", path = v("/containers/" .. ID .. "/kill")}, CFG,
+  fake_io{owned = function() return true end})
+check("remembered id still obeys the query rules", 403, req{method = "POST", path = v("/containers/" .. ID .. "/stop"), query = "t=11"}, CFG,
+  fake_io{owned = function() return true end})
+check("foreign id is not remembered", 403, req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{probe = function(id) return owned_reply(id, "other") end, remember = function() error("must not be called") end})
+check("vanished id is not remembered", 404, req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{probe = function() return "HTTP/1.0 200 OK\r\n\r\n[]" end, remember = function() error("must not be called") end})
+check("a failed probe is not remembered", 403, req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{probe = function() return nil, "boom" end, remember = function() error("must not be called") end})
+check("no instance id: the cache is not consulted", 403, req{path = v("/containers/" .. ID .. "/json")},
+  {image = IMAGE, network = NETWORK, instance = nil}, fake_io{owned = function() return true end})
+check("a raising remember does not turn an allow into an error", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{remember = function() error("boom") end})
+check("a raising owned() falls back to the probe", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
+  fake_io{owned = function() error("boom") end})
+
 check("unversioned ping needs no version read", "allow", req{path = "/_ping"}, CFG,
   fake_io{version = function() error("must not be called") end})
 

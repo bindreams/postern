@@ -31,8 +31,28 @@ local function daemon_get(uri)
   return data
 end
 
+-- Two caches, each of an answer that cannot change under it:
+--  * the daemon's API version: kept while the requests' version equals it; a request that differs makes the policy
+--    ask for one fresh read (version_fresh), so a daemon upgrade needs no proxy restart and no timer.
+--  * ids the daemon vouched for: container ids are never reused and labels are immutable, so a vouched id stays
+--    this deployment's for as long as it exists. A removed container's id stays in the table (a few bytes each).
+local version_reply
+local owned_ids = {}
+
+local function fresh_version()
+  local raw, err = daemon_get("/version")
+  if raw and policy.api_version(raw) then version_reply = raw end
+  return raw, err
+end
+
 local io_daemon = {
-  version = function() return daemon_get("/version") end,
+  version = function()
+    if version_reply then return version_reply end
+    return fresh_version()
+  end,
+  version_fresh = fresh_version,
+  owned = function(id) return owned_ids[id] == true end,
+  remember = function(id) owned_ids[id] = true end,
   -- docker's id filter is a prefix match; policy.lua only asks with a full 64-hex id.
   probe = function(id) return daemon_get("/containers/json?all=1&filters=%7B%22id%22%3A%5B%22" .. id .. "%22%5D%7D") end,
 }

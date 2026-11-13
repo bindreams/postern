@@ -4,6 +4,9 @@
 -- are the two functions in `io`, both of which return the raw bytes of a dockerd reply (or nil, err):
 --   io.version()  -> reply to an unversioned GET /version
 --   io.probe(id)  -> reply to GET /containers/json?all=1&filters={"id":["<id>"]}
+-- Optional, so the glue can cache: io.version_fresh() (a read that bypasses the version cache, asked once when a
+-- request's version differs from the cached one), io.owned(id) (true if this id was already vouched for) and
+-- io.remember(id) (called after a probe vouches for it). A cache can only skip a question whose answer cannot change.
 -- Default deny: a request is allowed only if it matches one route exactly. See docs/development/architecture.md.
 --
 -- decide(req, cfg, io) returns `true`, or `false, status, reason` (403, or 404 for a container id the daemon
@@ -262,6 +265,8 @@ local function api_version(raw)
   return v.ApiVersion
 end
 
+M.api_version = api_version
+
 local function owned_labels(labels, cfg)
   return is_obj(labels) and labels["postern.managed"] == "true" and labels["postern.instance"] == cfg.instance
 end
@@ -398,6 +403,15 @@ end
 
 local function deny(reason) return false, 403, reason end
 
+-- -> "1.56" | nil, why
+local function read_version(fetch)
+  local ok, raw, err = pcall(fetch)
+  if not ok then return nil, raw end
+  local version, why = api_version(raw)
+  if not version then return nil, err or why end
+  return version
+end
+
 local function decide(req, cfg, io)
   local headers = req.headers or {}
   for _, h in ipairs({"transfer-encoding", "upgrade", "expect"}) do
@@ -412,11 +426,10 @@ local function decide(req, cfg, io)
   -- Version prefix: must equal the daemon's current ApiVersion.
   local ver, rest = path:match("^/v(%d+%.%d+)(/.*)$")
   if ver then
-    local ok, raw, err = pcall(io.version)
-    local current = ok and api_version(raw) or nil
-    if not current then
-      return deny("API version could not be read from the daemon (" .. tostring(ok and (err or "unusable reply") or raw) .. ")")
-    end
+    local current, why = read_version(io.version)
+    -- io.version may answer from a cache; a request that differs from it gets one fresh read before it is denied.
+    if current and ver ~= current and io.version_fresh then current, why = read_version(io.version_fresh) end
+    if not current then return deny("API version could not be read from the daemon (" .. tostring(why) .. ")") end
     if ver ~= current then return deny("API version " .. ver .. " is not the daemon's " .. current) end
     path = rest
   elseif path ~= "/_ping" and path ~= "/version" then
@@ -483,10 +496,18 @@ local function decide(req, cfg, io)
       local ok, why = query_within(q, want)
       if not ok then return deny(why) end
       if not cfg.instance then return deny("no instance id") end
+      -- An id the daemon already vouched for stays vouched for: ids are never reused and labels are immutable.
+      if io.owned then
+        local kok, known = pcall(io.owned, id)
+        if kok and known == true then return true end
+      end
       local pok, raw, err = pcall(io.probe, id)
       local outcome, perr = nil, "probe failed (" .. tostring(pok and err or raw) .. ")"
       if pok and raw then outcome, perr = probe_outcome(raw, id, cfg) end
-      if outcome == "owned" then return true end
+      if outcome == "owned" then
+        if io.remember then pcall(io.remember, id) end
+        return true
+      end
       if outcome == "gone" then return false, 404, "No such container: " .. id end
       return deny(perr)
     end

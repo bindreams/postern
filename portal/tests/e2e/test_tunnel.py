@@ -449,7 +449,7 @@ def test_reconciler_removes_orphan(e2e_stack):
         # this test's whole point is that the reconciler must NOT remove foreign/legacy
         # ones -- so a leftover from a prior killed run (CI timeout, Ctrl-C) must be
         # reclaimed rather than poisoning every run after it with a `--name` conflict.
-        run_sleeper(name, "e2e-shadowsocks", labels=tuple(labels))
+        run_sleeper(name, "e2e-shadowsocks", labels=labels)
 
     orphan = "ss-orphan0000000000000000"
     foreign = "ss-foreign000000000000000"
@@ -559,7 +559,7 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
             (legacy, ["postern.managed=true"]),
         ):
             # Idempotent, same reasoning as test_reconciler_removes_orphan's _run_labelled.
-            run_sleeper(fixture_name, "e2e-shadowsocks", labels=tuple(labels))
+            run_sleeper(fixture_name, "e2e-shadowsocks", labels=labels)
 
         subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
         try:
@@ -617,7 +617,11 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
     ip_format = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
 
     def portal_ip() -> str:
-        return docker_inspect(get_container_id("portal"), ip_format)
+        # Running containers only, and non-empty: an exited predecessor or an empty
+        # address would make the `!= old_ip` check below pass vacuously.
+        ip = docker_inspect(get_container_id("portal", running_only=True), ip_format)
+        assert ip, "portal has no address on the e2e default network"
+        return ip
 
     def nginx_started_at() -> str:
         return docker_inspect(get_container_id("nginx"), "{{.State.StartedAt}}")

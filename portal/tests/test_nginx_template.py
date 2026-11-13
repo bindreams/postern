@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 NGINX_ETC = REPO_ROOT / "nginx" / "etc"
 
@@ -111,49 +113,59 @@ def test_at_miss_body_identical_to_location_root_in_both_configs():
 
 
 # Portal upstream re-resolution (#233) =================================================================================
-def _nginx_config_files() -> list[Path]:
-    """Every nginx template/config that can carry a `proxy_pass`: all `.tmpl`/`.conf`
-    under nginx/etc (included conf.d files too) plus the static e2e config."""
-    found = [p for p in NGINX_ETC.rglob("*") if p.is_file() and p.suffix in (".tmpl", ".conf")]
-    return sorted(found) + [E2E_NGINX_CONF]
+def _config_groups() -> dict[str, list[Path]]:
+    """Each config nginx loads as one unit: the production template with every
+    `.tmpl`/`.conf` it can `include` under nginx/etc, and the static e2e config on its
+    own. An upstream declared in one group is invisible to the other at runtime, so
+    every check below resolves names within a group, never across them."""
+    prod = sorted(p for p in NGINX_ETC.rglob("*") if p.is_file() and p.suffix in (".tmpl", ".conf"))
+    return {"production": prod, "e2e": [E2E_NGINX_CONF]}
 
 
 def _directives(path: Path) -> str:
-    return "\n".join(ln for ln in path.read_text().splitlines() if not ln.strip().startswith("#"))
+    """Config text with whole-line and trailing `# ...` comments removed."""
+    lines = (re.sub(r"(^|\s)#.*$", "", ln) for ln in path.read_text().splitlines())
+    return "\n".join(lines)
 
 
-def test_every_upstream_server_re_resolves_in_every_nginx_config():
+@pytest.mark.parametrize("group", ["production", "e2e"])
+def test_every_upstream_server_re_resolves_without_failing_over(group):
     """A literal host in `upstream { server portal:8000; }` is resolved once at config
     load, so a recreated portal (new IP) 502s every portal route until nginx restarts
     (#233). `resolve` (nginx >= 1.27.3, needs a shared-memory `zone`) makes nginx
-    re-resolve through `resolver 127.0.0.11`."""
+    re-resolve through `resolver 127.0.0.11`. `max_fails=0` is also required: the
+    default (1 failure -> 10s marked down) turns one refused connect during a portal
+    restart into a 10s "no live upstreams" 502 that the variable form never had."""
     blocks = []
-    for path in _nginx_config_files():
+    for path in _config_groups()[group]:
         for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{([^}]*)\}", _directives(path), re.M):
             blocks.append((path, m.group(1), m.group(2)))
-    assert blocks, "no upstream block found in any nginx config; this test has gone blind"
+    assert blocks, f"no upstream block found in the {group} config; this test has gone blind"
     for path, name, body in blocks:
         servers = re.findall(r"^\s*server\s+([^;]+);", body, re.M)
         assert servers, f"upstream {name} in {path} has no server line"
         for srv in servers:
-            assert "resolve" in srv.split(), f"upstream {name} server {srv!r} in {path} lacks `resolve` (#233)"
+            opts = srv.split()
+            assert "resolve" in opts, f"upstream {name} server {srv!r} in {path} lacks `resolve` (#233)"
+            assert "max_fails=0" in opts, f"upstream {name} server {srv!r} in {path} lacks `max_fails=0` (#233)"
         assert re.search(r"^\s*zone\s", body, re.M), f"upstream {name} in {path} has no `zone`; `resolve` needs one"
 
 
-def test_no_proxy_pass_has_a_literal_host_in_every_nginx_config():
+@pytest.mark.parametrize("group", ["production", "e2e"])
+def test_no_proxy_pass_has_a_literal_host(group):
     """Outside an upstream block, `proxy_pass http://<literal>` is resolved once at
     startup (#233). A target must be a variable (`ss-$1`, resolved per request) or the
-    name of an upstream block that has `resolve`."""
+    name of an upstream block declared in the same config group."""
     declared = set()
     targets = []
-    for path in _nginx_config_files():
+    for path in _config_groups()[group]:
         body = _directives(path)
         declared |= {m.group(1) for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{", body, re.M)}
         targets += [(path, t) for t in re.findall(r"proxy_pass\s+([^;]+);", body)]
-    assert targets, "no proxy_pass found in any nginx config; this test has gone blind"
+    assert targets, f"no proxy_pass found in the {group} config; this test has gone blind"
     for path, target in targets:
         host = re.sub(r"^https?://", "", target.strip())
         assert "$" in host or host in declared, (
             f"proxy_pass {target!r} in {path} is a literal host resolved once at startup (#233); "
-            "point it at an upstream block with `resolve`"
+            "point it at an upstream block with `resolve` declared in the same config"
         )

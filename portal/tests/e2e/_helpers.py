@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 
 # Resolve key paths once.
@@ -130,6 +131,7 @@ def get_container_id(
     *,
     project: str = PROJECT,
     files: tuple[Path, ...] = COMPOSE_FILES,
+    running_only: bool = False,
 ) -> str:
     """Resolve a service name to its container ID for `docker inspect`.
 
@@ -137,10 +139,13 @@ def get_container_id(
     don't have to guess the ``<project>-<service>-N`` naming Compose uses
     internally. The provisioner is ``restart: 'no'`` and intentionally exits
     after generating the keypair, so it's "exited" by the time tests inspect it.
+    ``running_only=True`` drops ``-a`` so an exited predecessor is never returned.
     """
-    cid = run(compose("ps", "-aq", service, project=project, files=files)).stdout.strip()
+    ps_flags = "-q" if running_only else "-aq"
+    cid = run(compose("ps", ps_flags, service, project=project, files=files)).stdout.strip()
     if not cid:
-        raise AssertionError(f"no container for service {service!r} in project {project}")
+        kind = "running container" if running_only else "container"
+        raise AssertionError(f"no {kind} for service {service!r} in project {project}")
     return cid.splitlines()[0]
 
 
@@ -148,7 +153,7 @@ def docker_inspect(container_id: str, fmt: str) -> str:
     return run(["docker", "inspect", container_id, "--format", fmt]).stdout.strip()
 
 
-def run_sleeper(name: str, network: str, *, labels: tuple[str, ...] = (), ip: str | None = None) -> None:
+def run_sleeper(name: str, network: str, *, labels: Iterable[str] = (), ip: str | None = None) -> None:
     """Start a detached `sleep infinity` container on ``network``, replacing any
     leftover of the same name from a killed prior run. ``ip`` pins its address."""
     subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)

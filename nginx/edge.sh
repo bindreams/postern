@@ -79,13 +79,10 @@ edge_start_watcher() {
 	# Do NOT call edge_reload: `nginx -s reload` is a blind kill(SIGHUP) on
 	# whatever pid /run/nginx.pid names, that file outlives the container process,
 	# and `exec nginx` makes the recorded pid the entrypoint SHELL's own -- which a
-	# restarted container's fresh pid namespace usually, but not always, hands back
-	# to the new shell. When it does, the reload SIGHUPs the entrypoint, which has
-	# no trap, so the container dies 128+1=129. nginx never got to rewrite the
-	# pidfile, so the next restart repeats it for as long as the runtime keeps
-	# handing out the same pid. The pid is the runtime's to pick, so the
-	# entrypoint's unconditional clear, not a repeating number, is what keeps this
-	# safe. See issue #245.
+	# restarted container's fresh pid namespace can hand back to the new shell. The
+	# reload then SIGHUPs the entrypoint, which has no trap, so the container dies
+	# 128+1=129 and nginx never rewrites the pidfile. The runtime picks the pid, so
+	# only the entrypoint's unconditional clear makes this safe.
 	# If no ranges exist yet, warn -- nginx runs without recovered client IPs until
 	# the provisioner publishes ranges and this watcher reloads.
 	if ! ls "$EDGE_DIR"/*.conf >/dev/null 2>&1; then

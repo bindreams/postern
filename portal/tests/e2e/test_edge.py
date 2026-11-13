@@ -34,7 +34,8 @@ from ._edge_helpers import (
     hard_restart_nginx,
     live_master_pid,
     process_tree_master_pids,
-    wait_for_log_line,
+    stop_nginx_and_read_run_logs,
+    wait_for_portal_through_nginx,
 )
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
@@ -128,14 +129,6 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
         f"that nginx still writes the pidfile the entrypoint clears"
     )
-    # What pins the fix: the entrypoint must report having cleared the killed
-    # container's pidfile, or the test passes with the clear removed. The clear is
-    # unconditional and the runtime picks the pid, so the stale pid is not compared
-    # with the new one. A timeout here means the line was never logged: the pidfile
-    # left by the killed container was carried into the new one, and a reload racing
-    # startup would SIGHUP the entrypoint (issue #245).
-    wait_for_log_line("cleared stale")
-
     # hard_restart_nginx already waited for a pidfile naming a live master; it must
     # be the master actually running, or a reload has no valid target.
     tree_pids = process_tree_master_pids()
@@ -143,12 +136,23 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"/run/nginx.pid names {master_pid!r}, which is not the nginx master running under PID 1 ({tree_pids!r})"
     )
 
-    # Healthy only proves the container is up; prove it is actually serving TLS.
+    # A live master is not yet a usable proxy: prove it serves TLS and reaches the portal.
     client_cert, client_key = edge_client_certs
     ctx = _make_ssl_ctx(e2e_certs, client_cert, client_key)
     with httpx.Client(base_url=EDGE_BASE_URL, verify=ctx, follow_redirects=False) as client:
+        wait_for_portal_through_nginx(client)
         r = client.get("/login")
     assert r.status_code == 200, f"expected 200 from /login after restart; got {r.status_code}"
+
+    # What pins the fix: the entrypoint must report clearing the killed container's pidfile, or the test passes with
+    # the clear removed. The runtime picks the pid, so the stale pid is not compared with the new one. Read after a
+    # graceful stop, when the run's log is complete; its absence then means the line was never printed.
+    logs = stop_nginx_and_read_run_logs()
+    assert "cleared stale" in logs, (
+        f"the entrypoint did not report clearing the killed container's pidfile; the stale pidfile was carried "
+        f"into the new container, where a reload racing startup would SIGHUP the entrypoint (issue #245). "
+        f"Logs:\n{logs}"
+    )
 
 
 def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):

@@ -391,6 +391,19 @@ func TestMatchTXT(t *testing.T) {
 	}
 }
 
+func TestMatchNamesAreCaseInsensitive(t *testing.T) {
+	// DNS names are case-insensitive; a provider may return a different case than the caller typed.
+	txt := libdns.TXT{Name: "Postern-E2E-1._domainkey", Text: "v=DKIM1; p=A", TTL: time.Minute}
+	if got := matchTXT([]libdns.Record{txt}, "postern-e2e-1._domainkey", "v=DKIM1; p=A"); len(got) != 1 {
+		t.Errorf("matchTXT must match names case-insensitively, got %d records", len(got))
+	}
+	addr := libdns.Address{Name: "Host", IP: netip.MustParseAddr("203.0.113.1"), TTL: time.Minute}
+	want := libdns.Address{Name: "host", IP: netip.MustParseAddr("203.0.113.1"), TTL: time.Minute}.RR()
+	if got := matchRR([]libdns.Record{addr}, want); len(got) != 1 {
+		t.Errorf("matchRR must match names case-insensitively, got %d records", len(got))
+	}
+}
+
 func TestIsDuplicateRecordError(t *testing.T) {
 	cases := []struct {
 		err  error

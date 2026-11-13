@@ -579,7 +579,7 @@ func matchRR(all []libdns.Record, want libdns.RR) []libdns.Record {
 		if got.Type != want.Type {
 			continue
 		}
-		if got.Name != want.Name {
+		if !strings.EqualFold(got.Name, want.Name) {
 			continue
 		}
 		if got.Data == want.Data {
@@ -635,7 +635,7 @@ func doTxtSet(ctx context.Context, provider providerOps, zone, name, value strin
 // doTxtList prints, as a JSON array of {"fqdn", "value"} objects, every TXT
 // record in the zone whose FQDN starts with prefix (compared case-insensitively).
 // "fqdn" keeps the name's case exactly as the provider returned it (no trailing
-// dot), because txt-delete matches the name case-sensitively; "value" is the
+// dot); txt-delete matches names case-insensitively, so case is not load-bearing; "value" is the
 // provider's raw rr.Data, which txt-delete accepts back verbatim (matchTXT
 // compares the raw form first). A caller can therefore delete exactly what it
 // listed. An empty result is "[]", not an error.
@@ -782,7 +782,8 @@ func normalizeTXTData(s string) string {
 }
 
 // matchTXT returns the records from `all` whose RR is a TXT at the given
-// name and whose Data equals `text`. To stay safe against TXT values that
+// name (compared case-insensitively, as DNS names are) and whose Data equals
+// `text`. To stay safe against TXT values that
 // legitimately contain the byte sequence `" "` mid-string, we accept
 // EITHER the raw rr.Data or its chunk-stripped form; that way:
 //
@@ -795,7 +796,7 @@ func matchTXT(all []libdns.Record, name, text string) []libdns.Record {
 	var out []libdns.Record
 	for _, rec := range all {
 		rr := rec.RR()
-		if rr.Type != "TXT" || rr.Name != name {
+		if rr.Type != "TXT" || !strings.EqualFold(rr.Name, name) {
 			continue
 		}
 		if rr.Data == text || normalizeTXTData(rr.Data) == text {

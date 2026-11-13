@@ -2,7 +2,7 @@
 
 By default Postern's nginx is the internet-facing edge: clients connect straight to your origin's `:443`. The **edge profile** ([compose.edge.yaml](https://github.com/bindreams/postern/blob/main/compose.edge.yaml)) puts a CDN or reverse proxy in front instead. `EDGE_PROFILE` selects the variant (`none` by default):
 
-- **`cloudflare`** — turnkey. Cloudflare proxies (orange-clouds) your traffic. Postern publishes the proxied apex DNS records, auto-trusts Cloudflare's edge IP ranges so nginx recovers the real client IP, and (by default) enforces Authenticated Origin Pull mTLS so the origin only accepts connections arriving through Cloudflare. Pairs with Encrypted Client Hello (ECH) to hide the SNI from the on-path network.
+- **`cloudflare`** — automated, with one manual Cloudflare step before the first deploy ([Authenticated Origin Pulls](#before-the-first-deploy-enable-authenticated-origin-pulls)). Cloudflare proxies (orange-clouds) your traffic. Postern publishes the proxied apex DNS records, auto-trusts Cloudflare's edge IP ranges so nginx recovers the real client IP, and (by default) enforces Authenticated Origin Pull mTLS so the origin only accepts connections arriving through Cloudflare. Pairs with Encrypted Client Hello (ECH) to hide the SNI from the on-path network.
 - **`generic`** — any other proxy/CDN that forwards the real client IP in a header (Fastly, a self-hosted front, etc.). You supply the trusted ranges and the header name; you own DNS, the origin firewall, and any origin authentication.
 
 ```{note}
@@ -58,6 +58,22 @@ On first start the provisioner:
 1. nginx's watcher applies the snippets (validate-then-reload) so real-client-IP recovery goes live without a restart.
 
 Authenticated Origin Pull mTLS is on by default (`EDGE_CF_AUTHENTICATED_ORIGIN_PULL=true`): nginx demands Cloudflare's origin-pull client certificate on every `:443` handshake. Setting this variable under any non-`cloudflare` profile is rejected at start.
+
+### Before the first deploy: enable Authenticated Origin Pulls
+
+`EDGE_CF_AUTHENTICATED_ORIGIN_PULL` only configures nginx. Postern does **not** turn on the matching Cloudflare zone setting (`tls_client_auth`, **SSL/TLS > Origin Server > Authenticated Origin Pulls** in the dashboard) that makes Cloudflare present the certificate, and it is off on every new zone. With the default `true` and the setting off, nginx rejects every request through Cloudflare with `400 No required SSL certificate was sent`, although the stack reports healthy.
+
+Before the first deploy, do one of:
+
+- Enable Authenticated Origin Pulls on the zone in the Cloudflare dashboard.
+- Set `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`. nginx then stops requiring the certificate; the origin firewall (see below) is your only lockdown.
+
+To check the zone setting:
+
+```bash
+curl -X GET "https://api.cloudflare.com/client/v4/zones/<zone-id>/settings/tls_client_auth" \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"   # "value":"on" is what you want
+```
 
 ### Zone-wide settings Postern manages
 

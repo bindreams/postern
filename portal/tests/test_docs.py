@@ -24,7 +24,7 @@ MUST_KEEP = {
     "deployment/certificates.md": ["symlink-flip", "one-shot bypass"],
     "deployment/configuration.md": ["cookie `max_age`"],
     "deployment/gateway.md": ["forge a PROXY header", "broken header"],
-    "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA"],
+    "deployment/edge.md": ["Authenticated Origin Pull", "origin-pull CA", "tls_client_auth"],
     "operations/rename.md": ["_domainkey", "docker compose down"],
     "operations/index.md": ["postern reconcile", "scripts/verify-deploy.py"],
     "operations/cli.md": ["Never set `POSTERN_REVISION`"],

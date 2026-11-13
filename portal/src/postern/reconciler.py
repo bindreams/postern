@@ -675,6 +675,15 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                 _log_resolved_identity_once(settings, instance_id)
                 _startup_identity_logged = True
 
+            if instance_id is None:
+                # Reported here, once per pass, so a missing image cannot hide it.
+                logger.error(
+                    "Skipping container reconciliation this pass (session/OTP cleanup still runs): "
+                    "could not determine the instance id (%s). Fix INSTANCE_ID, or COMPOSE_PROJECT_NAME "
+                    "when INSTANCE_ID is empty.",
+                    instance_id_fault(settings),
+                )
+
             client = _get_docker_client()
             try:
                 if not _image_exists(client, settings.shadowsocks_image):
@@ -691,13 +700,6 @@ async def reconcile(database_path: str, settings: Settings) -> None:
                     _inflight_reconcile_future = future
                     client = None  # ownership transferred to _reconcile_pass; the finally below must not close it
                     await asyncio.shield(asyncio.wrap_future(future))
-                else:
-                    logger.error(
-                        "Skipping container reconciliation this pass (session/OTP cleanup still runs): "
-                        "could not determine the instance id (%s). Fix INSTANCE_ID, or COMPOSE_PROJECT_NAME "
-                        "when INSTANCE_ID is empty.",
-                        instance_id_fault(settings),
-                    )
             finally:
                 if client is not None:
                     client.close()

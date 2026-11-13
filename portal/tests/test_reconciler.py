@@ -1171,6 +1171,26 @@ async def test_reconcile_names_an_instance_id_the_proxy_refuses_in_one_error(tmp
     assert repr("prod:eu") in errors[0] and reconciler.INSTANCE_ID_PATTERN.pattern in errors[0]
 
 
+async def test_reconcile_names_an_unusable_instance_id_even_when_the_image_is_missing(tmp_path, caplog):
+    db_path = tmp_path / "postern.db"
+    async with db.get_connection(str(db_path)) as conn:
+        await db.migrate(conn)
+    settings = Settings(
+        secret_key="test-secret", database_path=str(db_path), instance_id="prod:eu", compose_project_name=""
+    )
+    client = MagicMock()
+    client.images.get.side_effect = docker.errors.ImageNotFound("image missing")
+
+    with patch("postern.reconciler._get_docker_client",
+               return_value=client), caplog.at_level(logging.ERROR, logger="postern.reconciler"):
+        await reconcile(str(db_path), settings)
+
+    errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 2, errors
+    assert sum(repr("prod:eu") in e for e in errors) == 1, errors
+    assert sum("not found" in e for e in errors) == 1, errors
+
+
 async def test_reconcile_runs_cleanup_expired_even_if_container_reconcile_raises(tmp_path):
     """cleanup_expired must run even when the container-reconcile branch
     raises for a reason OTHER than unresolved identity (e.g. an unexpected

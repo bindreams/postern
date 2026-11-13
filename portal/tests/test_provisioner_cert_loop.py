@@ -8,6 +8,7 @@ import dataclasses
 import datetime as dt
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -890,6 +891,26 @@ def test_failed_switch_then_revert_does_not_reuse_the_account_the_failed_attempt
     state = dataclasses.replace(state, state="ISSUING")
     _advance(state, prod_settings, lego_mock, now + dt.timedelta(days=2))
     assert present == [False]
+
+
+def test_failed_account_reset_aborts_the_tick_and_is_retried(prod_settings, lego_mock, now, cert_dir, monkeypatch):
+    """A reset that fails must not record the attempt under the new directory, or the next tick would skip the reset."""
+    account = _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
+    state = _step_ca_switch(prod_settings, now)
+    real_rmtree = shutil.rmtree
+
+    def broken(*args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cert_driver.shutil, "rmtree", broken)
+    after = _advance(state, prod_settings, lego_mock, now)
+    assert after == state
+    lego_mock.issue_or_renew.assert_not_called()
+
+    monkeypatch.setattr(cert_driver.shutil, "rmtree", real_rmtree)
+    registered_at_run = _record_account_presence_at_run(lego_mock, account)
+    _advance(after, prod_settings, lego_mock, now + dt.timedelta(minutes=1))
+    assert registered_at_run == [False]
 
 
 def test_account_reset_log_names_the_directory(prod_settings, lego_mock, now, cert_dir, caplog):

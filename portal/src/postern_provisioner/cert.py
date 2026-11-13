@@ -201,10 +201,12 @@ def advance_cert_state(
         # Failures counted under another directory say nothing about this one.
         under_new_directory = _latest_attempt_directory(state) not in ("", settings.cert_acme_directory)
         if email_changed or under_new_directory:
-            _reset_lego_account_dir(
-                "ACME account email and directory" if email_changed and under_new_directory else
-                "ACME account email" if email_changed else "ACME directory"
-            )
+            changed = [
+                n for n, hit in (("ACME account email", email_changed), ("ACME directory", under_new_directory)) if hit
+            ]
+            # Recording the attempt over a failed reset would key the next tick's reset off the new directory and skip it.
+            if not _reset_lego_account_dir(" and ".join(changed)):
+                return state
 
         # `renew` is a no-op on a fresh cert and fatal without a registered account or a cert under Lego's path (an
         # adopted BYO cert has neither), so it is only for a due cert Lego itself issued.
@@ -384,11 +386,15 @@ def _failed_or_increment(state: cert_state.CertState, settings: CertSettings, no
     return replace(state, consecutive_failures=failures, last_attempt_iso=now.isoformat())
 
 
-def _reset_lego_account_dir(changed: str) -> None:
+def _reset_lego_account_dir(changed: str) -> bool:
+    """Discard every Lego account; False (logged) when that failed, so the caller retries on its next tick."""
     accounts = LEGO_PATH / "accounts"
-    if accounts.exists():
-        logger.info("cert: %s changed; resetting lego account dir", changed)
-        try:
-            shutil.rmtree(accounts)
-        except OSError as e:
-            logger.warning("could not remove %s: %s", accounts, e)
+    if not accounts.exists():
+        return True
+    logger.info("cert: %s changed; resetting lego account dir", changed)
+    try:
+        shutil.rmtree(accounts)
+    except OSError as e:
+        logger.error("cert: could not remove %s: %s; will retry on the next tick", accounts, e)
+        return False
+    return True

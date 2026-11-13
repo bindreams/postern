@@ -4,9 +4,9 @@
 -- are the two functions in `io`, both of which return the raw bytes of a dockerd reply (or nil, err):
 --   io.version()  -> reply to an unversioned GET /version
 --   io.probe(id)  -> reply to GET /containers/json?all=1&filters={"id":["<id>"]}
--- Optional, so the glue can cache: io.version_fresh() (a read that bypasses the version cache, asked once when a
--- request's version differs from the cached one), io.owned(id) (true if this id was already vouched for) and
--- io.remember(id) (called after a probe vouches for it). A cache can only skip a question whose answer cannot change.
+-- Optional, so the glue can keep a table of vouched-for ids: io.owned(id) (true if this id was already vouched for)
+-- and io.remember(id) (called after a probe vouches for it). An id leaves the table when evict_id says its container
+-- is gone. The version is never cached: it is read on every versioned request.
 -- Default deny: a request is allowed only if it matches one route exactly. See docs/development/architecture.md.
 --
 -- decide(req, cfg, io) returns `true`, or `false, status, reason` (403, or 404 for a container id the daemon
@@ -426,8 +426,6 @@ local function decide(req, cfg, io)
   local ver, rest = path:match("^/v(%d+%.%d+)(/.*)$")
   if ver then
     local current, why = read_version(io.version)
-    -- io.version may answer from a cache; a request that differs from it gets one fresh read before it is denied.
-    if current and ver ~= current and io.version_fresh then current, why = read_version(io.version_fresh) end
     if not current then return deny("API version could not be read from the daemon (" .. tostring(why) .. ")") end
     if ver ~= current then return deny("API version " .. ver .. " is not the daemon's " .. current) end
     path = rest
@@ -515,6 +513,17 @@ local function decide(req, cfg, io)
   return deny("route not allowed")
 end
 M.decide = decide
+
+-- The id to drop from the vouched-for table once dockerd has answered `status` to this request: the container of a
+-- DELETE that dockerd confirmed (2xx) or reported absent (404). Anything else (a 409 while removal is in progress, a
+-- 500) leaves the container, so its id stays vouched for.
+function M.evict_id(method, path, status)
+  if method ~= "DELETE" or type(status) ~= "number" then return nil end
+  if not ((status >= 200 and status < 300) or status == 404) then return nil end
+  local id = path:match("^/v%d+%.%d+/containers/([0-9a-f]+)$")
+  if id and #id == 64 then return id end
+  return nil
+end
 
 -- Config from the environment, mirroring reconciler.resolve_instance_id (stripped INSTANCE_ID override, else
 -- stripped COMPOSE_PROJECT_NAME, else none). The instance id is pasted into a daemon filter, so it must be

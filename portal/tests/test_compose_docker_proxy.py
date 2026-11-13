@@ -60,7 +60,9 @@ def test_haproxy_cfg_fails_closed():
     rules = _section(text, "frontend proxy")
     action = rules.index("http-request lua.pn_filter")
     assert rules[action + 1] == "http-request deny deny_status 403 unless { var(txn.pn_allow) -m bool }"
-    assert rules[action + 2] == "default_backend docker"
+    # The response-side hook only forgets an id the daemon confirmed removed; it cannot deny or allow anything.
+    assert rules[action + 2] == "http-response lua.pn_evict"
+    assert rules[action + 3] == "default_backend docker"
     assert not [r for r in rules if r.startswith("use_backend")]
     assert not re.search(r"^\s*use_backend", text, re.M), "a use_backend anywhere can route around the policy"
     assert text.count("default_backend") == 2, "exactly the two frontends route to the one backend"

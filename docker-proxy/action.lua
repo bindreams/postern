@@ -31,26 +31,14 @@ local function daemon_get(uri)
   return data
 end
 
--- Two caches, each of an answer that cannot change under it:
---  * the daemon's API version: kept while the requests' version equals it; a request that differs makes the policy
---    ask for one fresh read (version_fresh), so a daemon upgrade needs no proxy restart and no timer.
---  * ids the daemon vouched for: container ids are never reused and labels are immutable, so a vouched id stays
---    this deployment's for as long as it exists. A removed container's id stays in the table (a few bytes each).
-local version_reply
+-- Ids the daemon vouched for. Container ids are never reused and labels are immutable, so a vouched id stays this
+-- deployment's for as long as the container exists; it leaves the table when a forwarded DELETE for it is answered
+-- 2xx or 404 (pn_evict below). A container removed any other way leaves its id behind: 64 bytes plus table overhead,
+-- the bound on that leak. The API version is not cached: it is read on every versioned request.
 local owned_ids = {}
 
-local function fresh_version()
-  local raw, err = daemon_get("/version")
-  if raw and policy.api_version(raw) then version_reply = raw end
-  return raw, err
-end
-
 local io_daemon = {
-  version = function()
-    if version_reply then return version_reply end
-    return fresh_version()
-  end,
-  version_fresh = fresh_version,
+  version = function() return daemon_get("/version") end,
   owned = function(id) return owned_ids[id] == true end,
   remember = function(id) owned_ids[id] = true end,
   -- docker's id filter is a prefix match; policy.lua only asks with a full 64-hex id.
@@ -99,4 +87,13 @@ core.register_action("pn_filter", {"http-req"}, function(txn)
     return
   end
   txn:set_var("txn.pn_allow", true)
+end)
+
+-- Response side: forget the id of a container the daemon has confirmed removed. Nothing here can deny anything.
+core.register_action("pn_evict", {"http-res"}, function(txn)
+  local ok, err = pcall(function()
+    local id = policy.evict_id(txn.sf:method(), txn.sf:path(), tonumber(txn.sf:status()))
+    if id then owned_ids[id] = nil end
+  end)
+  if not ok then core.Alert("postern docker-proxy: evict error: " .. tostring(err)) end
 end)

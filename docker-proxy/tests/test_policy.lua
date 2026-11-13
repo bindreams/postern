@@ -36,7 +36,7 @@ local function fake_io(over)
   return {
     version = over.version or function() return VERSION_REPLY end,
     probe = over.probe or function(id) return owned_reply(id, INSTANCE) end,
-    version_fresh = over.version_fresh, owned = over.owned, remember = over.remember,
+    owned = over.owned, remember = over.remember,
   }
 end
 
@@ -195,22 +195,20 @@ check("version reply ApiVersion is a number", 403, req{path = v("/containers/jso
   fake_io{version = function() return "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":1.56}" end})
 check("version reply status 500", 403, req{path = v("/containers/json"), query = lq}, CFG,
   fake_io{version = function() return "HTTP/1.0 500 Error\r\n\r\n{\"ApiVersion\":\"" .. API .. "\"}" end})
--- The caches: a stale version is refreshed once on a mismatch, an id the daemon vouched for is not asked about twice.
-local OLD_REPLY = "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":\"1.40\"}"
-local function stale_cache(fresh) return fake_io{version = function() return OLD_REPLY end, version_fresh = fresh} end
-check("version equal to the cached one needs no fresh read", "allow", req{path = v("/containers/json"), query = lq}, CFG,
-  fake_io{version_fresh = function() error("must not be called") end})
-check("cached version stale, fresh read matches (the daemon was upgraded)", "allow", req{path = v("/containers/json"), query = lq}, CFG,
-  stale_cache(function() return VERSION_REPLY end))
-check("cached version stale, fresh read differs too", 403, req{path = "/v1.99/containers/json", query = lq}, CFG,
-  stale_cache(function() return VERSION_REPLY end))
-check("cached version stale, fresh read fails", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  stale_cache(function() return nil, "boom" end))
-check("cached version stale, fresh read raises", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  stale_cache(function() error("boom") end))
-check("cached version stale, fresh read garbage", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  stale_cache(function() return "garbage" end))
-check("stale cache without a refresh function", 403, req{path = v("/containers/json"), query = lq}, CFG, stale_cache(nil))
+-- The version is read on every versioned request (no cache): a daemon upgrade is seen by the very next request.
+local reads = 0
+local upgrading = {"1.40", API}
+local function counting() return fake_io{version = function()
+  reads = reads + 1
+  return "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":\"" .. upgrading[1] .. "\"}"
+end} end
+check("version read, daemon at the request's version", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
+check("version read again for the next request", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
+eq("one daemon read per versioned request", reads, 2)
+upgrading[1] = API
+check("after the daemon upgrade the old version is refused at once", 403, req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
+check("after the daemon upgrade the new version is accepted at once", "allow", req{path = v("/containers/json"), query = lq}, CFG, counting())
+eq("two more reads", reads, 4)
 
 local remembered = {}
 local function remembering() return fake_io{remember = function(id) remembered[#remembered + 1] = id end} end
@@ -237,6 +235,42 @@ check("a raising remember does not turn an allow into an error", "allow", req{pa
   fake_io{remember = function() error("boom") end})
 check("a raising owned() falls back to the probe", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
   fake_io{owned = function() error("boom") end})
+-- Eviction: an id leaves the vouched-for table when the daemon confirms its removal (2xx) or its absence (404).
+local DEL = "/containers/" .. ID
+local function evicted(name, want, method, path, status)
+  eq("evict: " .. name, P.evict_id(method, path, status), want)
+end
+evicted("delete answered 204", ID, "DELETE", v(DEL), 204)
+evicted("delete answered 200", ID, "DELETE", v(DEL), 200)
+evicted("delete answered 404", ID, "DELETE", v(DEL), 404)
+evicted("delete answered 409 (removal in progress)", nil, "DELETE", v(DEL), 409)
+evicted("delete answered 500", nil, "DELETE", v(DEL), 500)
+evicted("delete answered 304", nil, "DELETE", v(DEL), 304)
+evicted("delete, unversioned path (never forwarded)", nil, "DELETE", DEL, 204)
+evicted("inspect answered 404 does not evict", nil, "GET", v(DEL .. "/json"), 404)
+evicted("start answered 204 does not evict", nil, "POST", v(DEL .. "/start"), 204)
+evicted("stop answered 204 does not evict", nil, "POST", v(DEL .. "/stop"), 204)
+evicted("delete of a short id", nil, "DELETE", v("/containers/" .. ID:sub(1, 12)), 204)
+evicted("delete of a name", nil, "DELETE", v("/containers/ss-" .. TOKEN), 204)
+evicted("delete with a trailing path", nil, "DELETE", v(DEL .. "/x"), 204)
+evicted("delete of a network", nil, "DELETE", v("/networks/" .. ID), 204)
+evicted("non-numeric status", nil, "DELETE", v(DEL), nil)
+-- A cache the table is wired to: vouch, evict, vouch again needs a new probe.
+local table_ids, probes = {}, 0
+local function wired()
+  return fake_io{
+    owned = function(id) return table_ids[id] == true end,
+    remember = function(id) table_ids[id] = true end,
+    probe = function(id) probes = probes + 1; return owned_reply(id, INSTANCE) end,
+  }
+end
+check("wired cache: first request probes", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
+check("wired cache: second request does not", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
+eq("wired cache: one probe so far", probes, 1)
+local gone = P.evict_id("DELETE", v(DEL), 204)
+if gone then table_ids[gone] = nil end
+check("wired cache: after eviction the id is probed again", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
+eq("wired cache: two probes", probes, 2)
 
 check("unversioned ping needs no version read", "allow", req{path = "/_ping"}, CFG,
   fake_io{version = function() error("must not be called") end})
@@ -371,7 +405,7 @@ local function framed(framing, body)
   end
   return head .. "\r\n" .. body -- close-delimited
 end
-local owned_body = FIXTURE_SETS[1].replies["list-one.http10"]:match("\r\n\r\n(.*)$")
+local owned_body = FIXTURE_SETS[1].replies["list-one.http10"]:match("\r\n\r\n(.-)%s*$")
 for _, framing in ipairs({"length", "chunked", "chunked-split", "close"}) do
   for _, tail in ipairs({"", "\n", "\r\n", " ", "\t\n"}) do
     local label = framing .. ", " .. string.format("%q", tail)

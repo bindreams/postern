@@ -9,15 +9,13 @@ This module exists because Compose interpolates `${VAR}` from the shell (or
 """
 from __future__ import annotations
 
-import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
-from ._compose import load_compose
+from ._compose import load_compose, run_compose_config
 
 # tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -104,29 +102,6 @@ def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
 
 
 # Real Compose-CLI resolution ==========================================================================================
-def _run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
-    """Shell out to the real Compose CLI's `config --format json` and return
-    the parsed result. Shared by every `_compose_config*` helper below.
-    """
-    proc = subprocess.run(
-        ["docker", "compose", *compose_args, "config", "--format", "json"],
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        # `config` is a local parse and normally returns in well under a second,
-        # but it is still a child process: a hung Docker-context probe or a
-        # credential-helper prompt would otherwise wedge the whole pytest run
-        # with no output. TimeoutExpired propagating (naming this specific
-        # child process) is the failure bound -- kept below pyproject.toml's
-        # global `timeout = 30` per-test bound so it can actually fire first,
-        # instead of a generic pytest-timeout traceback with no subprocess detail.
-        timeout=20,
-    )
-    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
-    return json.loads(proc.stdout)
-
-
 def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str | None) -> dict:
     """Resolve compose.yaml with the real Compose CLI and return its JSON.
 
@@ -144,7 +119,7 @@ def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str |
     env = {k: v for k, v in os.environ.items() if k != "SHADOWSOCKS_NETWORK"}
     if shell_env is not None:
         env["SHADOWSOCKS_NETWORK"] = shell_env
-    return _run_compose_config(["-f", "compose.yaml"], tmp_path, env)
+    return run_compose_config(["-f", "compose.yaml"], tmp_path, env)
 
 
 @pytest.mark.compose_cli
@@ -212,8 +187,8 @@ def test_e2e_mta_overlay_merge_agrees_on_the_shadowsocks_network(overlay_relpath
     resolved SHADOWSOCKS_NETWORK must be a network nginx actually joins in
     the MERGED project, not just in either file read alone."""
     env = dict(os.environ, **extra_env)
-    config = _run_compose_config(["-f", "portal/tests/e2e/e2e.compose.yaml", "-f", overlay_relpath, "-p", project_name],
-                                 REPO_ROOT, env)
+    config = run_compose_config(["-f", "portal/tests/e2e/e2e.compose.yaml", "-f", overlay_relpath, "-p", project_name],
+                                REPO_ROOT, env)
     portal_env = config["services"]["portal"]["environment"]["SHADOWSOCKS_NETWORK"]
     networks = config["networks"] or {}
     nginx_net_names = {(networks.get(key) or {}).get("name") for key in config["services"]["nginx"]["networks"]}

@@ -10,7 +10,9 @@ first needs it -- not before.
 from __future__ import annotations
 
 import functools
+import json
 import re
+import subprocess
 from pathlib import Path
 
 import yaml
@@ -95,6 +97,37 @@ _narrow_implicit_resolver(ComposeLoader, "tag:yaml.org,2002:float", _YAML_1_2_FL
 # correct default to leave in place. See
 # test_load_compose_reads_legacy_bool_spellings_as_booleans in test__compose.py.
 
+# Glob-derived compose file lists ======================================================================================
+# Same construction as test_e2e_image_isolation.py.
+E2E_COMPOSE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
+
+
+def repo_relative(path: Path) -> str:
+    return str(path.relative_to(REPO_ROOT))
+
+
+def PRODUCTION_COMPOSE_FILES() -> list[Path]:
+    # Two glob shapes at repo root, same as test_build_revision.py's
+    # test_overlays_declare_no_builds: the existing overlays match `compose*.yaml`,
+    # but CLAUDE.md's general convention for a supplementary file is
+    # `<name>.compose.yaml`, which `compose*.yaml` would NOT match.
+    files = sorted(set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml")))
+    assert files, "no production compose files found -- these guards would pass vacuously"
+    return files
+
+
+def E2E_COMPOSE_FILES() -> list[Path]:
+    # rglob, not glob: matches test_e2e_image_isolation.py's e2e_compose_files(),
+    # so both modules agree on what "an e2e compose file" is -- a file matching
+    # one guard's definition but not the other's would be caught by exactly one.
+    files = sorted(E2E_COMPOSE_DIR.rglob("*.compose.yaml"))
+    assert files, f"no *.compose.yaml under {E2E_COMPOSE_DIR} -- these guards would pass vacuously"
+    return files
+
+
+def ALL_COMPOSE_FILES() -> list[Path]:
+    return PRODUCTION_COMPOSE_FILES() + E2E_COMPOSE_FILES()
+
 
 def load_compose(path: Path) -> dict:
     """Parse a Docker Compose YAML file into a plain dict.
@@ -140,3 +173,50 @@ def production_mta_submit_subnet() -> str:
     subnet = configs[0]["subnet"]
     assert isinstance(subnet, str), f"compose.yaml mta-submit subnet is {subnet!r}"
     return subnet
+
+
+# Service environment and the real Compose CLI =========================================================================
+def service_environment(path: Path, service: str) -> dict[str, str | None]:
+    """A service's `environment` as a dict, accepting both Compose forms.
+
+    The mapping form is what this repo uses; the `- KEY=VALUE` list form is
+    equally valid Compose and would otherwise crash every glob-derived guard in
+    this module with an AttributeError the moment a new file used it. A bare
+    `- KEY` entry (no `=`) is legal Compose too -- it passes the host's own
+    environment value through -- and maps to None rather than raising, since
+    "value comes from the host" is not "malformed file".
+    """
+    env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
+    if env is None:
+        return {}
+    if isinstance(env, dict):
+        return {str(k): (None if v is None else str(v)) for k, v in env.items()}
+    assert isinstance(env, list), f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
+    out: dict[str, str | None] = {}
+    for item in env:
+        key, sep, value = str(item).partition("=")
+        out[key] = value if sep else None
+    return out
+
+
+def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
+    """Shell out to the real Compose CLI's `config --format json` and return
+    the parsed result.
+    """
+    proc = subprocess.run(
+        ["docker", "compose", *compose_args, "config", "--format", "json"],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        # `config` is a local parse and normally returns in well under a second,
+        # but it is still a child process: a hung Docker-context probe or a
+        # credential-helper prompt would otherwise wedge the whole pytest run
+        # with no output. TimeoutExpired propagating (naming this specific
+        # child process) is the failure bound -- kept below pyproject.toml's
+        # global `timeout = 30` per-test bound so it can actually fire first,
+        # instead of a generic pytest-timeout traceback with no subprocess detail.
+        timeout=20,
+    )
+    assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
+    return json.loads(proc.stdout)

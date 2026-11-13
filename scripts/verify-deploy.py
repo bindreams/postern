@@ -281,23 +281,16 @@ def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
         raise CollectError(f"docker compose config emitted unparseable JSON: {exc}") from exc
 
 
-def _dotenv_sets(project_dir: Path, name: str) -> bool:
-    try:
-        text = (project_dir / ".env").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return re.search(rf"^\s*(?:export\s+)?{re.escape(name)}\s*=", text, re.MULTILINE) is not None
-
-
 def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
-    """Names the deploying shell exports that replace a different value set in `.env`.
+    """Names the deploying shell exports that change what compose delivers to a service.
 
     `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
     key is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
     literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
-    shell value win over `.env`, which an operator who exported the name for another purpose does
-    not expect. A name is reported only when `.env` sets it and the resolved config changes with
-    it removed from the shell. Names only: the caller prints them, and a value could be a secret.
+    shell value win over `.env` and the interpolation default, which an operator who exported the
+    name for another purpose does not expect. A name is reported when it is exported and the
+    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
+    only: the caller prints them, and a value could be a secret.
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():
@@ -306,10 +299,7 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
                 names.add(key)
             elif isinstance(value, str):
                 names.update(_ENV_REFERENCE.findall(value.replace("$$", "")))
-    candidates = sorted(
-        name for name in names
-        if name in environ and not name.startswith("COMPOSE_") and _dotenv_sets(project_dir, name)
-    )
+    candidates = sorted(name for name in names if name in environ and not name.startswith("COMPOSE_"))
     if not candidates:
         return []
     baseline = _compose_resolved(run, project_dir)
@@ -1054,8 +1044,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "--print-shell-overrides",
         action="store_true",
         help="Read `docker compose config --no-interpolate --format json` on stdin and print, one per "
-        "line, the variables compose resolves for a service that are also exported in this shell "
-        "(names only), then exit."
+        "line, the variables compose passes to a service that are exported in this shell and change "
+        "what compose resolves (names only), then exit."
     )
     parser.add_argument("--json", dest="output_json", action="store_true", help="Emit structured JSON")
     parser.add_argument(

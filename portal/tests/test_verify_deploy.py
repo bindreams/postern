@@ -1011,12 +1011,17 @@ def test_shell_overrides_ignores_a_name_whose_shell_value_equals_dot_env(tmp_pat
     assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, _OverrideRunner(set()), project) == []
 
 
-def test_shell_overrides_ignores_a_name_dot_env_does_not_set(tmp_path):
-    """Nothing is overridden: the shell is the only source of the value."""
+def test_shell_overrides_names_a_variable_exported_in_the_shell_that_dot_env_does_not_set(tmp_path):
+    """The shell value still reaches the container instead of the compose default, so it is reported."""
     project = _project(tmp_path, "# AWS_REGION=commented out\nOTHER=1\n")
     run = _OverrideRunner({"AWS_REGION"})
-    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, project) == []
-    assert run.calls == []
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, project) == ["AWS_REGION"]
+
+
+def test_shell_overrides_ignores_a_shell_export_that_changes_nothing_when_dot_env_does_not_set_it(tmp_path):
+    """An export equal to the compose default resolves the same with or without it: silent."""
+    project = _project(tmp_path, "OTHER=1\n")
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, _OverrideRunner(set()), project) == []
 
 
 def test_shell_overrides_ignores_literals_escaped_references_compose_names_and_unexported_names(tmp_path):
@@ -1028,9 +1033,9 @@ def test_shell_overrides_ignores_literals_escaped_references_compose_names_and_u
     assert vd.shell_overrides(_UNINTERPOLATED, environ, run, project) == []
 
 
-def test_shell_overrides_without_a_dot_env_file_names_nothing(tmp_path):
+def test_shell_overrides_without_a_dot_env_file_names_a_changing_export(tmp_path):
     run = _OverrideRunner({"AWS_REGION"})
-    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path) == []
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path) == ["AWS_REGION"]
 
 
 def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypatch, capsys):

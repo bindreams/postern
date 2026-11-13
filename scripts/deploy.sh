@@ -181,7 +181,7 @@ check_compose_config() {
 
 # Compose resolves a variable it passes to a service from this shell before .env, so a
 # name exported here for another purpose (INSTANCE_ID, AWS_REGION, ...) silently
-# replaces a different value set in .env. Warn with the names only -- a value could be a
+# replaces what .env or the compose default would give it. Warn with the names only -- a value could be a
 # secret. `--no-interpolate` keeps bare passthrough keys visible as keys; verify-deploy.py
 # does the matching and the comparison, so this script needs no JSON parser.
 warn_shell_overrides() {
@@ -191,7 +191,7 @@ warn_shell_overrides() {
     if [[ -z "$overrides" ]]; then
         return 0
     fi
-    warn "exported in this shell with a value that differs from .env, so the shell value is used: ${overrides//$'\n'/ }"
+    warn "exported in this shell, overriding .env or its default: ${overrides//$'\n'/ }"
 }
 
 print_preflight() {

@@ -15,7 +15,7 @@ from ._compose import load_compose
 # test_tunnel.py, and test_mta_real.py actually import for their docker
 # run/build calls); import rather than redefine so there is one source of
 # truth to check the compose files against, not two that could drift.
-from .e2e._helpers import E2E_NGINX_IMAGE, E2E_PROVISIONER_IMAGE, E2E_SHADOWSOCKS_IMAGE
+from .e2e._helpers import E2E_DOCKER_PROXY_IMAGE, E2E_NGINX_IMAGE, E2E_PROVISIONER_IMAGE, E2E_SHADOWSOCKS_IMAGE
 
 # portal/tests/ -> portal/ -> repo root
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -171,12 +171,12 @@ def test_e2e_portal_services_point_reconciler_at_e2e_shadowsocks_image():
 
 
 def test_e2e_compose_images_match_helpers_constants():
-    """The nginx and provisioner images declared in the compose files must
-    match `_helpers.py`'s `E2E_NGINX_IMAGE`/`E2E_PROVISIONER_IMAGE` -- the
+    """The nginx, provisioner and docker-proxy images declared in the compose files must
+    match `_helpers.py`'s `E2E_NGINX_IMAGE`/`E2E_PROVISIONER_IMAGE`/`E2E_DOCKER_PROXY_IMAGE` -- the
     constants `_edge_helpers.py` and `test_mta_real.py` actually build their
     `docker run` calls from. A mismatch would only surface as "no such
     image" at e2e runtime otherwise."""
-    expected = {"nginx": E2E_NGINX_IMAGE, "provisioner": E2E_PROVISIONER_IMAGE}
+    expected = {"nginx": E2E_NGINX_IMAGE, "provisioner": E2E_PROVISIONER_IMAGE, "docker-proxy": E2E_DOCKER_PROXY_IMAGE}
     checked = set()
     problems = []
     for path, name, image in _e2e_compose_service_images():

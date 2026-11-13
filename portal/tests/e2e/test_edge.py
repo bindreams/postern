@@ -127,24 +127,20 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
         f"that nginx still writes the pidfile the entrypoint clears"
     )
-    # Surviving is only meaningful if the stale pid is the one the new entrypoint
-    # actually takes. If pid numbering ever stops colliding, this test would pass
-    # against a broken build, so assert the collision rather than assume it.
-    master_pid = current_master_pid()
-    assert stale_pid == master_pid, (
-        f"precondition failed: stale pid {stale_pid!r} is not the pid this runtime "
-        f"hands the new entrypoint ({master_pid!r}), so a restart no longer "
-        f"reproduces issue #245 here and this test proves nothing"
-    )
-
     # The assertion that actually pins the fix: the entrypoint must report having
     # cleared the pidfile the killed container left. Without this the test passes
-    # against a build with the clear removed entirely.
+    # against a build with the clear removed entirely. It does not depend on which
+    # pid the runtime hands the new entrypoint: the clear is unconditional, and the
+    # number is the runtime's to pick (pid 6-8 in practice, differing between boots
+    # on the same runner), so it is deliberately not compared with the stale one.
     assert "cleared stale" in logs_since_last_start(), (
         "the entrypoint did not report clearing the stale pidfile on this boot, so "
         "the pidfile left by the killed container was carried into the new one -- "
         "a reload racing startup would SIGHUP the entrypoint (issue #245)"
     )
+
+    # The new master wrote its own pidfile, so reload has a live target again.
+    assert current_master_pid().isdigit(), "the restarted nginx left no /run/nginx.pid"
 
     # Healthy only proves the container is up; prove it is actually serving TLS.
     client_cert, client_key = edge_client_certs

@@ -176,10 +176,8 @@ def current_master_pid() -> str:
     """The pid nginx recorded for itself in the running container, or "" if absent.
 
     Because the entrypoint ends in ``exec nginx``, this is also the pid the
-    entrypoint SHELL held. Comparing it against the pid a killed container left
-    behind is what proves a restart actually re-collides -- without that, an
-    ungraceful-restart test only proves some file survived, and would pass against
-    a broken build on any runtime whose pid numbering happens not to line up.
+    entrypoint SHELL held. The runtime picks that number, so callers may compare it
+    with another reading of the same boot but never with a killed container's pid.
 
     Deliberately NOT ``check=True``: a missing pidfile is the exact symptom of the
     regression these tests exist to catch, and raising CalledProcessError here would

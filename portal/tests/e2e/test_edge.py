@@ -33,6 +33,7 @@ from ._edge_helpers import (
     EDGE_NGINX_CONTAINER,
     current_master_pid,
     hard_restart_nginx,
+    live_master_pid,
     logs_since_last_start,
 )
 
@@ -127,20 +128,22 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
         f"that nginx still writes the pidfile the entrypoint clears"
     )
-    # The assertion that actually pins the fix: the entrypoint must report having
-    # cleared the pidfile the killed container left. Without this the test passes
-    # against a build with the clear removed entirely. It does not depend on which
-    # pid the runtime hands the new entrypoint: the clear is unconditional, and the
-    # number is the runtime's to pick (pid 6-8 in practice, differing between boots
-    # on the same runner), so it is deliberately not compared with the stale one.
+    # What pins the fix: the entrypoint must report having cleared the killed
+    # container's pidfile, or the test passes with the clear removed. The clear is
+    # unconditional and the runtime picks the pid, so the stale pid is not compared
+    # with the new one.
     assert "cleared stale" in logs_since_last_start(), (
         "the entrypoint did not report clearing the stale pidfile on this boot, so "
         "the pidfile left by the killed container was carried into the new one -- "
         "a reload racing startup would SIGHUP the entrypoint (issue #245)"
     )
 
-    # The new master wrote its own pidfile, so reload has a live target again.
-    assert current_master_pid().isdigit(), "the restarted nginx left no /run/nginx.pid"
+    # hard_restart_nginx already waited for a live master; its pidfile must name it,
+    # or a reload has no valid target.
+    live_pid = live_master_pid()
+    assert live_pid.isdigit() and current_master_pid() == live_pid, (
+        f"/run/nginx.pid ({current_master_pid()!r}) does not name the live nginx master ({live_pid!r})"
+    )
 
     # Healthy only proves the container is up; prove it is actually serving TLS.
     client_cert, client_key = edge_client_certs

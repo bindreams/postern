@@ -7,11 +7,12 @@
 # ungracefully stopped container (host reboot, SIGKILL -- a graceful stop makes
 # nginx unlink it) is still present and still names a pid. The entrypoint ends in
 # `exec nginx`, so the pid it records is the entrypoint SHELL's own, and a restarted
-# container's fresh pid namespace hands that same number to the new shell. A reload
-# racing nginx's startup then SIGHUPs the entrypoint, which has installed no
-# handler, and tini reports 128+1=129. Assume that loop is TERMINAL: nginx never
-# gets far enough to rewrite the pidfile, and the namespace reissues the same
-# number every time. See issue #245.
+# container's fresh pid namespace usually, but not always, hands that number to the
+# new shell. When it does, a reload racing nginx's startup SIGHUPs the entrypoint,
+# which has installed no handler, and tini reports 128+1=129; nginx never gets far
+# enough to rewrite the pidfile, so the next restart repeats it. The number is the
+# runtime's to pick, so nothing here depends on it repeating: the clear is
+# unconditional. See issue #245.
 
 PIDFILE="${PIDFILE:-/run/nginx.pid}"
 PROC_DIR="${PROC_DIR:-/proc}"

@@ -701,5 +701,3 @@ def test_connection_tunnels_keeps_the_identity_warning_off_stdout(cli_env, monke
     assert result.stdout.splitlines() == [f"ss-{_tokens(cli_env)[0]}"]
     assert "WARNING: could not determine this deployment's instance id" in result.stderr
     assert "WARNING" not in result.stdout
-
-

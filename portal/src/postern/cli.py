@@ -66,8 +66,10 @@ def _warn_if_identity_unresolved(settings: Settings) -> bool:
     if resolve_instance_id(settings) is not None:
         return False
     chosen = configured_instance_id(settings)
-    cause = (f"{chosen!r} is not a valid id: it must match {INSTANCE_ID_PATTERN.pattern}" if chosen else
-             "neither INSTANCE_ID nor COMPOSE_PROJECT_NAME is set")
+    cause = (
+        f"{chosen!r} is not a valid id: it must match {INSTANCE_ID_PATTERN.pattern}"
+        if chosen else "neither INSTANCE_ID nor COMPOSE_PROJECT_NAME is set"
+    )
     typer.echo(
         f"WARNING: could not determine this deployment's instance id ({cause}) -- the reconciler "
         "will NOT create, remove, or restart any container until this is fixed. Check that the "

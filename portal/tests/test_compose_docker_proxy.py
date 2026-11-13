@@ -48,8 +48,10 @@ def _is_e2e(path: Path) -> bool:
 def _section(text: str, header: str) -> list[str]:
     lines = text.splitlines()
     start = next(i for i, ln in enumerate(lines) if ln.startswith(header))
-    end = next((i for i in range(start + 1, len(lines)) if lines[i] and not lines[i][0].isspace()
-                and not lines[i].startswith("#")), len(lines))
+    end = next((
+        i for i in range(start + 1, len(lines))
+        if lines[i] and not lines[i][0].isspace() and not lines[i].startswith("#")
+    ), len(lines))
     return [ln.strip() for ln in lines[start + 1:end] if ln.strip() and not ln.strip().startswith("#")]
 
 
@@ -87,7 +89,8 @@ def test_dockerfile_pins_its_base_by_digest_and_copies_exactly_the_policy():
     lines = (PROXY_DIR / "Dockerfile").read_text(encoding="utf-8").splitlines()
     froms = [ln for ln in lines if ln.startswith("FROM ")]
     assert len(froms) == 1 and re.fullmatch(r"FROM ghcr\.io/linuxserver/socket-proxy:\S+@sha256:[0-9a-f]{64}", froms[0])
-    assert [ln for ln in lines if ln.startswith("COPY ")] == ["COPY haproxy.cfg policy.lua action.lua /etc/postern-proxy/"]
+    assert [ln for ln in lines
+            if ln.startswith("COPY ")] == ["COPY haproxy.cfg policy.lua action.lua /etc/postern-proxy/"]
     # Exec form: the base's shell entrypoint renders the stock section-per-variable config this image replaces.
     assert 'ENTRYPOINT ["/usr/sbin/haproxy", "-f", "/etc/postern-proxy/haproxy.cfg", "-db"]' in lines
 
@@ -115,9 +118,10 @@ def test_the_instance_id_pattern_equals_the_reconcilers():
 # Per file =============================================================================================================
 def test_every_stack_defines_the_proxy_from_the_same_context():
     defining = _files_defining_the_proxy()
-    assert {p.name for p in defining} == {
-        "compose.yaml", "e2e.compose.yaml", "e2e-edge.compose.yaml"
-    }, "a file defines (or stopped defining) the docker-proxy: check its wiring against this module"
+    assert {p.name
+            for p in defining} == {
+                "compose.yaml", "e2e.compose.yaml", "e2e-edge.compose.yaml"
+            }, "a file defines (or stopped defining) the docker-proxy: check its wiring against this module"
     for path in defining:
         svc = _services(path)["docker-proxy"]
         context = (path.parent / svc["build"]["context"]).resolve()
@@ -182,13 +186,14 @@ def test_the_portal_reaches_the_proxy_over_the_socket_volume_read_only():
 def test_the_production_default_image_is_the_settings_default():
     """The proxy pins create bodies to ITS image; a portal that falls back to the Settings default must agree."""
     env = _services(REPO_ROOT / "compose.yaml")["docker-proxy"]["environment"]
-    assert env["SHADOWSOCKS_IMAGE"] == "${SHADOWSOCKS_IMAGE:-" + Settings.model_fields["shadowsocks_image"].default + "}"
+    assert env["SHADOWSOCKS_IMAGE"
+               ] == "${SHADOWSOCKS_IMAGE:-" + Settings.model_fields["shadowsocks_image"].default + "}"
 
 
 # Resolved by the real Compose CLI =====================================================================================
-_SCRUBBED = {f.upper() for f in Settings.model_fields} | {
-    "COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"
-}
+_SCRUBBED = {f.upper()
+             for f in Settings.model_fields
+             } | {"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"}
 _CHAINS = [
     ["compose.yaml"],
     ["compose.yaml", "compose.cert.yaml"],
@@ -214,7 +219,10 @@ def _config(chain: list[str], tmp_path: Path, shell: dict[str, str] | None = Non
     env.update(_NEEDED)
     env["COMPOSE_PROFILES"] = "with-mta,with-cert-renewal,with-edge"
     env.update(shell or {})
-    args = ["--env-file", str(env_file), "--project-name", "pin", *(a for f in chain for a in ("-f", str(REPO_ROOT / f)))]
+    args = [
+        "--env-file",
+        str(env_file), "--project-name", "pin", *(a for f in chain for a in ("-f", str(REPO_ROOT / f)))
+    ]
     return run_compose_config(args, REPO_ROOT, env)
 
 
@@ -262,6 +270,7 @@ def test_the_proxy_is_configured_with_what_the_portal_is(chain: list[str], mode:
     services = _config(chain, tmp_path, shell)["services"]
     portal, proxy = services["portal"]["environment"], services["docker-proxy"]["environment"]
     settings = Settings.model_fields
+
     # What the portal effectively runs with: its environment (a bare key that nothing set is absent), else the default.
     def effective_value(env: dict, key: str, default: str) -> str:
         return env[key] if env.get(key) is not None else default

@@ -150,7 +150,12 @@ def test_resolve_instance_id_treats_whitespace_only_compose_project_name_as_unse
 
 # The docker-proxy refuses ids that do not match INSTANCE_ID_PATTERN (policy.lua states the same pattern), so an id the
 # portal accepted but the proxy refused would be a silent outage. Same cases as the Lua suite's "config: instance".
-BAD_INSTANCE_IDS = ["prod:eu", "-a", ".a", "_a", "a b", 'a"b', "a,b", "a/b", "a" + chr(92) + "b", "a%b", "a&b", "a=b", "a" + chr(10) + "b", "a" * 64, chr(233), chr(160) + "a", "a" + chr(160)]
+BAD_INSTANCE_IDS = [
+    "prod:eu", "-a", ".a", "_a", "a b", 'a"b', "a,b", "a/b", "a" + chr(92) + "b", "a%b", "a&b", "a=b",
+    "a" + chr(10) + "b", "a" * 64,
+    chr(233),
+    chr(160) + "a", "a" + chr(160)
+]
 
 
 @pytest.mark.parametrize("good", ["a", "A1_b.c-d", "postern-test", "a" * 63])
@@ -165,8 +170,9 @@ def test_resolve_instance_id_rejects_an_override_the_proxy_would_refuse(bad, cap
     with caplog.at_level(logging.ERROR, logger="postern.reconciler"):
         assert resolve_instance_id(settings) is None
     # No fallback to the project name: the proxy does not fall back either.
-    assert any(reconciler.INSTANCE_ID_PATTERN.pattern in r.getMessage() and repr(bad) in r.getMessage()
-               for r in caplog.records), [r.getMessage() for r in caplog.records]
+    assert any(
+        reconciler.INSTANCE_ID_PATTERN.pattern in r.getMessage() and repr(bad) in r.getMessage() for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
 
 
 @pytest.mark.parametrize("bad", BAD_INSTANCE_IDS)
@@ -1643,7 +1649,7 @@ async def test_loop_notifies_a_waiter_registered_during_the_interval_wait_on_shu
                 await task
 
 
-# Container summaries: reading a container the portal may not own =======================================================
+# Container summaries: reading a container the portal may not own ======================================================
 TOKEN_NAME = "ss-" + "a1" * 12
 
 
@@ -1658,7 +1664,10 @@ def test_the_generic_summary_reader_is_not_public():
 def test_find_container_summary_by_name_returns_name_labels_and_state_from_the_list_payload():
     client = MagicMock()
     client.api.containers.return_value = [
-        {"Id": "a" * 64, "Names": ["/" + TOKEN_NAME], "Labels": {"k": "v"}, "State": "exited", "Mounts": [], "Image": "x"},
+        {
+            "Id": "a" * 64, "Names": ["/" + TOKEN_NAME], "Labels": {"k": "v"}, "State": "exited", "Mounts": [],
+            "Image": "x"
+        },
     ]
 
     found = reconciler.find_container_summary_by_name(client, TOKEN_NAME)

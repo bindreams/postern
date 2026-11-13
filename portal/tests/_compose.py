@@ -103,7 +103,6 @@ _narrow_implicit_resolver(ComposeLoader, "tag:yaml.org,2002:float", _YAML_1_2_FL
 # test_load_compose_reads_legacy_bool_spellings_as_booleans in test__compose.py.
 
 # Glob-derived compose file lists ======================================================================================
-# Same construction as test_e2e_image_isolation.py.
 E2E_COMPOSE_DIR = REPO_ROOT / "portal" / "tests" / "e2e"
 
 
@@ -112,10 +111,7 @@ def repo_relative(path: Path) -> str:
 
 
 def PRODUCTION_COMPOSE_FILES() -> list[Path]:
-    # Two glob shapes at repo root, same as test_build_revision.py's
-    # test_overlays_declare_no_builds: the existing overlays match `compose*.yaml`,
-    # but CLAUDE.md's general convention for a supplementary file is
-    # `<name>.compose.yaml`, which `compose*.yaml` would NOT match.
+    # Two shapes: overlays match `compose*.yaml`; supplementary files follow `<name>.compose.yaml`, which that glob misses.
     files = sorted(set(REPO_ROOT.glob("compose*.yaml")) | set(REPO_ROOT.glob("*.compose.yaml")))
     assert files, "no production compose files found -- these guards would pass vacuously"
     return files
@@ -214,13 +210,7 @@ def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) 
         env=env,
         capture_output=True,
         text=True,
-        # `config` is a local parse and normally returns in well under a second,
-        # but it is still a child process: a hung Docker-context probe or a
-        # credential-helper prompt would otherwise wedge the whole pytest run
-        # with no output. TimeoutExpired propagating (naming this specific
-        # child process) is the failure bound -- kept below pyproject.toml's
-        # global `timeout = 30` per-test bound so it can actually fire first,
-        # instead of a generic pytest-timeout traceback with no subprocess detail.
+        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named; keep below pyproject's `timeout = 30`.
         timeout=20,
     )
     assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"

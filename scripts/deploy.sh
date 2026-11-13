@@ -169,10 +169,7 @@ check_revision() {
     fi
 }
 
-# Refuse early on a broken compose setup (a missing .env, or one without SECRET_KEY,
-# fails `config` through the portal's `${SECRET_KEY:?}`). Without this the operator
-# finds out at `compose up`, minutes later, after two image builds -- which contradicts the whole "refuse before you
-# touch anything" premise of the precondition gate.
+# Refuse before the image builds: a missing .env or SECRET_KEY fails `config` via the portal's `${SECRET_KEY:?}`.
 check_compose_config() {
     if ! docker compose config -q; then
         die "docker compose config failed -- fix .env / COMPOSE_FILE before deploying"
@@ -183,11 +180,15 @@ check_compose_config() {
 # name exported here for another purpose (INSTANCE_ID, AWS_REGION, ...) silently
 # replaces what .env or the compose default would give it. Warn with the names only -- a value could be a
 # secret. `--no-interpolate` keeps bare passthrough keys visible as keys; verify-deploy.py
-# does the matching and the comparison, so this script needs no JSON parser.
+# does the matching and the comparison, so this script needs no JSON parser. Advisory:
+# if the check itself cannot run, say so and deploy on.
 warn_shell_overrides() {
     local overrides
-    overrides="$(docker compose config --no-interpolate --format json |
-        python3 scripts/verify-deploy.py --print-shell-overrides)"
+    if ! overrides="$(docker compose config --no-interpolate --format json |
+        python3 scripts/verify-deploy.py --print-shell-overrides)"; then
+        warn "could not check for shell variables overriding .env (see above); continuing"
+        return 0
+    fi
     if [[ -z "$overrides" ]]; then
         return 0
     fi

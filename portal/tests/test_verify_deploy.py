@@ -8,11 +8,16 @@ runner and `evaluate()` is pure.
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from postern.settings import Settings
+
+from ._compose import compose_project
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-deploy.py"
@@ -980,16 +985,28 @@ _UNINTERPOLATED = {
 
 class _OverrideRunner:
     """Stands in for `[env -u NAME] docker compose config --format json`: the resolved config
-    differs from the baseline when a name in `differs_when_unset` is removed from the shell."""
+    differs from the baseline when a name in `differs_when_unset` is removed from the shell, and
+    the probe fails outright for a name in `fails_when_unset` (`""` fails the baseline)."""
 
-    def __init__(self, differs_when_unset: set[str]):
+    def __init__(
+        self,
+        differs_when_unset: set[str],
+        fails_when_unset: frozenset[str] | set[str] = frozenset(),
+        stdout: str | None = None
+    ):
         self.differs_when_unset = differs_when_unset
+        self.fails_when_unset = fails_when_unset
+        self.stdout = stdout
         self.calls: list[list[str]] = []
 
     def __call__(self, argv, cwd):
         argv = list(argv)
         self.calls.append(argv)
         unset = argv[2] if argv[:2] == ["env", "-u"] else ""
+        if unset in self.fails_when_unset:
+            return vd.Completed(1, "", "error while interpolating services.portal.environment.SECRET_KEY: required")
+        if self.stdout is not None:
+            return vd.Completed(0, self.stdout, "")
         marker = "without-" + unset if unset in self.differs_when_unset else "baseline"
         return vd.Completed(0, json.dumps({"marker": marker}), "")
 
@@ -1036,6 +1053,69 @@ def test_shell_overrides_ignores_literals_escaped_references_compose_names_and_u
 def test_shell_overrides_without_a_dot_env_file_names_a_changing_export(tmp_path):
     run = _OverrideRunner({"AWS_REGION"})
     assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path) == ["AWS_REGION"]
+
+
+def test_shell_overrides_reports_a_name_whose_variant_probe_fails(tmp_path):
+    """A `${NAME:?}` that only the shell satisfies makes the probe without it fail: that is a difference."""
+    run = _OverrideRunner(set(), fails_when_unset={"AWS_REGION"})
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y", "DOMAIN": "z"}, run, tmp_path) == ["AWS_REGION"]
+
+
+def test_shell_overrides_reports_a_name_whose_variant_probe_is_unparseable(tmp_path):
+
+    class Runner(_OverrideRunner):
+
+        def __call__(self, argv, cwd):
+            if argv[:2] == ["env", "-u"]:
+                return vd.Completed(0, "not json", "")
+            return super().__call__(argv, cwd)
+
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, Runner(set()), tmp_path) == ["AWS_REGION"]
+
+
+def test_shell_overrides_raises_when_the_baseline_probe_fails(tmp_path):
+    run = _OverrideRunner(set(), fails_when_unset={""})
+    with pytest.raises(vd.CollectError, match="docker compose config failed"):
+        vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path)
+
+
+def test_shell_overrides_raises_when_the_baseline_probe_is_not_json(tmp_path):
+    run = _OverrideRunner(set(), stdout="not json")
+    with pytest.raises(vd.CollectError, match="unparseable JSON"):
+        vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path)
+
+
+def test_print_shell_overrides_exits_two_when_the_baseline_probe_fails(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AWS_REGION", "y")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
+    monkeypatch.setattr(vd, "run_command", _OverrideRunner(set(), fails_when_unset={""}))
+    assert vd.main(["--print-shell-overrides", "--project-dir", str(tmp_path)]) == 2
+    assert "docker compose config failed" in capsys.readouterr().err
+
+
+def test_print_shell_overrides_exits_two_when_the_baseline_probe_is_not_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AWS_REGION", "y")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
+    monkeypatch.setattr(vd, "run_command", _OverrideRunner(set(), stdout="not json"))
+    assert vd.main(["--print-shell-overrides", "--project-dir", str(tmp_path)]) == 2
+    assert "unparseable JSON" in capsys.readouterr().err
+
+
+@pytest.mark.compose_cli
+def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
+    """A real export that changes what compose delivers is reported; one equal to `.env` is silent."""
+    for name in {field.upper() for field in Settings.model_fields} | {"COMPOSE_FILE", "COMPOSE_PROJECT_NAME"}:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
+    project = compose_project(
+        tmp_path, ["compose.yaml"], {"SECRET_KEY": "k", "DOMAIN": "postern.test", "SMTP_PASSWORD": "from-dot-env"}
+    )
+    monkeypatch.setenv("SMTP_PASSWORD", "from-shell")  # differs from .env: delivered instead of it
+    monkeypatch.setenv("DOMAIN", "postern.test")  # equals .env: changes nothing
+    probe = vd.run_command(["docker", "compose", "config", "--no-interpolate", "--format", "json"], project)
+    assert probe.returncode == 0, probe.stderr
+    names = vd.shell_overrides(json.loads(probe.stdout), os.environ, vd.run_command, project)
+    assert names == ["SMTP_PASSWORD"]
 
 
 def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypatch, capsys):

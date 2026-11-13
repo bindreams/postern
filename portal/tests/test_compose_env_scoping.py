@@ -1,4 +1,4 @@
-"""Each compose service receives exactly the variables it reads (issue #292).
+"""Each compose service receives exactly the variables it reads.
 
 No compose file uses `env_file:`. Every service lists its variables under
 `environment:` as bare passthrough keys, so a variable reaches a service through
@@ -254,19 +254,29 @@ def test_no_secret_reaches_a_service_that_does_not_read_it(
 def test_unset_variables_are_absent_not_empty(tmp_path: Path, provisioner_provider_vars: frozenset[str]):
     """Interpolating `${VAR:-}` would turn an unset variable into "" -- the provisioner's
     `_bool_env` then reads a default-true setting as False, and the portal's `Settings`
-    rejects explicitly-set EDGE_CF_* fields under a non-cloudflare profile."""
+    rejects explicitly-set EDGE_CF_* fields under a non-cloudflare profile. So every bare
+    passthrough key, in every service, resolves to absent when nothing sets it."""
     files = ["compose.yaml"]
     project = compose_project(tmp_path, files, {"SECRET_KEY": "x", "DOMAIN": "postern.test"})
     config = _resolve(project, files, provisioner_provider_vars)
-    portal = _env_of(config, "portal")
-    provisioner = _env_of(config, "provisioner")
-    for name in (
-        "EDGE_CF_MANAGE_ZONE_ECH", "EDGE_CF_MANAGE_SSL_MODE", "EDGE_CF_SSL_MODE", "EDGE_CF_AUTHENTICATED_ORIGIN_PULL",
-        "SMTP_PASSWORD"
-    ):
-        assert portal.get(name) is None, f"portal: unset {name} resolved to {portal.get(name)!r}"
-    assert provisioner.get("EDGE_CF_MANAGE_SSL_MODE") is None
-    assert provisioner.get("CLOUDFLARE_API_TOKEN") is None
+    declared = load_compose(COMPOSE)["services"]
+    checked = set()
+    problems = []
+    for service in config["services"]:
+        keys = service_environment(COMPOSE, service)
+        resolved = _env_of(config, service)
+        undeclared = resolved.keys() - keys.keys()
+        if undeclared:
+            problems.append(f"{service} receives {sorted(undeclared)}, which compose.yaml does not declare")
+        assert service in declared, f"{service} resolved but is not in compose.yaml"
+        for name, value in keys.items():
+            if value is not None or name in {"SECRET_KEY", "DOMAIN"}:
+                continue
+            checked.add(name)
+            if resolved.get(name) is not None:
+                problems.append(f"{service}: unset {name} resolved to {resolved[name]!r}")
+    assert not problems, "\n".join(problems)
+    assert {"EDGE_CF_MANAGE_ZONE_ECH", "EDGE_CF_MANAGE_SSL_MODE", "SMTP_PASSWORD", "CLOUDFLARE_API_TOKEN"} <= checked
 
 
 @pytest.mark.compose_cli

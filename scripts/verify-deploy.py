@@ -290,7 +290,9 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
     shell value win over `.env` and the interpolation default, which an operator who exported the
     name for another purpose does not expect. A name is reported when it is exported and the
     resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
-    only: the caller prints them, and a value could be a secret.
+    only: the caller prints them, and a value could be a secret. A variant that fails to resolve or
+    parse (a `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline
+    raises CollectError.
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():
@@ -303,7 +305,15 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
     if not candidates:
         return []
     baseline = _compose_resolved(run, project_dir)
-    return [name for name in candidates if _compose_resolved(run, project_dir, name) != baseline]
+    overrides = []
+    for name in candidates:
+        try:
+            differs = _compose_resolved(run, project_dir, name) != baseline
+        except CollectError:
+            differs = True
+        if differs:
+            overrides.append(name)
+    return overrides
 
 
 def _optional_dict(obj: dict, key: str, label: str, context: str) -> dict:

@@ -66,6 +66,9 @@ if [[ "$1 ${2:-} ${3:-}" == "compose config --services" ]]; then
     exit 0
 fi
 if [[ "$1 ${2:-} ${3:-}" == "compose config --no-interpolate" ]]; then
+    if [[ -n "${FAKE_DOCKER_FAIL:-}" && "$*" == *"$FAKE_DOCKER_FAIL"* ]]; then
+        exit 1
+    fi
     echo '{"services": {}}'
     exit 0
 fi
@@ -105,7 +108,7 @@ fi
 if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --print-shell-overrides" ]]; then
     cat > /dev/null
     printf '%s\n' ${FAKE_SHELL_OVERRIDES:-}
-    exit 0
+    exit "${FAKE_SHELL_OVERRIDES_RC:-0}"
 fi
 if [[ "$1 ${2:-}" == "scripts/verify-deploy.py --tunnels" ]]; then
     printf 'python3-stdin|%s|%s\n' "$PWD" "$(tr '\n' ' ')" >> "$DEPLOY_TEST_LOG"
@@ -492,6 +495,22 @@ def test_no_override_warning_when_the_shell_exports_nothing_compose_passes_throu
     proc, _calls = _run(tmp_path)
     assert proc.returncode == 0, proc.stderr
     assert "exported in this shell" not in proc.stderr
+
+
+def test_a_failing_override_check_does_not_abort_the_deploy(tmp_path):
+    """The warning is advisory: when the check itself cannot run, say so and deploy on."""
+    proc, calls = _run(tmp_path, FAKE_SHELL_OVERRIDES_RC="2")
+    assert proc.returncode == 0, proc.stderr
+    assert "could not check" in proc.stderr
+    assert "Deploy complete" in proc.stdout
+    assert any(a.startswith("scripts/verify-deploy.py --tunnels") for a in _args_of(calls, "python3"))
+
+
+def test_a_failing_no_interpolate_config_does_not_abort_the_deploy(tmp_path):
+    proc, _calls = _run(tmp_path, FAKE_DOCKER_FAIL="compose config --no-interpolate")
+    assert proc.returncode == 0, proc.stderr
+    assert "could not check" in proc.stderr
+    assert "Deploy complete" in proc.stdout
 
 
 def test_a_broken_compose_config_is_refused_before_anything_is_built(tmp_path):

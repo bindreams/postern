@@ -445,10 +445,6 @@ def test_reconciler_removes_orphan(e2e_stack):
     still RUNNING."""
 
     def _run_labelled(name: str, labels: list[str]) -> None:
-        # `run_sleeper` is idempotent: these are fixed names shared across test runs, and
-        # this test's whole point is that the reconciler must NOT remove foreign/legacy
-        # ones -- so a leftover from a prior killed run (CI timeout, Ctrl-C) must be
-        # reclaimed rather than poisoning every run after it with a `--name` conflict.
         run_sleeper(name, "e2e-shadowsocks", labels=labels)
 
     orphan = "ss-orphan0000000000000000"
@@ -558,7 +554,6 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
             (foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"]),
             (legacy, ["postern.managed=true"]),
         ):
-            # Idempotent, same reasoning as test_reconciler_removes_orphan's _run_labelled.
             run_sleeper(fixture_name, "e2e-shadowsocks", labels=labels)
 
         subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
@@ -603,14 +598,7 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
 
 # Upstream re-resolution ===============================================================================================
 def _wait_for_healthz(client: httpx.Client) -> None:
-    """Block until /healthz answers 200 through nginx.
-
-    A request made while the portal container is down is not refused: nobody answers
-    its SYN, so nginx's connect hangs for seconds (also with a static `proxy_pass`) and
-    the client's own 5s read timeout can fire first. That is "not recovered yet", not a
-    failure. Wait on the real condition, uncapped: the per-test timeout is the failure
-    bound, and the bug's signature is "never recovers". The pace keeps the loop from
-    hammering the stack."""
+    """Block until /healthz answers 200 through nginx. A hung connect to the downed portal can trip the client's 5s timeout first; that means 'not recovered yet'. Uncapped: the per-test timeout is the failure bound."""
     while True:
         try:
             if client.get("/healthz").status_code == 200:
@@ -622,21 +610,15 @@ def _wait_for_healthz(client: httpx.Client) -> None:
 
 @pytest.mark.timeout(180)
 def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
-    """Recreating the portal container hands it a new IP. nginx must pick that up on
-    its own (#233): with a startup-resolved `proxy_pass` it kept dialing the dead IP
-    and every portal route answered 502 until nginx itself was restarted.
-
-    The portal is stopped to free its address, a throwaway container is pinned to
-    exactly that address, then the portal is force-recreated (the path `deploy.sh`
-    takes when the image changed). The address is taken, so the new portal cannot
-    land on it: the IP change is guaranteed, not left to Docker's allocation order."""
+    """Recreating the portal gives it a new IP; nginx must follow without a restart (a startup-resolved `proxy_pass` would 502 until nginx restarted).
+    A throwaway container holds the old IP so the change is guaranteed.
+    """
     network = "postern-e2e-default"
     holder = "postern-e2e-ip-holder"
     ip_format = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
 
     def portal_ip() -> str:
-        # Running containers only, and non-empty: an exited predecessor or an empty
-        # address would make the `!= old_ip` check below pass vacuously.
+        # Non-empty and running-only, else `!= old_ip` below passes vacuously.
         ip = docker_inspect(get_container_id("portal", running_only=True), ip_format)
         assert ip, "portal has no address on the e2e default network"
         return ip
@@ -644,7 +626,7 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
     def nginx_started_at() -> str:
         return docker_inspect(get_container_id("nginx"), "{{.State.StartedAt}}")
 
-    # /healthz, not /login: /login is rate-limited and the suite shares one source IP (#7).
+    # /healthz, not /login: /login is rate-limited and the suite shares one source IP.
     assert portal_client.get("/healthz").status_code == 200  # nginx has used the old address
     old_ip = portal_ip()
     nginx_started = nginx_started_at()
@@ -655,7 +637,7 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
         subprocess.run(
             compose("up", "-d", "--force-recreate", "--wait", "--no-deps", "portal"), check=True, capture_output=True
         )
-        assert portal_ip() != old_ip, "portal kept its old IP; the test no longer exercises #233"
+        assert portal_ip() != old_ip, "portal kept its old IP; the test no longer exercises re-resolution"
 
         # nginx caches a resolved name for `valid=5s`, so requests just after the move
         # may still see the old answer.
@@ -664,4 +646,4 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
         assert nginx_started_at() == nginx_started, "nginx was restarted mid-test"
     finally:
         subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
-        subprocess.run(compose("up", "-d", "--wait", "portal"), check=False, capture_output=True)
+        subprocess.run(compose("up", "-d", "--wait", "portal"), check=True, capture_output=True)

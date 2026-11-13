@@ -118,26 +118,16 @@ def test_at_miss_body_identical_to_location_root_in_both_configs():
             f"@miss and location / diverged in {path}; a /t/ miss is no longer indistinguishable"
 
 
-# Portal upstream re-resolution (#233) =================================================================================
+# Portal upstream re-resolution ========================================================================================
 def _config_groups() -> dict[str, list[Path]]:
-    """Each config nginx loads as one unit: the production template with every nginx
-    config file (`*.conf`, `*.conf.tmpl`) it can `include` under nginx/etc, and the
-    static e2e config on its own. An upstream declared in one group is invisible to
-    the other at runtime, so every check below resolves names within a group, never
-    across them."""
+    """Config files nginx loads together: production (all `.conf`/`.conf.tmpl` under nginx/etc) and the standalone e2e config. Upstream names resolve only within a group."""
     prod = sorted(p for p in NGINX_ETC.rglob("*") if p.is_file() and p.name.endswith((".conf", ".conf.tmpl")))
     return {"production": prod, "e2e": [E2E_NGINX_CONF]}
 
 
 @pytest.mark.parametrize("group", _config_groups())
 def test_every_upstream_server_re_resolves_without_failing_over(group):
-    """A literal host in `upstream { server portal:8000; }` is resolved once at config
-    load, so a recreated portal (new IP) 502s every portal route until nginx restarts
-    (#233). `resolve` (nginx >= 1.27.3, needs a shared-memory `zone`) makes nginx
-    re-resolve through `resolver 127.0.0.11`. `max_fails=0` is also required: nginx
-    skips failure accounting for a single-address upstream, but if the name ever
-    resolves to several, the default (1 failure -> 10s marked down) would take an
-    address out after one refused connect."""
+    """Every upstream server must have `resolve` (re-resolved via `resolver`; needs a `zone`) and `max_fails=0` (see nginx.conf.tmpl for why)."""
     blocks = []
     for path in _config_groups()[group]:
         for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{([^}]*)\}", _directives(path.read_text()), re.M):
@@ -148,15 +138,15 @@ def test_every_upstream_server_re_resolves_without_failing_over(group):
         assert servers, f"upstream {name} in {path} has no server line"
         for srv in servers:
             opts = srv.split()
-            assert "resolve" in opts, f"upstream {name} server {srv!r} in {path} lacks `resolve` (#233)"
-            assert "max_fails=0" in opts, f"upstream {name} server {srv!r} in {path} lacks `max_fails=0` (#233)"
+            assert "resolve" in opts, f"upstream {name} server {srv!r} in {path} lacks `resolve`"
+            assert "max_fails=0" in opts, f"upstream {name} server {srv!r} in {path} lacks `max_fails=0`"
         assert re.search(r"^\s*zone\s", body, re.M), f"upstream {name} in {path} has no `zone`; `resolve` needs one"
 
 
 @pytest.mark.parametrize("group", _config_groups())
 def test_no_proxy_pass_has_a_literal_host(group):
     """Outside an upstream block, `proxy_pass http://<literal>` is resolved once at
-    startup (#233). A target must be a variable (`ss-$1`, resolved per request) or the
+    startup. A target must be a variable (`ss-$1`, resolved per request) or the
     name of an upstream block declared in the same config group."""
     declared = set()
     targets = []
@@ -168,6 +158,6 @@ def test_no_proxy_pass_has_a_literal_host(group):
     for path, target in targets:
         host = re.sub(r"^https?://", "", target.strip())
         assert "$" in host or host in declared, (
-            f"proxy_pass {target!r} in {path} is a literal host resolved once at startup (#233); "
+            f"proxy_pass {target!r} in {path} is a literal host resolved once at startup; "
             "point it at an upstream block with `resolve` declared in the same config"
         )

@@ -83,7 +83,6 @@ def get_provisioner_state() -> dict:
 
 # Docker introspection (host-side) =====================================================================================
 def get_container_id(service: str) -> str:
-    """``_helpers.get_container_id`` bound to the MTA project."""
     return _helpers.get_container_id(service, project=PROJECT_MTA, files=COMPOSE_FILES_MTA)
 
 

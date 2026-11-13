@@ -133,14 +133,7 @@ def get_container_id(
     files: tuple[Path, ...] = COMPOSE_FILES,
     running_only: bool = False,
 ) -> str:
-    """Resolve a service name to its container ID for `docker inspect`.
-
-    Uses ``compose ps -aq <service>`` (-a to include exited containers) so we
-    don't have to guess the ``<project>-<service>-N`` naming Compose uses
-    internally. The provisioner is ``restart: 'no'`` and intentionally exits
-    after generating the keypair, so it's "exited" by the time tests inspect it.
-    ``running_only=True`` drops ``-a`` so an exited predecessor is never returned.
-    """
+    """Resolve a service to its container ID via `compose ps`. Includes exited containers (e.g. the one-shot provisioner) unless ``running_only``."""
     ps_flags = "-q" if running_only else "-aq"
     cid = run(compose("ps", ps_flags, service, project=project, files=files)).stdout.strip()
     if not cid:
@@ -154,8 +147,7 @@ def docker_inspect(container_id: str, fmt: str) -> str:
 
 
 def run_sleeper(name: str, network: str, *, labels: Iterable[str] = (), ip: str | None = None) -> None:
-    """Start a detached `sleep infinity` container on ``network``, replacing any
-    leftover of the same name from a killed prior run. ``ip`` pins its address."""
+    """Start a detached `sleep infinity` container on ``network``; ``ip`` pins its address. Reclaims a leftover from a killed run (a `--name` conflict would otherwise persist)."""
     subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
     cmd = ["docker", "run", "-d", "--init", "--name", name]
     for label in labels:
@@ -164,7 +156,10 @@ def run_sleeper(name: str, network: str, *, labels: Iterable[str] = (), ip: str 
     if ip is not None:
         cmd += ["--ip", ip]
     cmd += [E2E_SLEEPER_IMAGE, "sleep", "infinity"]
-    subprocess.run(cmd, check=True, capture_output=True)
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"docker run {name} failed: {e.stderr}") from e
 
 
 # Path-token regex used by the connection fixture

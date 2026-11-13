@@ -612,6 +612,15 @@ for name, to in pairs({
   body_case("Env " .. name, replace('"Env": ' .. env, '"Env": ' .. to))
 end
 body_case("Env missing", remove('"Env": ' .. env))
+-- The SS_CONFIG value is standard base64: `+`, `/` and `=` padding are allowed, the URL-safe alphabet and `.` are not.
+for name, value in pairs({plus = "QU+C", slash = "QU/C", padded = "QUJD=", double_padded = "QUI=="}) do
+  create_with("body Env value with " .. name, "allow", nil,
+    replace('"Env": ' .. env, '"Env": ["SS_CONFIG=' .. value .. '"]'))
+end
+for name, value in pairs({dash = "QU-C", underscore = "QU_C", dot = "QU.C"}) do
+  body_case("Env value with " .. name, replace('"Env": ' .. env, '"Env": ["SS_CONFIG=' .. value .. '"]'))
+end
+
 
 -- Labels
 local labels = base:match('"Labels": (%b{})')

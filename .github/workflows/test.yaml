@@ -282,14 +282,14 @@ jobs:
   e2e-mta-real:
     name: End-to-end MTA tests (real DNS provider + libdns)
     runs-on: ubuntu-latest
-    # Serialize across all PRs and main pushes: every run uses the same fixed
-    # `postern-e2e-test` DKIM selector on the maintainer's test zone, so two
-    # concurrent runs would race on publish/cleanup. cancel-in-progress=false
-    # makes new runs wait rather than killing the in-flight one mid-cleanup.
-    concurrency:
-      group: e2e-mta-real
-      cancel-in-progress: false
+    # Each run publishes its own DKIM selector (postern-e2e-<run id>-<attempt>), so runs share nothing on the test
+    # zone and need no concurrency group. A concurrency group would cancel all but the newest pending run, and this
+    # job is a required check. actions:read lets the start-of-run sweep ask whether a stale record's run has finished.
+    permissions:
+      contents: read
+      actions: read
     env:
+      GITHUB_TOKEN: ${{ github.token }}
       MTA_TEST_DOMAIN: ${{ vars.MTA_TEST_DOMAIN }}
       MTA_TEST_DNS_PROVIDER: ${{ vars.MTA_TEST_DNS_PROVIDER }}
       MTA_TEST_DNS_PROPAGATION_SECONDS: ${{ vars.MTA_TEST_DNS_PROPAGATION_SECONDS || '60' }}

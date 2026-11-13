@@ -471,6 +471,34 @@ func TestRunCmd_TxtSet_DuplicateButNoMatchInZone(t *testing.T) {
 	}
 }
 
+func TestDoTxtList_FiltersByTypeAndPrefix(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "postern-e2e-1-1._domainkey", Text: "v=DKIM1; p=a"},
+		libdns.TXT{Name: "Postern-E2E-2-1._domainkey", Text: "v=DKIM1; p=b"},
+		libdns.TXT{Name: "other._domainkey", Text: "v=DKIM1; p=c"},
+		libdns.RR{Name: "postern-e2e-3-1._domainkey", Type: "CNAME", Data: "x.example.net."},
+	}}
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	want := `[{"fqdn":"postern-e2e-1-1._domainkey.example.com","value":"v=DKIM1; p=a"},` +
+		`{"fqdn":"postern-e2e-2-1._domainkey.example.com","value":"v=DKIM1; p=b"}]` + "\n"
+	if buf.String() != want {
+		t.Errorf("got %q; want %q", buf.String(), want)
+	}
+}
+
+func TestDoTxtList_NoMatchIsEmptyArray(t *testing.T) {
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), &fakeProvider{}, "example.com.", "x", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	if buf.String() != "[]\n" {
+		t.Errorf("got %q; want []", buf.String())
+	}
+}
+
 func TestRunCmd_UnknownCommand(t *testing.T) {
 	fp := &fakeProvider{}
 	err := runCmd(context.Background(), "cloudflare", fp, "txt-typo", "host.example.com", []string{"v=ok"})

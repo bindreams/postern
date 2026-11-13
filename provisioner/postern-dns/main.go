@@ -10,6 +10,7 @@
 //
 //	postern-dns txt-set     <fqdn> <value>
 //	postern-dns txt-delete  <fqdn> <value>
+//	postern-dns txt-list    <domain> <fqdn-prefix>
 //	postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
 //	postern-dns a-delete    <fqdn> <ipv4>
 //	postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
@@ -31,7 +32,9 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"strconv"
@@ -137,6 +140,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   postern-dns txt-set     <fqdn> <value>
   postern-dns txt-delete  <fqdn> <value>
+  postern-dns txt-list    <domain> <fqdn-prefix>
   postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
   postern-dns a-delete    <fqdn> <ipv4>
   postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
@@ -206,6 +210,12 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 			return fmt.Errorf("txt-delete: expected <value>, got %d arg(s)", len(args))
 		}
 		return doTxtDelete(ctx, providerName, provider, zone, name, args[0])
+	case "txt-list":
+		// fqdn is the domain here; its zone is what gets listed.
+		if len(args) != 1 {
+			return fmt.Errorf("txt-list: expected <fqdn-prefix>, got %d arg(s)", len(args))
+		}
+		return doTxtList(ctx, provider, zone, args[0], os.Stdout)
 
 	case "a-set", "aaaa-set":
 		rest, proxied, perr := extractProxied(args)
@@ -620,6 +630,35 @@ func doTxtSet(ctx context.Context, provider providerOps, zone, name, value strin
 	// provider's database that isn't yet visible via DNS).
 	fmt.Fprintf(os.Stderr, "postern-dns(warn): txt-set %s: AppendRecords returned %q; record already present, treating as idempotent success\n", fqdn, appendErr)
 	return nil
+}
+
+// doTxtList prints, as a JSON array of {"fqdn", "value"} objects, every TXT
+// record in the zone whose FQDN (lowercased, no trailing dot) starts with
+// prefix. "value" is the provider's raw rr.Data, which txt-delete accepts back
+// verbatim (matchTXT compares the raw form first), so a caller can delete
+// exactly what it listed. An empty result is "[]", not an error.
+func doTxtList(ctx context.Context, provider providerOps, zone, prefix string, w io.Writer) error {
+	all, err := provider.GetRecords(ctx, zone)
+	if err != nil {
+		return fmt.Errorf("txt-list %s: GetRecords: %w", zone, err)
+	}
+	type entry struct {
+		FQDN  string `json:"fqdn"`
+		Value string `json:"value"`
+	}
+	out := []entry{}
+	prefix = strings.ToLower(prefix)
+	for _, rec := range all {
+		rr := rec.RR()
+		if rr.Type != "TXT" {
+			continue
+		}
+		fqdn := strings.ToLower(strings.TrimSuffix(displayFQDN(rr.Name, zone), "."))
+		if strings.HasPrefix(fqdn, prefix) {
+			out = append(out, entry{FQDN: fqdn, Value: rr.Data})
+		}
+	}
+	return json.NewEncoder(w).Encode(out)
 }
 
 // doTxtDelete removes any TXT record(s) at name with text == value.

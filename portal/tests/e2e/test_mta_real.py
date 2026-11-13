@@ -45,10 +45,12 @@ import pytest
 from postern.mta import dnssec as mta_dnssec
 
 from ._helpers import E2E_PROVISIONER_IMAGE
+from ._mta_real_selector import SELECTOR_PREFIX, github_run_is_active_fn, run_selector, stale_selectors
 
 logger = logging.getLogger(__name__)
 
-SELECTOR = "postern-e2e-test"
+# Unique per run, so concurrent runs never touch each other's record (see _mta_real_selector).
+SELECTOR = run_selector(os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", ""))
 PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8")
 
 
@@ -196,15 +198,40 @@ def _resolve_txt_eventually(
     return last_state
 
 
+def _sweep_stale_records(env: dict[str, str]) -> None:
+    """Delete DKIM records left by crashed CI runs (best-effort; a failed sweep only leaves clutter).
+
+    Needs ``GITHUB_RUN_ID`` / ``GITHUB_RUN_ATTEMPT`` / ``GITHUB_REPOSITORY`` / ``GITHUB_TOKEN``, i.e. CI. A local run
+    has no run to ask GitHub about and sweeps nothing.
+    """
+    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", "")
+    if not (run_id and attempt and repo and token):
+        logger.info("not in CI (no GITHUB_RUN_ID/GITHUB_TOKEN): skipping the stale-record sweep")
+        return
+    domain = env["MTA_TEST_DOMAIN"]
+    try:
+        listing = _postern_dns(env, "txt-list", domain, SELECTOR_PREFIX).stdout
+        stale = stale_selectors(listing, domain, int(run_id), int(attempt), github_run_is_active_fn(repo, token))
+    except Exception as e:  # noqa: BLE001 -- hygiene must not fail the test run
+        logger.warning("stale DKIM record sweep skipped: %s", e)
+        return
+    for fqdn, value in stale:
+        logger.info("sweeping stale record %s", fqdn)
+        try:
+            _postern_dns(env, "txt-delete", fqdn, value)
+        except subprocess.CalledProcessError as e:
+            logger.warning("could not sweep stale record %s: %s", fqdn, e.stderr)
+
+
 # Fixtures =============================================================================================================
 @pytest.fixture(scope="module")
 def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, str, str]]:
     """Publish ``<SELECTOR>._domainkey.<MTA_TEST_DOMAIN>`` with an ephemeral
     pubkey via libdns; yield ``(selector, fqdn, pubkey_b64)``; retire on exit.
 
-    Setup also calls ``txt-delete`` first to clear any leftover from a prior
-    crashed run (the selector is fixed -- ``postern-e2e-test`` -- so the next
-    run is responsible for cleanup of its predecessor).
+    ``SELECTOR`` is unique to this run, so setup first sweeps the records crashed
+    CI runs left behind, and teardown deletes only this run's record.
     """
     domain = mta_test_env["MTA_TEST_DOMAIN"]
     fqdn = f"{SELECTOR}._domainkey.{domain}"
@@ -212,15 +239,7 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
     record_value = f"v=DKIM1; k=rsa; p={pubkey}"
     propagation = float(mta_test_env["MTA_TEST_DNS_PROPAGATION_SECONDS"])
 
-    # Best-effort cleanup of any stale record from a previous run. We don't
-    # know the previous value, but `txt-delete` over libdns only matches the
-    # exact (name, value) pair, so this delete is conservative -- it only
-    # touches a record we ourselves published with this selector + value.
-    # Untracked stale records on the maintainer's zone require manual cleanup.
-    try:
-        _postern_dns(mta_test_env, "txt-delete", fqdn, record_value)
-    except subprocess.CalledProcessError as e:
-        logger.info("preflight txt-delete returned non-zero (record may not have existed): %s", e.stderr)
+    _sweep_stale_records(mta_test_env)
 
     _postern_dns(mta_test_env, "txt-set", fqdn, record_value)
 

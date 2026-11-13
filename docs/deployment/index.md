@@ -34,7 +34,7 @@ Who accepts the client's TCP connection on `:443`:
 
 - **Direct (default).** Postern's nginx binds host ports 80/443 and is the internet-facing edge.
 - **Local gateway.** A shared reverse proxy on the same host (Traefik, HAProxy) fans `:443` out to multiple services. The [compose.gateway.yaml](https://github.com/bindreams/postern/blob/main/compose.gateway.yaml) overlay strips nginx's host port bindings, joins the external `gateway` network, and recovers the real client IP via PROXY protocol v2. The mta keeps its host `:25` binding — the gateway pattern covers HTTPS only. Details: [gateway](gateway.md).
-- **Remote CDN edge.** Cloudflare (turnkey; pairs with ECH to hide the SNI) or a generic CDN fronts the origin, hiding the origin IP from scanners — provided the origin firewall is locked down to the edge's IP ranges. Selected with `EDGE_PROFILE` plus the `with-edge` profile and the [compose.edge.yaml](https://github.com/bindreams/postern/blob/main/compose.edge.yaml) overlay. Details: [edge](edge.md).
+- **Remote CDN edge.** Cloudflare (automated apart from one manual step; pairs with ECH to hide the SNI) or a generic CDN fronts the origin, hiding the origin IP from scanners — provided the origin firewall is locked down to the edge's IP ranges. Selected with `EDGE_PROFILE` plus the `with-edge` profile and the [compose.edge.yaml](https://github.com/bindreams/postern/blob/main/compose.edge.yaml) overlay. Details: [edge](edge.md).
 
 ```{note}
 Gateway and edge are different things. The gateway overlay is a **local** TCP+SNI passthrough proxy that never terminates TLS — Postern's nginx still serves the leaf certificate. The edge profile is a **remote** CDN that terminates TLS and forwards the client IP in an HTTP header.

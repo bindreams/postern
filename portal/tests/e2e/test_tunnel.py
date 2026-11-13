@@ -26,7 +26,10 @@ from ._helpers import (
     compose_exec,
     container_exists,
     container_running,
+    docker_inspect,
+    get_container_id,
     query_db,
+    run_sleeper,
     trigger_reconcile,
     postern_cli,
 )
@@ -442,17 +445,7 @@ def test_reconciler_removes_orphan(e2e_stack):
     still RUNNING."""
 
     def _run_labelled(name: str, labels: list[str]) -> None:
-        # Idempotent: these are fixed names shared across test runs, and this
-        # test's whole point is that the reconciler must NOT remove foreign/
-        # legacy ones -- so a leftover from a prior killed run (CI timeout,
-        # Ctrl-C) must be reclaimed here rather than poisoning every run after
-        # it with a permanent `docker run --name` conflict.
-        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
-        cmd = ["docker", "run", "-d", "--init", "--name", name]
-        for label in labels:
-            cmd += ["--label", label]
-        cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
-        subprocess.run(cmd, check=True, capture_output=True)
+        run_sleeper(name, "e2e-shadowsocks", labels=labels)
 
     orphan = "ss-orphan0000000000000000"
     foreign = "ss-foreign000000000000000"
@@ -561,15 +554,7 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
             (foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"]),
             (legacy, ["postern.managed=true"]),
         ):
-            # Idempotent, same reasoning as test_reconciler_removes_orphan's
-            # _run_labelled: reclaim a leftover from a killed prior run instead
-            # of letting it poison every run after it.
-            subprocess.run(["docker", "rm", "-f", fixture_name], check=False, capture_output=True)
-            cmd = ["docker", "run", "-d", "--init", "--name", fixture_name]
-            for label in labels:
-                cmd += ["--label", label]
-            cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
-            subprocess.run(cmd, check=True, capture_output=True)
+            run_sleeper(fixture_name, "e2e-shadowsocks", labels=labels)
 
         subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
         try:
@@ -609,3 +594,56 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
     finally:
         subprocess.run(["docker", "rm", "-f", foreign], check=False, capture_output=True)
         subprocess.run(["docker", "rm", "-f", legacy], check=False, capture_output=True)
+
+
+# Upstream re-resolution ===============================================================================================
+def _wait_for_healthz(client: httpx.Client) -> None:
+    """Block until /healthz answers 200 through nginx. A hung connect to the downed portal can trip the client's 5s timeout first; that means 'not recovered yet'. Uncapped: the per-test timeout is the failure bound."""
+    while True:
+        try:
+            if client.get("/healthz").status_code == 200:
+                return
+        except httpx.TransportError:
+            pass
+        time.sleep(0.25)
+
+
+@pytest.mark.timeout(180)
+def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
+    """Recreating the portal gives it a new IP; nginx must follow without a restart (a startup-resolved `proxy_pass` would 502 until nginx restarted).
+    A throwaway container holds the old IP so the change is guaranteed.
+    """
+    network = "postern-e2e-default"
+    holder = "postern-e2e-ip-holder"
+    ip_format = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
+
+    def portal_ip() -> str:
+        # Non-empty and running-only, else `!= old_ip` below passes vacuously.
+        ip = docker_inspect(get_container_id("portal", running_only=True), ip_format)
+        assert ip, "portal has no address on the e2e default network"
+        return ip
+
+    def nginx_started_at() -> str:
+        return docker_inspect(get_container_id("nginx"), "{{.State.StartedAt}}")
+
+    # /healthz, not /login: /login is rate-limited and the suite shares one source IP.
+    assert portal_client.get("/healthz").status_code == 200  # nginx has used the old address
+    old_ip = portal_ip()
+    nginx_started = nginx_started_at()
+
+    subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
+    try:
+        run_sleeper(holder, network, ip=old_ip)
+        subprocess.run(
+            compose("up", "-d", "--force-recreate", "--wait", "--no-deps", "portal"), check=True, capture_output=True
+        )
+        assert portal_ip() != old_ip, "portal kept its old IP; the test no longer exercises re-resolution"
+
+        # nginx caches a resolved name for `valid=5s`, so requests just after the move
+        # may still see the old answer.
+        _wait_for_healthz(portal_client)
+
+        assert nginx_started_at() == nginx_started, "nginx was restarted mid-test"
+    finally:
+        subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
+        subprocess.run(compose("up", "-d", "--wait", "portal"), check=True, capture_output=True)

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -240,9 +241,11 @@ type fakeProvider struct {
 	appendErr             error // if non-nil, AppendRecords returns this without storing.
 	getRecordsErr         error // if non-nil, GetRecords returns this without listing.
 	strictDataEqualDelete bool
+	listedZone            string // the zone of the last GetRecords call.
 }
 
-func (f *fakeProvider) GetRecords(_ context.Context, _ string) ([]libdns.Record, error) {
+func (f *fakeProvider) GetRecords(_ context.Context, zone string) ([]libdns.Record, error) {
+	f.listedZone = zone
 	if f.getRecordsErr != nil {
 		return nil, f.getRecordsErr
 	}
@@ -390,6 +393,19 @@ func TestMatchTXT(t *testing.T) {
 	}
 }
 
+func TestMatchNamesAreCaseInsensitive(t *testing.T) {
+	// DNS names are case-insensitive; a provider may return a different case than the caller typed.
+	txt := libdns.TXT{Name: "Postern-E2E-1._domainkey", Text: "v=DKIM1; p=A", TTL: time.Minute}
+	if got := matchTXT([]libdns.Record{txt}, "postern-e2e-1._domainkey", "v=DKIM1; p=A"); len(got) != 1 {
+		t.Errorf("matchTXT must match names case-insensitively, got %d records", len(got))
+	}
+	addr := libdns.Address{Name: "Host", IP: netip.MustParseAddr("203.0.113.1"), TTL: time.Minute}
+	want := libdns.Address{Name: "host", IP: netip.MustParseAddr("203.0.113.1"), TTL: time.Minute}.RR()
+	if got := matchRR([]libdns.Record{addr}, want); len(got) != 1 {
+		t.Errorf("matchRR must match names case-insensitively, got %d records", len(got))
+	}
+}
+
 func TestIsDuplicateRecordError(t *testing.T) {
 	cases := []struct {
 		err  error
@@ -468,6 +484,89 @@ func TestRunCmd_TxtSet_DuplicateButNoMatchInZone(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no matching record visible") {
 		t.Errorf("error %q does not name the diagnostic anchor", err.Error())
+	}
+}
+
+func TestDoTxtList_FiltersByTypeAndPrefix(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "postern-e2e-1-1._domainkey", Text: "v=DKIM1; p=a"},
+		libdns.TXT{Name: "Postern-E2E-2-1._domainkey", Text: "v=DKIM1; p=b"},
+		libdns.TXT{Name: "other._domainkey", Text: "v=DKIM1; p=c"},
+		libdns.RR{Name: "postern-e2e-3-1._domainkey", Type: "CNAME", Data: "x.example.net."},
+	}}
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	// Names keep the provider's case.
+	want := `[{"fqdn":"postern-e2e-1-1._domainkey.example.com","value":"v=DKIM1; p=a"},` +
+		`{"fqdn":"Postern-E2E-2-1._domainkey.example.com","value":"v=DKIM1; p=b"}]` + "\n"
+	if buf.String() != want {
+		t.Errorf("got %q; want %q", buf.String(), want)
+	}
+}
+
+func TestDoTxtList_EntriesAreDeletable(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "Postern-E2E-2-1._domainkey", Text: "v=DKIM1; p=b"},
+	}}
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	var listed []struct{ FQDN, Value string }
+	if err := json.Unmarshal([]byte(buf.String()), &listed); err != nil || len(listed) != 1 {
+		t.Fatalf("listing %q: %v", buf.String(), err)
+	}
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", listed[0].FQDN, []string{listed[0].Value}); err != nil {
+		t.Fatalf("txt-delete of a listed record: %v", err)
+	}
+	if len(fp.stored) != 0 {
+		t.Errorf("listed mixed-case record survived txt-delete: %v", fp.stored)
+	}
+}
+
+func TestDoTxtList_NoMatchIsEmptyArray(t *testing.T) {
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), &fakeProvider{}, "example.com.", "x", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	if buf.String() != "[]\n" {
+		t.Errorf("got %q; want []", buf.String())
+	}
+}
+
+func TestRunCmd_TxtList(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "postern-e2e-1-2-3._domainkey", Text: "v=DKIM1; p=a"},
+		libdns.TXT{Name: "other._domainkey", Text: "v=DKIM1; p=b"},
+	}}
+	// runCmd prints to os.Stdout; capture it through a pipe.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout := os.Stdout
+	os.Stdout = w
+	runErr := runCmd(context.Background(), "cloudflare", fp, "txt-list", "mta-test.example.com", []string{"postern-e2e-"})
+	os.Stdout = stdout
+	w.Close()
+	out, readErr := io.ReadAll(r)
+	r.Close()
+	if runErr != nil || readErr != nil {
+		t.Fatalf("runCmd: %v; read: %v", runErr, readErr)
+	}
+	if fp.listedZone != "example.com." {
+		t.Errorf("listed zone %q; want the zone of the domain arg, %q", fp.listedZone, "example.com.")
+	}
+	want := `[{"fqdn":"postern-e2e-1-2-3._domainkey.example.com","value":"v=DKIM1; p=a"}]` + "\n"
+	if string(out) != want {
+		t.Errorf("got %q; want %q", out, want)
+	}
+	for _, args := range [][]string{nil, {"a", "b"}} {
+		if err := runCmd(context.Background(), "cloudflare", fp, "txt-list", "example.com", args); err == nil {
+			t.Errorf("txt-list with %d arg(s): want an error", len(args))
+		}
 	}
 }
 

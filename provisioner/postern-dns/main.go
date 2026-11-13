@@ -10,6 +10,7 @@
 //
 //	postern-dns txt-set     <fqdn> <value>
 //	postern-dns txt-delete  <fqdn> <value>
+//	postern-dns txt-list    <domain> <fqdn-prefix>
 //	postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
 //	postern-dns a-delete    <fqdn> <ipv4>
 //	postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
@@ -31,7 +32,9 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"strconv"
@@ -137,6 +140,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `usage:
   postern-dns txt-set     <fqdn> <value>
   postern-dns txt-delete  <fqdn> <value>
+  postern-dns txt-list    <domain> <fqdn-prefix>
   postern-dns a-set       <fqdn> <ipv4> [--proxied=true|false]
   postern-dns a-delete    <fqdn> <ipv4>
   postern-dns aaaa-set    <fqdn> <ipv6> [--proxied=true|false]
@@ -206,6 +210,12 @@ func runCmd(ctx context.Context, providerName string, provider providerOps, cmd,
 			return fmt.Errorf("txt-delete: expected <value>, got %d arg(s)", len(args))
 		}
 		return doTxtDelete(ctx, providerName, provider, zone, name, args[0])
+	case "txt-list":
+		// fqdn is the domain here; its zone is what gets listed.
+		if len(args) != 1 {
+			return fmt.Errorf("txt-list: expected <fqdn-prefix>, got %d arg(s)", len(args))
+		}
+		return doTxtList(ctx, provider, zone, args[0], os.Stdout)
 
 	case "a-set", "aaaa-set":
 		rest, proxied, perr := extractProxied(args)
@@ -569,7 +579,7 @@ func matchRR(all []libdns.Record, want libdns.RR) []libdns.Record {
 		if got.Type != want.Type {
 			continue
 		}
-		if got.Name != want.Name {
+		if !strings.EqualFold(got.Name, want.Name) {
 			continue
 		}
 		if got.Data == want.Data {
@@ -620,6 +630,35 @@ func doTxtSet(ctx context.Context, provider providerOps, zone, name, value strin
 	// provider's database that isn't yet visible via DNS).
 	fmt.Fprintf(os.Stderr, "postern-dns(warn): txt-set %s: AppendRecords returned %q; record already present, treating as idempotent success\n", fqdn, appendErr)
 	return nil
+}
+
+// doTxtList prints, as a JSON array of {"fqdn", "value"} objects, every TXT
+// record in the zone whose FQDN starts with prefix (case-insensitive). "fqdn"
+// has no trailing dot and keeps the provider's case. "value" is the raw
+// rr.Data, which txt-delete accepts verbatim, so a caller can delete exactly
+// what it listed. No match prints "[]".
+func doTxtList(ctx context.Context, provider providerOps, zone, prefix string, w io.Writer) error {
+	all, err := provider.GetRecords(ctx, zone)
+	if err != nil {
+		return fmt.Errorf("txt-list %s: GetRecords: %w", zone, err)
+	}
+	type entry struct {
+		FQDN  string `json:"fqdn"`
+		Value string `json:"value"`
+	}
+	out := []entry{}
+	prefix = strings.ToLower(prefix)
+	for _, rec := range all {
+		rr := rec.RR()
+		if rr.Type != "TXT" {
+			continue
+		}
+		fqdn := strings.TrimSuffix(displayFQDN(rr.Name, zone), ".")
+		if strings.HasPrefix(strings.ToLower(fqdn), prefix) {
+			out = append(out, entry{FQDN: fqdn, Value: rr.Data})
+		}
+	}
+	return json.NewEncoder(w).Encode(out)
 }
 
 // doTxtDelete removes any TXT record(s) at name with text == value.
@@ -741,9 +780,9 @@ func normalizeTXTData(s string) string {
 }
 
 // matchTXT returns the records from `all` whose RR is a TXT at the given
-// name and whose Data equals `text`. To stay safe against TXT values that
-// legitimately contain the byte sequence `" "` mid-string, we accept
-// EITHER the raw rr.Data or its chunk-stripped form; that way:
+// name (case-insensitive) and whose Data equals `text`. To stay safe against
+// TXT values that legitimately contain the byte sequence `" "` mid-string, we
+// accept EITHER the raw rr.Data or its chunk-stripped form; that way:
 //
 //   - Cloudflare's chunked form `<chunk1>" "<chunk2>` matches `text`
 //     after normalization (the bug we have to work around).
@@ -754,7 +793,7 @@ func matchTXT(all []libdns.Record, name, text string) []libdns.Record {
 	var out []libdns.Record
 	for _, rec := range all {
 		rr := rec.RR()
-		if rr.Type != "TXT" || rr.Name != name {
+		if rr.Type != "TXT" || !strings.EqualFold(rr.Name, name) {
 			continue
 		}
 		if rr.Data == text || normalizeTXTData(rr.Data) == text {

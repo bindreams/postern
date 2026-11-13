@@ -278,27 +278,47 @@ def test_cli_reference_complete():
     assert documented == actual, (f"undocumented: {sorted(actual - documented)}; stale: {sorted(documented - actual)}")
 
 
-REAL_DOMAIN = re.compile(r"binarydreams\.me")
+def _tracked_texts():
+    """(repo-relative name, text) for every tracked first-party text file.
+
+    One scan for every whole-tree gate: `git ls-files` (so untracked and
+    ignored files cannot make local and CI disagree), `external/` excluded
+    (vendored), NUL-containing (binary) files skipped.
+    """
+    import subprocess
+
+    names = subprocess.run(
+        ["git", "ls-files", "--", ".", ":!external"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert names, "git ls-files returned nothing -- not a checkout?"
+    texts = []
+    for name in names:
+        path = REPO_ROOT / name
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        if b"\x00" in raw:
+            continue
+        texts.append((name, raw.decode("utf-8", errors="replace")))
+    return texts
+
+
+# DNS is case-insensitive, so the match is too.
+REAL_DOMAIN = re.compile(r"binarydreams\.me", re.IGNORECASE)
 
 
 def test_no_real_domains():
-    """docs/ never mentions the maintainer's real deployment domains."""
+    """No tracked first-party file mentions the maintainer's real deployment domains."""
     # Sentinel self-check: a broken pattern must fail here, not pass vacuously.
+    # Built from fragments -- this file is itself scanned below.
     assert REAL_DOMAIN.search("hole." + "binarydreams" + ".me")
-    hits = [f"{md.relative_to(REPO_ROOT)}" for md in _docs_md() if REAL_DOMAIN.search(md.read_text(encoding="utf-8"))]
-    assert not hits, f"real domains leaked into docs: {hits}"
-
-
-def test_no_real_domains_in_portal_source():
-    """portal/src/ (code, comments, templates) never mentions the maintainer's real deployment domains."""
-    src = REPO_ROOT / "portal" / "src"
-    files = [p for p in src.rglob("*") if p.is_file() and "__pycache__" not in p.parts]
-    assert files, f"no files under {src}"
-    hits = [
-        str(p.relative_to(REPO_ROOT)) for p in files
-        if REAL_DOMAIN.search(p.read_text(encoding="utf-8", errors="replace"))
-    ]
-    assert not hits, f"real domains leaked into portal/src: {hits}"
+    assert REAL_DOMAIN.search("hole." + "BinaryDreams" + ".ME")
+    hits = [name for name, text in _tracked_texts() if REAL_DOMAIN.search(text)]
+    assert not hits, f"real domains leaked into tracked files: {hits}"
 
 
 STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.md|CONTRIBUTING\.md#")
@@ -306,28 +326,12 @@ STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.m
 
 def test_no_stale_doc_references():
     """No tracked first-party file references the pre-refactor doc paths."""
-    import subprocess
-
     # Sentinel self-check: a broken pattern must fail here, not pass
     # vacuously. Built from fragments -- this file is itself scanned below,
     # and a verbatim literal would make the gate permanently red.
     assert STALE_DOC_REFS.search("docs/" + "mta.md")
     assert STALE_DOC_REFS.search("CONTRIBUTING" + ".md#setup")
-    files = subprocess.run(
-        ["git", "ls-files", "--", ".", ":!external"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
-    assert files, "git ls-files returned nothing -- not a checkout?"
     hits = []
-    for name in files:
-        path = REPO_ROOT / name
-        if not path.is_file():
-            continue
-        # errors="replace" keeps ASCII intact, so the pattern is still
-        # findable in binary blobs.
-        text = path.read_text(encoding="utf-8", errors="replace")
+    for name, text in _tracked_texts():
         hits += [f"{name}: {m.group(0)}" for m in STALE_DOC_REFS.finditer(text)]
     assert not hits, "stale references to pre-refactor doc paths:\n" + "\n".join(hits)

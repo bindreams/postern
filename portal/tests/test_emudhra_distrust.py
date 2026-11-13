@@ -40,8 +40,25 @@ DOCKERFILES = (
 )
 
 
+def test_doh_client_verifies_against_the_system_store_not_certifi():
+    """The portal's only outbound HTTPS client is dnspython's DoH one (httpx2/httpcore2).
+    It builds its TLS context from the system store (or SSL_CERT_FILE/SSL_CERT_DIR), so
+    in the distroless portal image the trust anchor is the base image's bundle; that is
+    what test_compose_builds_pull_base_images keeps fresh. If a release goes back to
+    certifi, the guard below becomes the one that covers DoH and this test must be
+    revisited."""
+    import inspect
+
+    import httpcore2._ssl
+
+    source = inspect.getsource(httpcore2._ssl)
+    assert not re.search(r"\bcertifi\b", source)
+    assert "ssl.get_default_verify_paths()" in source
+
+
 def test_certifi_bundle_excludes_compromised_chain_roots():
-    """httpx (dnspython DoH) and requests verify against certifi, not the system store."""
+    """requests (the Docker SDK) and the dev-group httpx verify against certifi, not the
+    system store. The portal's DoH client does not: see the test above."""
     pems = re.findall(
         r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----",
         Path(certifi.where()).read_text(), re.S

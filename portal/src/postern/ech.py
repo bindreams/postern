@@ -4,13 +4,15 @@ Shared by `postern ech verify`/`show` (portal CLI) and the provisioner's zone-EC
 reconciler (a non-gating serving check). Queries the apex HTTPS record (type 65)
 over DoH -- so the lookup itself is encrypted -- and inspects the ech SvcParam
 (SvcParamKey 5). Credential-free: needs no Cloudflare token. Requires the
-dnspython[doh] backend (h2/httpcore/httpx); see portal/pyproject.toml.
+dnspython[doh] backend (h2/httpcore2/httpx2); see portal/pyproject.toml.
 """
 from __future__ import annotations
 
 import logging
+import traceback
 from typing import Literal
 
+import dns.exception
 import dns.message
 import dns.name
 import dns.query
@@ -28,10 +30,13 @@ _ECH_PARAM_KEY = 5
 def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFrontStatus:
     """Report whether the apex HTTPS record serves an ech= SvcParam. Never raises.
 
-    - "present": an HTTPS record exists and carries a non-empty ech param.
-    - "absent": an HTTPS record resolved but has no ech param (front not serving ECH).
-    - "inconclusive": no HTTPS record yet (propagation), DoH unreachable, or any
-      query/parse error. Callers treat this as "unknown", never as a confirmed failure.
+    - "present": an HTTPS record exists and carries an ech param.
+    - "absent": an HTTPS record resolved but carries no usable ech config: no ech
+      param, or an empty / malformed one (dnspython >= 2.9 rejects the whole reply
+      while parsing it; see `_is_malformed_https_rdata`). The front is not serving ECH.
+    - "inconclusive": no HTTPS record yet (propagation), DoH unreachable, a reply that
+      is not a DNS message, or any other query/parse error. Callers treat this as
+      "unknown", never as a confirmed failure.
     """
     # One try covers BOTH the query and the SvcParam parse loop: a dnspython
     # version whose HTTPS rdata shape differs from _has_ech_param's assumption
@@ -45,11 +50,17 @@ def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFro
                 return "present"
         return "absent"
     except dns.query.NoDOH as e:
-        # A LOST DoH backend (h2/httpcore dropped) makes every check inconclusive --
+        # A LOST DoH backend (h2/httpcore2 dropped) makes every check inconclusive --
         # a systemic regression, not an ordinary blip. Log loudly so it is visible.
         logger.error(
             "ech: DoH backend unavailable (%s) -- install the dnspython[doh] extra; ECH checks are degraded", e
         )
+        return "inconclusive"
+    except dns.exception.FormError as e:
+        if _is_malformed_https_rdata(e):
+            logger.debug("ech: %s HTTPS record carries no usable ech config: %s", domain, e)
+            return "absent"
+        logger.debug("ech: DoH check for %s failed: %s", domain, e)
         return "inconclusive"
     except Exception as e:  # ordinary DoH transport/timeout, or a parse-shape surprise.
         logger.debug("ech: DoH check for %s failed: %s", domain, e)
@@ -68,18 +79,31 @@ def _query_https_rrs(domain: str, doh_url: str, timeout: float):
 
 
 def _has_ech_param(rr) -> bool:
-    """True if the HTTPS record's SvcParams include a non-empty ech (key 5).
+    """True if the HTTPS record's SvcParams include an ech (key 5).
 
     dnspython keys `rr.params` by the numeric SvcParamKey (its int-enum compares
-    equal to 5); the ech value object carries the wire bytes on `.ech`. An empty
-    `ech=""` param is "absent" per the spec, so an empty `.ech` is not present.
+    equal to 5). dnspython >= 2.9 refuses to parse an empty or malformed ech, so a
+    parsed record that has the key carries a usable one (see
+    `_is_malformed_https_rdata` for the refusal).
 
-    Direct attribute access (`.params`/`.ech`) is DELIBERATE: a dnspython shape
-    change that renamed either raises AttributeError, which check_apex_ech's outer
-    try/except maps to "inconclusive" rather than a false confirmed "absent". A
-    getattr-with-default would swallow that and mis-report absence. The
-    params-keyed-by-5 and ech-bytes assumptions are pinned by the real-rdata test."""
-    val = rr.params.get(_ECH_PARAM_KEY)
-    if val is None:
-        return False
-    return bool(val.ech)
+    Direct attribute access (`.params`) is DELIBERATE: a dnspython shape change that
+    renamed it raises AttributeError, which check_apex_ech's outer try/except maps to
+    "inconclusive" rather than a false confirmed "absent". A getattr-with-default
+    would swallow that and mis-report absence. The params-keyed-by-5 assumption is
+    pinned by the real-rdata test."""
+    return _ECH_PARAM_KEY in rr.params
+
+
+def _is_malformed_https_rdata(exc: BaseException | None) -> bool:
+    """True if `exc` (or a cause) was raised while dnspython parsed SVCB/HTTPS rdata.
+
+    dnspython surfaces a bad SvcParam as a plain `FormError` (the same type as a
+    garbage reply), so only where it was raised tells them apart: inside
+    `dns.rdtypes.svcbbase`, the reply was a DNS message whose HTTPS record is broken
+    (here: an empty or malformed ech); anywhere else it is not about the record."""
+    while exc is not None:
+        for frame, _lineno in traceback.walk_tb(exc.__traceback__):
+            if frame.f_globals.get("__name__") == "dns.rdtypes.svcbbase":
+                return True
+        exc = exc.__cause__
+    return False

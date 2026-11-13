@@ -2,7 +2,7 @@
 
 # One Python minor for apk and for the site-packages path the first-party code is copied
 # to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
-# either fails to solve or installs a minor the py3-* packages were not built for (#266).
+# either fails to solve or installs a minor the py3-* packages were not built for.
 # Keep equal to the portal's Python (portal/Dockerfile); test_python_pin.py enforces it.
 ARG PYTHON_MINOR=3.14
 
@@ -77,13 +77,9 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD ["python3", "-m", "postern_provisioner.healthcheck"]
 
 USER opendkim
-# Build-time import check, run as the runtime user (opendkim, uid 110) with the same bare
-# `python3` the ENTRYPOINT and HEALTHCHECK resolve from PATH: a Python minor that apk and
-# the COPY targets disagree on builds fine and only fails at container start (#266).
-# Asserts the interpreter is PYTHON_MINOR and that the first-party packages and the apk
-# modules they use load from that minor's site-packages; see scripts/image-import-check.py.
-# `-P` keeps the script's directory (/) off sys.path, so only installed packages resolve.
-# PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the image.
+# Build-time import check (scripts/image-import-check.py), run as the runtime user with the
+# bare `python3` the ENTRYPOINT and HEALTHCHECK use. `-P` keeps / off sys.path;
+# PYTHONDONTWRITEBYTECODE keeps bytecode out of the image.
 RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
 	set -eu
 	export PYTHONDONTWRITEBYTECODE=1

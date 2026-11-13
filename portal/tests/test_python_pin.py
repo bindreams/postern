@@ -1,11 +1,8 @@
-"""The mta and provisioner images pin one Python minor (issue #266).
+"""The mta and provisioner images pin one Python minor, equal to the portal's.
 
-Alpine's live apk index can offer two Python minors at once; an unpinned
-`apk add python3` then either fails to solve or installs a minor that the
-`py3-*` packages (built for another minor) do not match. Each Dockerfile
-declares `PYTHON_MINOR` once and derives both the apk pin and the
-site-packages COPY target from it, so they cannot drift apart. The pin
-follows the portal's Python.
+Each Dockerfile declares `PYTHON_MINOR` once and derives both the apk pin and the
+site-packages COPY target from it, so an unpinned `python3` cannot drift from the
+py3-* packages.
 """
 import re
 import shlex
@@ -58,10 +55,49 @@ def test_no_hardcoded_python_minor_path(rel):
     assert not re.search(r"python3\.\d+", _text(rel)), f"{rel} hardcodes a Python minor; use ${{PYTHON_MINOR}}"
 
 
+def _code_lines(rel: str) -> list[str]:
+    """Dockerfile lines without comments, backslash continuations joined."""
+    lines = _text(rel).replace("\\\n", " ").splitlines()
+    return [line for line in lines if not line.lstrip().startswith("#")]
+
+
+def _copy_destinations(rel: str) -> set[str]:
+    """Destination of every COPY into a site-packages dir: the last token, `--flag` tokens dropped."""
+    dests = set()
+    for line in _code_lines(rel):
+        tokens = shlex.split(line)
+        if tokens[:1] == ["COPY"]:
+            args = [t for t in tokens[1:] if not t.startswith("--")]
+            if "site-packages" in args[-1]:
+                dests.add(args[-1])
+    return dests
+
+
+SITE_PACKAGES = "/usr/lib/python${PYTHON_MINOR}/site-packages"
+EXPECTED_COPIES = {
+    "mta/Dockerfile": {"postern_mta"},
+    "provisioner/Dockerfile": {"postern_mta", "postern", "postern_provisioner"},
+}
+
+
 @pytest.mark.parametrize("rel", IMAGES)
 def test_site_packages_copies_use_the_pinned_minor(rel):
-    text = _text(rel)
-    copies = re.findall(r"^COPY \S+ (\S*site-packages\S*)$", text, re.MULTILINE)
-    assert copies
-    for dest in copies:
-        assert dest.startswith("/usr/lib/python${PYTHON_MINOR}/site-packages/"), dest
+    expected = {f"{SITE_PACKAGES}/{name}" for name in EXPECTED_COPIES[rel]}
+    assert _copy_destinations(rel) == expected
+
+
+@pytest.mark.parametrize("rel", IMAGES)
+def test_every_stage_using_the_minor_redeclares_the_arg(rel):
+    """A global ARG is not visible inside a stage until the stage redeclares it."""
+    stage_lines: list[str] = []
+    stages = [stage_lines]
+    for line in _code_lines(rel):
+        if line.startswith("FROM "):
+            stage_lines = []
+            stages.append(stage_lines)
+        else:
+            stage_lines.append(line)
+    for lines in stages:
+        use = next((n for n, line in enumerate(lines) if "PYTHON_MINOR}" in line and not line.startswith("ARG ")), None)
+        if use is not None:
+            assert any(re.fullmatch(r"ARG PYTHON_MINOR(=\S+)?", line.strip()) for line in lines[:use]), lines[use]

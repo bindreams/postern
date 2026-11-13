@@ -37,7 +37,7 @@ from typing import NoReturn
 import dns.exception
 import dns.resolver
 
-# postern_mta is COPYed into /usr/lib/python<minor>/site-packages/ (the interpreter's default path) at image build time.
+# First-party packages are COPYed into the interpreter's site-packages at image build.
 from postern_mta import dkim as mta_dkim
 from postern_mta import rotation
 

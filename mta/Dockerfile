@@ -2,14 +2,13 @@
 
 # One Python minor for apk and for the site-packages path the first-party code is copied
 # to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
-# either fails to solve or installs a minor the py3-* packages were not built for (#266).
+# either fails to solve or installs a minor the py3-* packages were not built for.
 # Keep equal to the portal's Python (portal/Dockerfile); test_python_pin.py enforces it.
 ARG PYTHON_MINOR=3.14
 
 FROM dhi.io/alpine-base:3.23-dev AS build
 ARG PYTHON_MINOR
-# Packages are installed in this stage and copied into the runtime stage, which is the
-# same -dev image (it has root and apk, but installs nothing).
+# The runtime stage is the same -dev image; packages are installed here and copied across.
 # The opendkim user is created here so /etc/passwd, /etc/group, and the
 # opendkim home directory exist when we COPY across to the runtime stage.
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
@@ -34,10 +33,7 @@ RUN mkdir -p /var/lib/opendkim \
 		--break-system-packages postfix-mta-sts-resolver \
 	&& apk del --no-cache py3-pip
 
-# Runtime stage: the same -dev image as the build stage, not a locked-down one. Postfix's
-# master needs root; the compose file leaves USER unset so the container runs as the
-# image default (root). Capabilities (NET_BIND_SERVICE et al) are granted via cap_add in
-# compose.yaml.
+# Runtime stage: same -dev image, runs as root (Postfix master needs it); capabilities come from cap_add in compose.yaml.
 FROM dhi.io/alpine-base:3.23-dev
 ARG PYTHON_MINOR
 
@@ -59,16 +55,10 @@ COPY portal/src/postern/mta /usr/lib/python${PYTHON_MINOR}/site-packages/postern
 COPY mta/etc /usr/local/share/mta-templates
 COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 
-# Build-time import check, run with the same bare `python3` the ENTRYPOINT resolves from
-# PATH: a Python minor that apk and the COPY targets disagree on builds fine and only fails
-# at container start (#266). Asserts the interpreter is PYTHON_MINOR and that postern_mta
-# and the apk/pip-installed modules entrypoint.py uses load from that minor's site-packages;
-# see scripts/image-import-check.py. The container runs as root, and so does the check.
-# `-P` keeps the script's directory (/) off sys.path, so only installed packages resolve.
-# PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the
-# image and the runtime environment is unchanged; bytecode that pip compiled at install time
-# in the build stage is inherent and stays. The daemon is started as a subprocess, so its
-# console script is run too.
+# Build-time import check (scripts/image-import-check.py), run with the bare `python3` the
+# ENTRYPOINT uses: a minor mismatch between apk and the COPY targets otherwise only fails at
+# container start. `-P` keeps / off sys.path; PYTHONDONTWRITEBYTECODE keeps bytecode out of
+# the image. mta-sts-daemon is spawned as a subprocess, so its console script is run too.
 RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
 	set -eu
 	export PYTHONDONTWRITEBYTECODE=1

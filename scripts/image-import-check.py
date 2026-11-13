@@ -1,15 +1,15 @@
-"""Build-time import check for the mta and provisioner images (issue #266).
+"""Build-time import check for the mta and provisioner images.
 
-Run in the image's final stage as the runtime user, with the same bare `python3` the ENTRYPOINT
-resolves from PATH. A Python minor that apk and the COPY targets disagree on builds fine and only
-fails at container start. The root cause is the minor, so that is what this checks:
+Run in the image's final stage as the runtime user, with the bare `python3` the ENTRYPOINT uses.
+A minor that apk and the COPY targets disagree on builds fine and only fails at container start.
 
     image-import-check.py PYTHON_MINOR ENTRYPOINT --first-party PACKAGE... --third-party MODULE...
 
 1. The running interpreter is PYTHON_MINOR (the Dockerfile ARG the COPY targets are built from).
 2. Every PACKAGE and each of its submodules imports, and lives under
    /usr/lib/python<PYTHON_MINOR>/site-packages, where the Dockerfile copied it. A module added later
-   is covered with no list to edit.
+   is covered with no list to edit. A directory that holds .py files but has no `__init__.py` (at
+   any level) is a failure: the package walk would skip it, leaving its modules unchecked.
 3. Every third-party MODULE (apk- or pip-installed, used by the image's code) imports from the same
    site-packages.
 4. ENTRYPOINT runs as a non-`__main__` module, which executes its top-level imports.
@@ -18,6 +18,7 @@ Stdlib only: the image has no pip.
 """
 import argparse
 import importlib
+import os
 import pkgutil
 import runpy
 import sys
@@ -55,10 +56,25 @@ def _import_package_tree(package: str, site_packages: str) -> None:
         return
 
     def on_error(name: str) -> None:
-        _import(name, site_packages)  # re-raises the import failure through _fail
+        _fail(f"import {name}", sys.exc_info()[1] or "walk_packages reported an import error")
 
     for info in pkgutil.walk_packages(path, prefix=f"{package}.", onerror=on_error):
         _import(info.name, site_packages)
+    for entry in path:
+        _require_init_files(package, entry)
+
+
+def _require_init_files(package: str, entry: str) -> None:
+    """Fail on a directory under ENTRY with .py files but no `__init__.py` at it or any level above it."""
+    for dirpath, _, filenames in os.walk(entry):
+        if not any(name.endswith(".py") for name in filenames):
+            continue
+        current = entry
+        for part in os.path.relpath(dirpath, entry).split(os.sep):
+            if part != ".":
+                current = os.path.join(current, part)
+            if not os.path.isfile(os.path.join(current, "__init__.py")):
+                _fail(f"walk {package}", f"{current} holds modules but has no __init__.py, so they are not checked")
 
 
 # Entry point ==========================================================================================================

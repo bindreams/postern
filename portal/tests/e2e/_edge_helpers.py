@@ -14,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+import httpx
+
 from . import _helpers
 from ._helpers import E2E_NGINX_IMAGE, TESTS_E2E_DIR, run
 
@@ -132,8 +134,8 @@ def _read_stale_pidfile() -> str:
         return dest.read_text().strip()
 
 
-def hard_restart_nginx(*, timeout: float = 60.0) -> str:
-    """SIGKILL the edge nginx, then start it again; return the pid it left behind.
+def hard_restart_nginx() -> tuple[str, str]:
+    """SIGKILL the edge nginx, start it again, and wait for its master; return (stale_pid, master_pid).
 
     This is the host-reboot path, and it is NOT what ``seed_edge_ranges`` does.
     ``docker restart`` is graceful: nginx catches SIGTERM and unlinks its own
@@ -144,53 +146,119 @@ def hard_restart_nginx(*, timeout: float = 60.0) -> str:
     container) leaves ``/run/nginx.pid`` behind, because it lives in the
     container's writable layer rather than on a tmpfs.
 
-    The returned pid is the caller's precondition check: restarting a container
-    that left no pidfile exercises none of this and would pass vacuously.
-
-    Raises with the exit code in the message rather than a bare health timeout --
-    128+1=129 is the signature of the entrypoint being SIGHUPed by its own stale
-    pidfile, and a test that only reported "never became healthy" would bury it.
+    ``stale_pid`` is the precondition check: a container that left no pidfile would
+    pass vacuously. It need not equal the new entrypoint's pid. ``master_pid`` is
+    what the restarted ``/run/nginx.pid`` names once that is a live master. Raises
+    with the exit code if the container stops -- 128+1=129 is the signature of the
+    entrypoint being SIGHUPed by its stale pidfile.
     """
     run(["docker", "kill", "--signal=KILL", EDGE_NGINX_CONTAINER])
-    deadline = time.monotonic() + 15.0
-    while time.monotonic() < deadline and _container_state()[0] != "exited":
-        time.sleep(0.2)
-    status, _ = _container_state()
-    assert status == "exited", f"container did not stop after SIGKILL (status={status!r})"
+    # `docker wait` blocks until the container is no longer running and prints its exit code.
+    killed_exit = run(["docker", "wait", EDGE_NGINX_CONTAINER]).stdout.strip()
+    assert killed_exit == "137", f"expected exit 137 (128+SIGKILL) after SIGKILL; got {killed_exit!r}"
 
     stale_pid = _read_stale_pidfile()
     run(["docker", "start", EDGE_NGINX_CONTAINER])
-    try:
-        _wait_nginx_healthy(timeout=timeout)
-    except AssertionError:
-        status, exit_code = _container_state()
-        signal_note = " (128+1: killed by SIGHUP -- see issue #245)" if exit_code == 129 else ""
-        raise AssertionError(
-            f"edge nginx did not come back after an ungraceful restart: status={status!r} "
-            f"exit={exit_code}{signal_note}; stale /run/nginx.pid held {stale_pid!r}"
-        ) from None
-    return stale_pid
+    return stale_pid, _wait_nginx_master()
 
 
-def current_master_pid() -> str:
-    """The pid nginx recorded for itself in the running container, or "" if absent.
+def _wait_nginx_master() -> str:
+    """Block until the container runs a live nginx master; return its pid.
 
-    Because the entrypoint ends in ``exec nginx``, this is also the pid the
-    entrypoint SHELL held. Comparing it against the pid a killed container left
-    behind is what proves a restart actually re-collides -- without that, an
-    ungraceful-restart test only proves some file survived, and would pass against
-    a broken build on any runtime whose pid numbering happens not to line up.
-
-    Deliberately NOT ``check=True``: a missing pidfile is the exact symptom of the
-    regression these tests exist to catch, and raising CalledProcessError here would
-    replace the caller's diagnostic with ``cat: can't open``.
+    Re-checks the entrypoint's own probe (``live_master_pid``) with no cap.
     """
-    result = subprocess.run(
-        ["docker", "exec", EDGE_NGINX_CONTAINER, "cat", "/run/nginx.pid"],
-        capture_output=True,
-        text=True,
+    while True:
+        status, exit_code = _container_state()
+        if status != "running":
+            signal_note = " (128+1: killed by SIGHUP -- see issue #245)" if exit_code == 129 else ""
+            raise AssertionError(
+                f"edge nginx did not come back after an ungraceful restart: status={status!r} "
+                f"exit={exit_code}{signal_note}"
+            )
+        master = live_master_pid()
+        if master:
+            return master
+        time.sleep(0.2)
+
+
+def wait_for_portal_through_nginx(client: httpx.Client) -> None:
+    """Block until nginx proxies ``/healthz`` to the portal with a 200.
+
+    nginx resolves the portal upstream in the background after a start (``resolve``
+    in nginx.conf.tmpl), so proxied requests 502 until that lookup lands: a live
+    master is not yet a usable proxy. ``/healthz`` rather than ``/login``, which
+    is rate limited and would spend its burst on the polling. Re-requests with no cap.
+    """
+    while True:
+        response = client.get("/healthz")
+        if response.status_code == 200:
+            return
+        assert response.status_code == 502, f"unexpected status {response.status_code} from /healthz after restart"
+        time.sleep(0.2)
+
+
+def stop_nginx_and_read_run_logs() -> str:
+    """Stop the edge nginx gracefully, return that run's complete logs, and start it again.
+
+    The container has exited when ``docker stop`` returns, so Docker has flushed all
+    of the run's output and one read is complete: a line's absence is proof it was
+    never logged. The container is started again and waited to a live master, because
+    later tests in the project use it.
+    """
+    run(["docker", "stop", EDGE_NGINX_CONTAINER])
+    try:
+        return logs_since_last_start()
+    finally:
+        run(["docker", "start", EDGE_NGINX_CONTAINER])
+        _wait_nginx_master()
+
+
+def _exec_in_nginx_result(*argv: str) -> subprocess.CompletedProcess:
+    """Run ``argv`` in the edge container; return the result, or raise per ``_exec_in_nginx``'s contract."""
+    result = subprocess.run(["docker", "exec", EDGE_NGINX_CONTAINER, *argv], capture_output=True, text=True)
+    if result.returncode == 0 or (result.returncode == 1 and not result.stderr.strip()):
+        return result
+    raise AssertionError(
+        f"probe {argv!r} failed in {EDGE_NGINX_CONTAINER}: exit {result.returncode}: {result.stderr.strip()!r}"
     )
-    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _exec_in_nginx(*argv: str) -> str:
+    """Run ``argv`` in the edge container; return its stripped stdout, or "" for "nothing there".
+
+    Exit 1 with empty stderr is how every probe used here (missing file, no live master) says "nothing there" -- the
+    regression symptom, so it is returned. Any other failure (including docker's own errors) means the probe itself is
+    broken and raises with stderr rather than spinning.
+    """
+    return _exec_in_nginx_result(*argv).stdout.strip()
+
+
+def live_master_pid() -> str:
+    """The pid /run/nginx.pid names IF it is a live nginx master, else "".
+
+    Runs the entrypoint's own probe (``nginx_master_pid`` in pidfile.sh), so the test and the guard agree on what "a
+    live master" means.  Because the entrypoint ends in ``exec nginx``, the master's pid is the one the entrypoint
+    SHELL held; the runtime picks it, so compare readings of one boot with each other, never with a killed
+    container's pid.
+    """
+    return _exec_in_nginx("sh", "-c", ". /usr/local/bin/pidfile.sh; nginx_master_pid")
+
+
+def process_tree_master_pids() -> list[str]:
+    """The pids of PID 1's children: tini's one supervised process, i.e. the real nginx master.
+
+    Read from the process tree, independent of ``/run/nginx.pid``, so a test can check
+    the pidfile against what is actually running rather than against itself. Raises
+    on an empty answer: while the container runs, tini always has its child.
+    """
+    result = _exec_in_nginx_result("cat", "/proc/1/task/1/children")
+    pids = result.stdout.split()
+    if not pids:
+        raise AssertionError(
+            f"PID 1 reports no children in {EDGE_NGINX_CONTAINER}: exit {result.returncode}, "
+            f"stderr {result.stderr.strip()!r}"
+        )
+    return pids
 
 
 def logs_since_last_start() -> str:

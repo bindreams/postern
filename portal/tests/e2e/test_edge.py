@@ -31,9 +31,11 @@ import ssl
 from ._edge_helpers import (
     EDGE_BASE_URL,
     EDGE_NGINX_CONTAINER,
-    current_master_pid,
     hard_restart_nginx,
-    logs_since_last_start,
+    live_master_pid,
+    process_tree_master_pids,
+    stop_nginx_and_read_run_logs,
+    wait_for_portal_through_nginx,
 )
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
@@ -119,7 +121,7 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     """
     import httpx
 
-    stale_pid = hard_restart_nginx()
+    stale_pid, master_pid = hard_restart_nginx()
     # Doubles as the only observation anywhere that nginx really writes the path the
     # entrypoint clears: a unit test can only compare two string literals.
     assert stale_pid.isdigit(), (
@@ -127,31 +129,30 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
         f"(got {stale_pid!r}), so this test exercised none of issue #245 -- check "
         f"that nginx still writes the pidfile the entrypoint clears"
     )
-    # Surviving is only meaningful if the stale pid is the one the new entrypoint
-    # actually takes. If pid numbering ever stops colliding, this test would pass
-    # against a broken build, so assert the collision rather than assume it.
-    master_pid = current_master_pid()
-    assert stale_pid == master_pid, (
-        f"precondition failed: stale pid {stale_pid!r} is not the pid this runtime "
-        f"hands the new entrypoint ({master_pid!r}), so a restart no longer "
-        f"reproduces issue #245 here and this test proves nothing"
+    # hard_restart_nginx already waited for a pidfile naming a live master; it must
+    # be the master actually running, or a reload has no valid target.
+    tree_pids = process_tree_master_pids()
+    assert master_pid in tree_pids, (
+        f"/run/nginx.pid names {master_pid!r}, which is not the nginx master running under PID 1 ({tree_pids!r})"
     )
 
-    # The assertion that actually pins the fix: the entrypoint must report having
-    # cleared the pidfile the killed container left. Without this the test passes
-    # against a build with the clear removed entirely.
-    assert "cleared stale" in logs_since_last_start(), (
-        "the entrypoint did not report clearing the stale pidfile on this boot, so "
-        "the pidfile left by the killed container was carried into the new one -- "
-        "a reload racing startup would SIGHUP the entrypoint (issue #245)"
-    )
-
-    # Healthy only proves the container is up; prove it is actually serving TLS.
+    # A live master is not yet a usable proxy: prove it serves TLS and reaches the portal.
     client_cert, client_key = edge_client_certs
     ctx = _make_ssl_ctx(e2e_certs, client_cert, client_key)
     with httpx.Client(base_url=EDGE_BASE_URL, verify=ctx, follow_redirects=False) as client:
+        wait_for_portal_through_nginx(client)
         r = client.get("/login")
     assert r.status_code == 200, f"expected 200 from /login after restart; got {r.status_code}"
+
+    # What pins the fix: the entrypoint must report clearing the killed container's pidfile, or the test passes with
+    # the clear removed. The runtime picks the pid, so the stale pid is not compared with the new one. Read after a
+    # graceful stop, when the run's log is complete; its absence then means the line was never printed.
+    logs = stop_nginx_and_read_run_logs()
+    assert "cleared stale" in logs, (
+        f"the entrypoint did not report clearing the killed container's pidfile; the stale pidfile was carried "
+        f"into the new container, where a reload racing startup would SIGHUP the entrypoint (issue #245). "
+        f"Logs:\n{logs}"
+    )
 
 
 def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
@@ -170,7 +171,7 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
     """
     import subprocess
 
-    pid_before = current_master_pid()
+    pid_before = live_master_pid()
     assert pid_before.isdigit(), f"no live pidfile to begin with: {pid_before!r}"
 
     result = subprocess.run(
@@ -188,7 +189,7 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
         f"{result.returncode} with stderr: {result.stderr[:400]!r}"
     )
 
-    assert current_master_pid() == pid_before, (
+    assert live_master_pid() == pid_before, (
         "re-running the entrypoint inside a live container removed the running "
         "master's pidfile; nginx still serves but every reload path (edge watcher "
         "and the 6h cert-renewal loop) is silently dead from here on"

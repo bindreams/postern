@@ -14,7 +14,7 @@ These are load-bearing. Changing any of them without understanding the chain wil
   - [nginx/etc/nginx.conf:36](nginx/etc/nginx.conf) regex `^/t/([a-f0-9]{24})$`
   - [portal/src/postern/cli.py:137](portal/src/postern/cli.py#L137) `secrets.token_hex(12)` (12 bytes → 24 hex chars)
   - [portal/src/postern/reconciler.py:29-30](portal/src/postern/reconciler.py#L29-L30) `f"ss-{conn.path_token}"`
-- **Container name = DNS hostname.** Nginx proxies `http://ss-$1`, resolved via Docker's embedded DNS (`resolver 127.0.0.11` in nginx.conf). The `ss-` prefix is not cosmetic.
+- **Container name = DNS hostname.** Nginx proxies `http://ss-$1`, resolved via Docker's embedded DNS (`resolver 127.0.0.11` in nginx.conf). The `ss-` prefix is not cosmetic. The portal is the exception: it is an `upstream portal` with `resolve` (see nginx.conf.tmpl), and every portal `proxy_pass` points at `http://portal`. A literal `portal:8000`, or an upstream `server` without `resolve`, is resolved once at startup and 502s after a portal recreate until nginx restarts. Pinned by `test_every_upstream_server_re_resolves_without_failing_over` and `test_no_proxy_pass_has_a_literal_host` (each per config group: production template + `conf.d`, and the e2e config).
 - **Reconciler is the source of truth.** DB state → container state. Connection creation is CLI-only (there is no `POST /connection` route). Reconciler responsibilities, all in [portal/src/postern/reconciler.py](portal/src/postern/reconciler.py):
   - Create missing containers, remove orphans
   - Restart exited containers (lines 111–120)

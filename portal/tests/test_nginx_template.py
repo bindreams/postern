@@ -93,12 +93,18 @@ def test_tunnel_misses_reroute_to_at_miss_in_both_nginx_configs():
         assert "return 418;" in body, f"non-WS 418 sentinel missing in {path}"
 
 
+def _directives(config_text: str) -> str:
+    """Config text with whole-line and trailing `# ...` comments removed."""
+    lines = (re.sub(r"(^|\s)#.*$", "", ln) for ln in config_text.splitlines())
+    return "\n".join(lines)
+
+
 def _location_block_body(config_text: str, location_re: str) -> list[str]:
     """Non-comment directive lines inside a flat `location <X> { ... }` block
     (no nested braces, which holds for `@miss` and `location /`)."""
-    m = re.search(location_re + r"\s*\{([^}]*)\}", config_text)
+    m = re.search(location_re + r"\s*\{([^}]*)\}", _directives(config_text))
     assert m, f"location block {location_re!r} not found"
-    return [ln.strip() for ln in m.group(1).splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    return [ln.strip() for ln in m.group(1).splitlines() if ln.strip()]
 
 
 def test_at_miss_body_identical_to_location_root_in_both_configs():
@@ -114,31 +120,27 @@ def test_at_miss_body_identical_to_location_root_in_both_configs():
 
 # Portal upstream re-resolution (#233) =================================================================================
 def _config_groups() -> dict[str, list[Path]]:
-    """Each config nginx loads as one unit: the production template with every
-    `.tmpl`/`.conf` it can `include` under nginx/etc, and the static e2e config on its
-    own. An upstream declared in one group is invisible to the other at runtime, so
-    every check below resolves names within a group, never across them."""
-    prod = sorted(p for p in NGINX_ETC.rglob("*") if p.is_file() and p.suffix in (".tmpl", ".conf"))
+    """Each config nginx loads as one unit: the production template with every nginx
+    config file (`*.conf`, `*.conf.tmpl`) it can `include` under nginx/etc, and the
+    static e2e config on its own. An upstream declared in one group is invisible to
+    the other at runtime, so every check below resolves names within a group, never
+    across them."""
+    prod = sorted(p for p in NGINX_ETC.rglob("*") if p.is_file() and p.name.endswith((".conf", ".conf.tmpl")))
     return {"production": prod, "e2e": [E2E_NGINX_CONF]}
 
 
-def _directives(path: Path) -> str:
-    """Config text with whole-line and trailing `# ...` comments removed."""
-    lines = (re.sub(r"(^|\s)#.*$", "", ln) for ln in path.read_text().splitlines())
-    return "\n".join(lines)
-
-
-@pytest.mark.parametrize("group", ["production", "e2e"])
+@pytest.mark.parametrize("group", _config_groups())
 def test_every_upstream_server_re_resolves_without_failing_over(group):
     """A literal host in `upstream { server portal:8000; }` is resolved once at config
     load, so a recreated portal (new IP) 502s every portal route until nginx restarts
     (#233). `resolve` (nginx >= 1.27.3, needs a shared-memory `zone`) makes nginx
-    re-resolve through `resolver 127.0.0.11`. `max_fails=0` is also required: the
-    default (1 failure -> 10s marked down) turns one refused connect during a portal
-    restart into a 10s "no live upstreams" 502 that the variable form never had."""
+    re-resolve through `resolver 127.0.0.11`. `max_fails=0` is also required: nginx
+    skips failure accounting for a single-address upstream, but if the name ever
+    resolves to several, the default (1 failure -> 10s marked down) would take an
+    address out after one refused connect."""
     blocks = []
     for path in _config_groups()[group]:
-        for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{([^}]*)\}", _directives(path), re.M):
+        for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{([^}]*)\}", _directives(path.read_text()), re.M):
             blocks.append((path, m.group(1), m.group(2)))
     assert blocks, f"no upstream block found in the {group} config; this test has gone blind"
     for path, name, body in blocks:
@@ -151,7 +153,7 @@ def test_every_upstream_server_re_resolves_without_failing_over(group):
         assert re.search(r"^\s*zone\s", body, re.M), f"upstream {name} in {path} has no `zone`; `resolve` needs one"
 
 
-@pytest.mark.parametrize("group", ["production", "e2e"])
+@pytest.mark.parametrize("group", _config_groups())
 def test_no_proxy_pass_has_a_literal_host(group):
     """Outside an upstream block, `proxy_pass http://<literal>` is resolved once at
     startup (#233). A target must be a variable (`ss-$1`, resolved per request) or the
@@ -159,7 +161,7 @@ def test_no_proxy_pass_has_a_literal_host(group):
     declared = set()
     targets = []
     for path in _config_groups()[group]:
-        body = _directives(path)
+        body = _directives(path.read_text())
         declared |= {m.group(1) for m in re.finditer(r"^\s*upstream\s+(\S+)\s*\{", body, re.M)}
         targets += [(path, t) for t in re.findall(r"proxy_pass\s+([^;]+);", body)]
     assert targets, f"no proxy_pass found in the {group} config; this test has gone blind"

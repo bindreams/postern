@@ -33,9 +33,10 @@ http {
 	# `resolver` above (honouring `valid=5s`). A literal `proxy_pass http://portal:8000`
 	# is resolved once at config load, so a recreated portal (new IP) 502s until nginx
 	# restarts (#233). `resolve` needs a shared-memory `zone` and nginx >= 1.27.3.
-	# `max_fails=0` disables passive health checks: with the default (1 failure -> 10s
-	# down) one refused connect while the portal restarts would 502 every route for 10s
-	# ("no live upstreams"), which the per-request variable form never did.
+	# `max_fails=0` turns off passive failure accounting. nginx already skips it while the
+	# name resolves to a single address (one portal), so it only matters if the name ever
+	# resolves to several (e.g. old and new portal overlapping): the default would then
+	# take an address out for 10s after one refused connect.
 	upstream portal {
 		zone portal 64k;
 		server portal:8000 resolve max_fails=0;

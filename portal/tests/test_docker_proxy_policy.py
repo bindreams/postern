@@ -10,8 +10,12 @@ pinned base image's HAProxy (`core.register_init`, exit 0 on pass). This module 
   not an option: it is regenerated on every run.
 * runs the suite and reports its output.
 
-Needs a Docker daemon (it runs `docker run` of the base image, with no network); skipped without one, and a
-failure when `$CI` is set. Opt out with `-m 'not haproxy_harness'`.
+Needs a Docker daemon (it runs `docker run` of the base image, with no network); skipped when the docker CLI
+reports it cannot reach one, and a failure when `$CI` is `true` or the CLI does not answer. Opt out with
+`-m 'not haproxy_harness'`.
+
+It also pins that the three places that validate an instance id agree: the portal (`reconciler.resolve_instance_id`),
+the deploy gate (`scripts/verify-deploy.py`) and the proxy (`policy.config_from_env`, run through the harness).
 """
 from __future__ import annotations
 
@@ -21,6 +25,7 @@ import re
 import subprocess
 import threading
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -34,6 +39,7 @@ from postern.models import Connection
 from postern.settings import Settings
 
 from ._compose import REPO_ROOT
+from .test_verify_deploy import vd  # the one loader of scripts/verify-deploy.py
 
 pytestmark = pytest.mark.haproxy_harness
 
@@ -114,8 +120,8 @@ class FakeDaemon:
     log: list[Recorded]
 
 
-@pytest.fixture
-def fake_daemon() -> Iterator[FakeDaemon]:
+@contextmanager
+def _serve() -> Iterator[FakeDaemon]:
     log: list[Recorded] = []
     handler = type("Handler", (_Daemon, ), {"log": log})
     server = HTTPServer(("127.0.0.1", 0), handler)
@@ -127,6 +133,12 @@ def fake_daemon() -> Iterator[FakeDaemon]:
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.fixture
+def fake_daemon() -> Iterator[FakeDaemon]:
+    with _serve() as daemon:
+        yield daemon
 
 
 def _record_reconciler(daemon: FakeDaemon, settings: Settings) -> list[Recorded]:
@@ -190,18 +202,23 @@ def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: Fa
 
 
 def _require_docker_daemon() -> None:
-    """Skip the harness when there is no daemon to run it in. In CI a missing daemon fails instead: the workflow
-    provisions one, and a skip there would hide a policy suite that never ran."""
+    """Skip the harness when the docker CLI says it cannot reach a daemon. Never skip on elapsed time: a CLI that does
+    not answer within the bound fails, as does any missing daemon when `CI=true` (the workflow provisions one)."""
     try:
         # Failure bound on a child process (the CLI against an unreachable remote host can hang), below pyproject's
         # `timeout = 30`.
-        reachable = subprocess.run(["docker", "info"], capture_output=True, check=False, timeout=10).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        reachable = False
-    if reachable:
-        return
-    message = "no reachable Docker daemon (the Lua policy suite runs in the pinned HAProxy image)"
-    if os.environ.get("CI"):
+        info = subprocess.run(["docker", "info"], capture_output=True, text=True, check=False, timeout=10)
+    except subprocess.TimeoutExpired:
+        pytest.fail("`docker info` did not answer within 10 s: cannot tell whether a Docker daemon is reachable")
+    except OSError as exc:
+        reason = f"the docker CLI cannot be run ({exc})"
+    else:
+        if info.returncode == 0:
+            return
+        lines = info.stderr.strip().splitlines()
+        reason = f"`docker info` exited {info.returncode}: {lines[-1] if lines else 'no message'}"
+    message = f"no reachable Docker daemon: {reason} (the Lua policy suite runs in the pinned HAProxy image)"
+    if os.environ.get("CI", "").lower() == "true":
         pytest.fail(message)
     pytest.skip(message)
 
@@ -213,26 +230,32 @@ def _base_image() -> str:
     return match.group(1)
 
 
-def test_no_daemon_skips_the_harness_locally(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CLAUDE.md: unit tests need no Docker daemon. Without one the harness is skipped, with the reason."""
-    monkeypatch.setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
-    monkeypatch.delenv("CI", raising=False)
-    with pytest.raises(pytest.skip.Exception, match="no reachable Docker daemon"):
-        _require_docker_daemon()
+# (INSTANCE_ID override, COMPOSE_PROJECT_NAME) pairs: what each validator must resolve, or refuse, identically.
+INSTANCE_ID_CASES: list[tuple[str, str]] = [
+    # Accepted
+    ("a", ""), ("1", ""), ("0abc", ""), ("a" * 63, ""), ("A1_b.c-d", ""), ("a.b_c-d", ""), ("aB", ""), ("Ab", ""),
+    ("", "proj"), ("a", "b"), ("  a  ", ""), ("\t\n a\r\v\f", ""), ("", "  b "), ("   ", "b"), ("a\n", ""),
+    # Refused, with no fallback from a refused override to the project name
+    ("", ""), ("   ", ""), ("   ", "   "), ("a" * 64, ""), ("-a", ""), (".a", ""), ("_a", ""), ("a:b", ""),
+    ("a/b", ""), ("a b", ""), ('a"b', ""), ("a,b", ""), ("a\b", ""), ("a%b", ""), ("a&b", ""), ("a=b", ""),
+    ("a\nb", ""), ("é", ""), ("aé", ""), (" a", ""), ("a ", ""), (" ", "b"),
+    ("bad:id", "good"), ("", "bad:id"), ("", "a" * 64), ("", " a"),
+]  # yapf: disable
 
 
-def test_no_daemon_fails_the_harness_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
-    """CI provisions a daemon; a missing one there must not turn the policy suite into a silent skip."""
-    monkeypatch.setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
-    monkeypatch.setenv("CI", "true")
-    with pytest.raises(pytest.fail.Exception, match="no reachable Docker daemon"):
-        _require_docker_daemon()
+def _hex(text: str) -> str:
+    return text.encode().hex()
 
 
-def test_lua_policy_suite(fake_daemon: FakeDaemon) -> None:
-    _require_docker_daemon()
-    settings = _settings()
-    wire = _wire_tsv(_record_reconciler(fake_daemon, settings))
+@dataclass(frozen=True)
+class LuaRun:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _run_lua_suite(wire: str, settings: Settings) -> LuaRun:
+    id_cases = ",".join(f"{_hex(o)}:{_hex(p)}" for o, p in INSTANCE_ID_CASES)
     proc = subprocess.run(
         [
             "docker", "run", "--rm", "-i", "--network", "none",
@@ -241,6 +264,7 @@ def test_lua_policy_suite(fake_daemon: FakeDaemon) -> None:
             "-e", f"TEST_NETWORK={settings.shadowsocks_network}",
             "-e", f"TEST_INSTANCE={INSTANCE}",
             "-e", f"TEST_API_VERSION={API_VERSION}",
+            "-e", f"TEST_ID_CASES={id_cases}",
             "--entrypoint", "/usr/sbin/haproxy",
             _base_image(),
             "-f", "/pn/tests/haproxy.test.cfg", "-db",
@@ -252,5 +276,54 @@ def test_lua_policy_suite(fake_daemon: FakeDaemon) -> None:
         # Failure bound on a child process (an image pull on a cold runner), below pyproject's `timeout = 30`.
         timeout=25,
     )  # yapf: disable
-    assert proc.returncode == 0, f"policy suite failed ({proc.returncode}):\n{proc.stdout}\n{proc.stderr}"
-    assert re.search(r"^\d{3,} checks, 0 failed$", proc.stdout, re.M), proc.stdout
+    return LuaRun(proc.returncode, proc.stdout, proc.stderr)
+
+
+@pytest.fixture(scope="module")
+def lua_suite() -> LuaRun:
+    """One run of the Lua suite, shared by the tests below."""
+    _require_docker_daemon()
+    settings = _settings()
+    with _serve() as daemon:
+        return _run_lua_suite(_wire_tsv(_record_reconciler(daemon, settings)), settings)
+
+
+def test_lua_policy_suite(lua_suite: LuaRun) -> None:
+    assert lua_suite.returncode == 0, (
+        f"policy suite failed ({lua_suite.returncode}):\n{lua_suite.stdout}\n{lua_suite.stderr}"
+    )
+    assert re.search(r"^\d{3,} checks, 0 failed$", lua_suite.stdout, re.M), lua_suite.stdout
+
+
+def _lua_instance_ids(stdout: str) -> dict[tuple[str, str], str | None]:
+    """The suite prints `instance-id <hex override>:<hex project> <hex resolved id | ->` per case."""
+    out: dict[tuple[str, str], str | None] = {}
+    for override, project, resolved in re.findall(r"^instance-id ([0-9a-f]*):([0-9a-f]*) ([0-9a-f]+|-)$", stdout, re.M):
+        out[(bytes.fromhex(override).decode(), bytes.fromhex(project).decode())] = (
+            None if resolved == "-" else bytes.fromhex(resolved).decode()
+        )
+    return out
+
+
+def _portal_instance_id(override: str, project: str) -> str | None:
+    settings = Settings(secret_key="x" * 40, domain="postern.example.com", instance_id=override, compose_project_name=project)
+    return reconciler.resolve_instance_id(settings)
+
+
+def _deploy_gate_instance_id(override: str, project: str) -> str | None:
+    config = {"services": {"portal": {"environment": {"INSTANCE_ID": override}}}}
+    try:
+        return vd.resolve_instance_id(config, project)
+    except vd.CollectError:
+        return None
+
+
+def test_the_proxy_the_portal_and_the_deploy_gate_resolve_every_instance_id_alike(lua_suite: LuaRun) -> None:
+    """The portal must not run with an id the proxy refuses, and the deploy gate must filter on the id the portal
+    labels containers with: all three validate by hand, so they are compared case by case."""
+    proxy = _lua_instance_ids(lua_suite.stdout)
+    assert set(proxy) == set(INSTANCE_ID_CASES), "the Lua suite did not report every case"
+    assert any(v is not None for v in proxy.values()) and any(v is None for v in proxy.values())
+    for case in INSTANCE_ID_CASES:
+        assert _portal_instance_id(*case) == proxy[case], f"portal and proxy disagree on {case!r}"
+        assert _deploy_gate_instance_id(*case) == proxy[case], f"deploy gate and proxy disagree on {case!r}"

@@ -21,11 +21,6 @@ M.SS_MEMORY_BYTES = 536870912
 M.SS_PIDS_LIMIT = 1024
 M.SS_TMPFS = {["/tmp"] = "", ["/home/nonroot/.cache"] = "exec"}
 
--- The instance ids this proxy accepts, as a regular expression. Lua patterns cannot state `{0,62}`, so
--- config_from_env checks the same thing by hand; reconciler.INSTANCE_ID_PATTERN states it again and
--- tests/test_compose_docker_proxy.py pins the two strings equal.
-M.INSTANCE_ID_REGEX = "^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$"
-
 M.MAX_BODY = 8192
 local MAX_REPLY = 1048576
 
@@ -534,7 +529,9 @@ end
 
 -- Config from the environment, mirroring reconciler.resolve_instance_id (stripped INSTANCE_ID override, else
 -- stripped COMPOSE_PROJECT_NAME, else none). The instance id is pasted into a daemon filter, so it must be
--- harmless there.
+-- harmless there: it must match ^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$ (a Lua pattern cannot state `{0,62}`, hence the
+-- length check). reconciler.INSTANCE_ID_PATTERN and verify-deploy.py state the same thing; the differential test in
+-- tests/test_docker_proxy_policy.py pins all three to the same verdict on every edge case.
 local function strip(s) return (s or ""):match("^%s*(.-)%s*$") end
 function M.config_from_env(getenv)
   local instance = strip(getenv("INSTANCE_ID"))

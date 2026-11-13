@@ -692,6 +692,17 @@ end
 eq("config: instance of 63 characters", env_cfg{INSTANCE_ID = string.rep("a", 63)}.instance, string.rep("a", 63))
 eq("config: instance with dot, dash, underscore", env_cfg{INSTANCE_ID = "a.b-c_d"}.instance, "a.b-c_d")
 
+-- Instance-id verdicts for portal/tests/test_docker_proxy_policy.py, which compares them with what the portal and
+-- the deploy gate resolve for the same inputs. TEST_ID_CASES is `hex(INSTANCE_ID):hex(COMPOSE_PROJECT_NAME)` pairs.
+local function unhex(h) return (h:gsub("%x%x", function(x) return string.char(tonumber(x, 16)) end)) end
+local function hex(t) return (t:gsub(".", function(c) return string.format("%02x", c:byte()) end)) end
+for pair in (os.getenv("TEST_ID_CASES") or ""):gmatch("[^,]+") do
+  local override, project = pair:match("^(%x*):(%x*)$")
+  assert(override, "bad TEST_ID_CASES entry: " .. pair)
+  local resolved = env_cfg{INSTANCE_ID = unhex(override), COMPOSE_PROJECT_NAME = unhex(project)}.instance
+  print("instance-id " .. pair .. " " .. (resolved and hex(resolved) or "-"))
+end
+
 -- JSON parser contract ----------------------------------------------------------------------------------------------------
 local function parses(mode, s) return P.parse_json(s, mode) ~= nil end
 eq("json request: object", parses("request", '{"a": [1, true, null, "x"]}'), true)

@@ -26,6 +26,7 @@ from ._helpers import (
     E2E_SLEEPER_IMAGE,
     compose_exec,
     container_exists,
+    container_running,
     docker_inspect,
     get_container_id,
     run,
@@ -297,8 +298,9 @@ def test_other_containers_cannot_be_touched_or_read(e2e_stack, service):
         ("POST", "/pause", None), ("GET", "/changes", None), ("GET", "/stats", {"stream": False}),
     ]  # yapf: disable
     results = send([{"id": f"{m}{t}", "method": m, "path": f"/containers/{cid}{t}", "params": q} for m, t, q in verbs])
-    assert {n for n, r in results.items() if r["status"] != 403} == set(), results
+    assert {n for n, r in results.items() if not _denied(r)} == set(), results
     assert all("Env" not in r["text"] for r in results.values())
+    assert container_running(cid), f"{service} is no longer running"
 
 
 def test_a_foreign_deployments_tunnel_is_unreachable_and_its_secrets_unread(e2e_stack, created):
@@ -318,9 +320,10 @@ def test_a_foreign_deployments_tunnel_is_unreachable_and_its_secrets_unread(e2e_
         {"id": "by name", "method": "GET", "path": f"/containers/{name}/json"},
         {"id": "unscoped list", "method": "GET", "path": "/containers/json", "params": {"all": 1}},
     ])  # yapf: disable
-    assert {n for n, r in results.items() if r["status"] != 403} == set(), results
+    assert {n for n, r in results.items() if not _denied(r)} == set(), results
     assert all("hunter2" not in r["text"] for r in results.values())
     assert container_exists(name)
+    assert container_running(name), "the foreign tunnel was stopped"
 
 
 def test_the_name_filtered_read_shows_labels_but_never_env(e2e_stack, created):

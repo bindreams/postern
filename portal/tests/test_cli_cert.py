@@ -33,6 +33,23 @@ def test_renewal_status_default_state(env):
     assert "NO_CERT" in result.output
 
 
+def test_renewal_status_shows_last_issued_per_directory(env):
+    cert_state.write_state(
+        cert_state.CertState(
+            state="INSTALLED",
+            last_issued_iso="2026-11-02T00:00:00+00:00",
+            last_issued_by_directory={
+                "https://acme-v02.api.letsencrypt.org/directory": "2026-11-01T00:00:00+00:00",
+                "https://acme-staging-v02.api.letsencrypt.org/directory": "2026-11-02T00:00:00+00:00",
+            },
+        )
+    )
+    result = runner.invoke(app, ["cert", "renewal-status"])
+    assert result.exit_code == 0
+    assert "last_issued[https://acme-v02.api.letsencrypt.org/directory]: 2026-11-01T00:00:00+00:00" in result.output
+    assert "last_issued[https://acme-staging-v02.api.letsencrypt.org/directory]: 2026-11-02T00:00:00+00:00" in result.output
+
+
 def test_renew_errors_when_renewal_disabled(env, monkeypatch):
     monkeypatch.setenv("CERT_RENEWAL", "false")
     result = runner.invoke(app, ["cert", "renew"])

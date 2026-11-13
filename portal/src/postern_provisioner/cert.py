@@ -21,6 +21,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlparse
 
 from postern.cert import inspect as cert_inspect
 from postern.cert import state as cert_state
@@ -132,29 +133,9 @@ def advance_cert_state(
 
     # FAILED handling: after the hold-off, retry the prior state -------------------------------------------------------
     if state.state == "FAILED":
-        # The failures were under the old directory, so the hold-off protects nothing under the new one.
-        switching = _directory_switch_pending(state, settings)
-        if not switching:
-            if state.last_attempt_iso is None:
-                return state
-            last = dt.datetime.fromisoformat(state.last_attempt_iso)
-            if (now - last).total_seconds() < FAILED_HOLDOFF_SECONDS:
-                return state
-        retry_to = "ISSUING" if switching else (state.last_failed_state or "ISSUING")
-        logger.info(
-            "cert: FAILED hold-off %s; retrying %s", "skipped (ACME directory changed)" if switching else "elapsed",
-            retry_to
-        )
-        return cert_state.CertState(
-            **{
-                **_state_dict(state),
-                "state": retry_to,
-                "consecutive_failures": 0,
-                "last_failed_state": None,
-            }
-        )
+        return _advance_failed(state, settings, now)
 
-    # acme_directory is where the on-disk cert came from; it only moves once Lego succeeds under the new directory.
+    # acme_directory is where the installed cert came from; it only moves once the install under the new directory completes.
     directory_drift = _directory_drift(state, settings)
 
     # NO_CERT: adopt existing valid cert OR begin issuance -------------------------------------------------------------
@@ -167,18 +148,21 @@ def advance_cert_state(
 
     # INSTALLED: check whether to renew --------------------------------------------------------------------------------
     if state.state == "INSTALLED":
-        # Checked first: `renew` needs an account registered under the new directory, so a switch must be `run`.
-        if directory_drift:
-            logger.info("cert: ACME directory changed; transitioning to ISSUING")
+        # Every path but expiry takes ISSUING (`lego run`): `renew` is fatal without an account registered under the
+        # configured directory, and a no-op on a cert that is not yet due. Drift is checked first.
+        if directory_drift or _stuck_without_account(settings):
+            logger.info("cert: ACME directory changed or has no Lego account; transitioning to ISSUING")
+            if trigger_present:
+                logger.info("cert: .renew-cert trigger is served by this reissue")
             return _begin_issuance(state, settings, "ISSUING", now)
         # SAN list invariant: defends CT-leak hygiene.
         on_disk = _read_cert_or_none(cert_dir / "live" / settings.domain / "fullchain.pem")
         if on_disk is None or not on_disk.sans_match(expected):
-            logger.info("cert: SAN mismatch or missing on-disk cert; transitioning to RENEWING")
-            return _begin_issuance(state, settings, "RENEWING", now)
+            logger.info("cert: SAN mismatch or missing on-disk cert; transitioning to ISSUING")
+            return _begin_issuance(state, settings, "ISSUING", now)
         if trigger_present:
-            logger.info("cert: .renew-cert trigger present; transitioning to RENEWING")
-            return _begin_issuance(state, settings, "RENEWING", now)
+            logger.info("cert: .renew-cert trigger present; transitioning to ISSUING")
+            return _begin_issuance(state, settings, "ISSUING", now)
         days_left = on_disk.days_until_expiry(now=now)
         if days_left < settings.cert_renewal_days_before_expiry:
             logger.info("cert: %.1f days to expiry < threshold; transitioning to RENEWING", days_left)
@@ -194,15 +178,17 @@ def advance_cert_state(
             )
             return cert_state.CertState(**{**_state_dict(state), "state": "INSTALLED"})
 
-        # Account-email mismatch or first attempt under a new ACME directory: clear Lego account dir before issuing
-        # fresh. Later attempts under the new directory keep the registration the first one made.
-        email_changed = bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email
-        if email_changed or _directory_switch_pending(state, settings):
+        # Lego keys accounts by directory host and email, so a directory switch needs no reset: `run` registers the
+        # new one. An email change is the only reset; it lands in the unregistered case below.
+        if bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email:
             _reset_lego_account_dir()
 
-        # While the on-disk cert predates the directory switch, `renew` would fail (no account) or no-op (cert still
-        # fresh), so keep using `run` across retries.
-        action = "run" if state.state == "ISSUING" or directory_drift else "renew"
+        # `renew` is a no-op on a fresh cert and fatal without a registered account, so it is only for a due cert.
+        action = "run" if state.state == "ISSUING" or directory_drift or not _lego_account_registered(
+            settings
+        ) else "renew"
+        # Failures counted under another directory say nothing about this one.
+        under_new_directory = _latest_attempt_directory(state) not in ("", settings.cert_acme_directory)
         # Record last_issued_iso BEFORE Lego: defends rate limits even on
         # post-issuance failures (rename, etc.).
         attempt_state = cert_state.CertState(
@@ -210,7 +196,10 @@ def advance_cert_state(
                 **_state_dict(state),
                 "last_issued_iso": now.isoformat(),
                 "last_attempt_iso": now.isoformat(),
-                "last_issued_directory": settings.cert_acme_directory,
+                "last_issued_by_directory": {
+                    **state.last_issued_by_directory, settings.cert_acme_directory: now.isoformat()
+                },
+                "consecutive_failures": 0 if under_new_directory else state.consecutive_failures,
                 "acme_account_email": settings.cert_acme_email,
             }
         )
@@ -223,7 +212,6 @@ def advance_cert_state(
         return cert_state.CertState(
             **{
                 **_state_dict(attempt_state),
-                "acme_directory": settings.cert_acme_directory,
                 "state": "ISSUED_PENDING_INSTALL",
                 "consecutive_failures": 0,
                 "pending_cert_paths": {
@@ -257,6 +245,8 @@ def advance_cert_state(
                 **_state_dict(state),
                 "state": "INSTALLED",
                 "consecutive_failures": 0,
+                # The directory the cert was issued under, which a config change since may no longer be.
+                "acme_directory": _latest_attempt_directory(state) or settings.cert_acme_directory,
                 "pending_cert_paths": {},
                 "not_after_iso": installed_cert.not_after.isoformat() if installed_cert else None,
                 "sans": list(installed_cert.sans) if installed_cert else [],
@@ -305,28 +295,71 @@ def _directory_drift(state: cert_state.CertState, settings: CertSettings) -> boo
     return bool(state.acme_directory) and state.acme_directory != settings.cert_acme_directory
 
 
-def _last_issued_elsewhere(state: cert_state.CertState, settings: CertSettings) -> bool:
-    """The most recent Lego attempt was under another ACME directory. Pre-upgrade state has no
-    `last_issued_directory`; `acme_directory` was then recorded at the same moment and stands in."""
-    scope = state.last_issued_directory or state.acme_directory
-    return bool(scope) and scope != settings.cert_acme_directory
+def _issued_at(state: cert_state.CertState, directory: str) -> dt.datetime | None:
+    """Time of the last Lego attempt under `directory`. Pre-upgrade state has only `last_issued_iso`;
+    `acme_directory` was recorded with it and says which directory it was (empty: assume this one)."""
+    if state.last_issued_by_directory:
+        iso = state.last_issued_by_directory.get(directory)
+    elif state.last_issued_iso and (state.acme_directory or directory) == directory:
+        iso = state.last_issued_iso
+    else:
+        iso = None
+    return dt.datetime.fromisoformat(iso) if iso else None
 
 
-def _directory_switch_pending(state: cert_state.CertState, settings: CertSettings) -> bool:
-    """The directory changed and Lego has not been tried under the new one yet."""
-    return _directory_drift(state, settings) and _last_issued_elsewhere(state, settings)
+def _latest_attempt_directory(state: cert_state.CertState) -> str:
+    """Directory of the most recent Lego attempt ('' if none)."""
+    by_directory = state.last_issued_by_directory
+    if not by_directory:
+        return state.acme_directory
+    return max(by_directory, key=lambda d: dt.datetime.fromisoformat(by_directory[d]))
+
+
+def _lego_server_dir(settings: CertSettings) -> Path:
+    """Lego keeps accounts at `<path>/accounts/<server host, ':' -> '_'>/<email>/account.json`."""
+    host = urlparse(settings.cert_acme_directory).netloc.replace(":", "_")
+    return LEGO_PATH / "accounts" / host
+
+
+def _lego_account_registered(settings: CertSettings) -> bool:
+    return (_lego_server_dir(settings) / settings.cert_acme_email / "account.json").exists()
+
+
+def _stuck_without_account(settings: CertSettings) -> bool:
+    """Lego issued a cert here but never registered with the configured directory (under any email): the
+    installed cert predates the directory, whatever `acme_directory` says. A deployment stranded by the
+    earlier `renew`-on-switch bug looks like this. A BYO cert adopted without ever running Lego does not."""
+    if not (LEGO_PATH / "certificates" / f"{settings.domain}.crt").exists():
+        return False
+    return not any(_lego_server_dir(settings).glob("*/account.json"))
 
 
 def _rate_limit_guard_clear(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> bool:
     if settings.cert_force_reissue:
         return True
-    if state.last_issued_iso is None:
-        return True
     # Let's Encrypt limits are per directory: an issuance under another one (staging) does not count here.
-    if _last_issued_elsewhere(state, settings):
-        return True
-    last = dt.datetime.fromisoformat(state.last_issued_iso)
-    return (now - last).total_seconds() >= RATE_LIMIT_GUARD_SECONDS
+    last = _issued_at(state, settings.cert_acme_directory)
+    return last is None or (now - last).total_seconds() >= RATE_LIMIT_GUARD_SECONDS
+
+
+def _advance_failed(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> cert_state.CertState:
+    """After the hold-off, retry the prior state. When the failures were under another directory than the configured
+    one, the hold-off protects nothing: re-evaluate from INSTALLED (drift, SAN and expiry checks decide)."""
+    attempted = _latest_attempt_directory(state)
+    if attempted not in ("", settings.cert_acme_directory):
+        logger.info("cert: FAILED under another ACME directory; skipping hold-off")
+        return _with(state, state="INSTALLED", consecutive_failures=0, last_failed_state=None)
+    if state.last_attempt_iso is None:
+        return state
+    last = dt.datetime.fromisoformat(state.last_attempt_iso)
+    if (now - last).total_seconds() < FAILED_HOLDOFF_SECONDS:
+        return state
+    logger.info("cert: FAILED hold-off elapsed; retrying %s", state.last_failed_state or "ISSUING")
+    return _with(state, state=state.last_failed_state or "ISSUING", consecutive_failures=0, last_failed_state=None)
+
+
+def _with(s: cert_state.CertState, **changes) -> cert_state.CertState:
+    return cert_state.CertState(**{**_state_dict(s), **changes})
 
 
 def _begin_issuance(

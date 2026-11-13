@@ -744,6 +744,8 @@ def cert_renewal_status() -> None:
     typer.echo(f"last_attempt:         {state.last_attempt_iso or '(none)'}")
     typer.echo(f"consecutive_failures: {state.consecutive_failures}")
     typer.echo(f"acme_directory:       {state.acme_directory or '(none)'}")
+    for directory, issued in sorted(state.last_issued_by_directory.items()):
+        typer.echo(f"last_issued[{directory}]: {issued}")
     if state.state == "FAILED":
         typer.echo(f"last_failed_state:    {state.last_failed_state}")
 

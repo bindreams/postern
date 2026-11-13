@@ -22,7 +22,7 @@ An edge buys censorship-resistance the origin alone cannot:
 Prerequisites:
 
 - Your domain's nameservers are delegated to Cloudflare (the zone is active in your Cloudflare account).
-- A Cloudflare API token with `Zone:DNS:Edit` on that zone, plus `Zone:Zone Settings:Edit` for the zone ECH/SSL-mode management (see below) — the same token used for DKIM / cert DNS-01 (see [certificates](certificates.md)).
+- A Cloudflare API token with `Zone:DNS:Edit` and `Zone:Zone:Read` on that zone, plus `Zone:Zone Settings:Edit` for the zone ECH/SSL-mode management (see below) — the same token used for DKIM / cert DNS-01 (see [certificates](certificates.md)).
 - Your origin's public IPv4 (IPv6 optional).
 - Authenticated Origin Pulls enabled on the zone in Cloudflare (or `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`). Postern does not enable it; see [Before the first deploy](#before-the-first-deploy-enable-authenticated-origin-pulls).
 
@@ -69,15 +69,14 @@ Before the first deploy, do one of:
 - Enable Authenticated Origin Pulls on the zone in the Cloudflare dashboard.
 - Set `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`. nginx then stops requiring the certificate, so only the origin firewall restricts the tunnel vhost to Cloudflare. With the built-in MTA that firewall must leave `:443` open to the world for MTA-STS (see [Lock down the origin](#lock-down-the-origin)), so nothing restricts it at all. Prefer enabling Authenticated Origin Pulls.
 
-To check the zone setting, find the zone ID on the zone's Overview page in the dashboard (or `GET /zones?name=<domain>`, which the golden-path token can read), then:
+To check the zone setting, find the zone ID on the zone's Overview page in the dashboard (or `GET /zones?name=<domain>`, which needs `Zone : Zone : Read`), then run the following. Reading a zone setting needs `Zone : Zone Settings : Read` or `Edit` ([Cloudflare API reference](https://developers.cloudflare.com/api/resources/zones/subresources/settings/methods/get/)), which the golden-path token has. A token without Zone Settings access should check in the dashboard instead. The token goes in through stdin, so it stays out of `ps` and shell history:
 
 ```bash
-export CLOUDFLARE_API_TOKEN=...   # the value from .env; .env does not export it
-curl -X GET "https://api.cloudflare.com/client/v4/zones/<zone-id>/settings/tls_client_auth" \
-  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN"   # "value":"on" is what you want
+read -rsp 'Cloudflare API token: ' token   # the value from .env; typed silently
+printf 'header = "Authorization: Bearer %s"\n' "$token" |
+  curl -X GET -sS --config - "https://api.cloudflare.com/client/v4/zones/<zone-id>/settings/tls_client_auth"
+# "value":"on" is what you want
 ```
-
-Reading a zone setting needs `Zone : Zone Settings` access, which the golden-path token has (`Edit`). The narrower `DNS : Edit` + `Zone : Read` token gets a 403.
 
 ### Zone-wide settings Postern manages
 
@@ -137,15 +136,17 @@ ufw deny 443/tcp   # built-in MTA? replace with `ufw allow 443/tcp` -- MTA-STS n
 
 Leave `:25` open to the world if you run the [built-in MTA](email.md): SMTP cannot be proxied by Cloudflare, so `mail.<domain>` is published gray-clouded and its `A` record points straight at the origin (see the caveats).
 
-The same applies to `:443` when the MTA is on: the MTA-STS policy at `https://mta-sts.<domain>/.well-known/mta-sts.txt` is served **gray** (Cloudflare's Universal SSL can't authenticate the two-label `mta-sts.<domain>` — see the caveats), so external sending MTAs fetch it straight from the origin. They connect from arbitrary IPs, not Cloudflare's, so under ufw's default-deny-incoming policy the Cloudflare-only `allow` rules above still block them — **add an explicit `ufw allow 443/tcp`** (dropping the `ufw deny 443/tcp` line is not enough; the default policy denies anyway). This opens `:443` to the internet but leaks no new address (the origin IP is already public via `mail.<domain>`), and the tunnel vhost still answers a connection with no Cloudflare origin-pull certificate with a `400` via AOP (below) — only the AOP-exempt `mta-sts` vhost answers.
+The same applies to `:443` when the MTA is on: the MTA-STS policy at `https://mta-sts.<domain>/.well-known/mta-sts.txt` is served **gray** (Cloudflare's Universal SSL can't authenticate the two-label `mta-sts.<domain>` — see the caveats), so external sending MTAs fetch it straight from the origin. They connect from arbitrary IPs, not Cloudflare's, so under ufw's default-deny-incoming policy the Cloudflare-only `allow` rules above still block them — **add an explicit `ufw allow 443/tcp`** (dropping the `ufw deny 443/tcp` line is not enough; the default policy denies anyway). This opens `:443` to the internet but leaks no new address (the origin IP is already public via `mail.<domain>`), and the tunnel vhost still answers a connection with no Cloudflare origin-pull certificate with a `400` (AOP, below). Only the AOP-exempt `mta-sts` vhost serves such a connection.
 
 Validate:
 
 ```bash
 docker compose exec portal postern mta verify-dns   # apex proxied; mail gray
 curl -fsS -o /dev/null -w '%{http_code}\n' https://postern.example.com/login   # via CF -> 200
-curl -fsS --resolve postern.example.com:443:203.0.113.10 https://postern.example.com/login
-# direct-to-origin -> 400 "No required SSL certificate was sent" (the handshake completes; nginx rejects at the HTTP layer): AOP working
+curl -sS --resolve postern.example.com:443:203.0.113.10 https://postern.example.com/login
+# run from a non-Cloudflare machine; --resolve sends it straight to the origin:
+#   :443 open to the world (built-in MTA): "400 No required SSL certificate was sent" -> AOP working
+#   :443 locked to Cloudflare ranges (no MTA): the connection is dropped and curl hangs until it times out -> firewall working
 ```
 
 ## Generic profile

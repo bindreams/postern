@@ -218,12 +218,11 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
 def _portal_env(config: dict) -> dict[str, str]:
     """The compose-resolved portal environment, keyed upper-case.
 
-    `Settings` (pydantic-settings) has no `model_config` overriding the
-    library default, which is case-INSENSITIVE: a `.env` entry spelled
-    `shadowsocks_image=...` or `instance_id=...` is authoritative for the
-    portal, and a case-sensitive `dict.get` here would miss it -- silently,
-    in the passing direction, which is the one failure mode this script
-    exists to eliminate.
+    `Settings` (pydantic-settings) matches environment names case-insensitively,
+    so the lookup here does too: a case-sensitive `dict.get` would miss a
+    differently-spelled name -- silently, in the passing direction, which is the
+    one failure mode this script exists to eliminate. compose.yaml itself
+    delivers upper-case names only.
     """
     raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
     return {k.upper(): v for k, v in raw.items()}
@@ -232,15 +231,14 @@ def _portal_env(config: dict) -> dict[str, str]:
 def resolve_ss_image(config: dict, flag: str) -> str:
     """The tunnel image ref the portal will actually spawn.
 
-    SHADOWSOCKS_IMAGE is a portal Settings field reaching the container through
-    `env_file: .env`. It is NOT compose interpolation, so the host shell's
-    environment has no bearing on it -- reading $SHADOWSOCKS_IMAGE here would
-    invert the precedence and verify an image nothing uses.
+    SHADOWSOCKS_IMAGE is a portal Settings field that compose.yaml passes through
+    to the container from the deploying shell, then .env. Reading $SHADOWSOCKS_IMAGE
+    here directly would skip that resolution (and .env) and could verify an image
+    nothing uses.
 
-    `docker compose config --format json` already resolves `env_file` into
-    `services.<name>.environment` (and drops the `env_file` key), so the
-    authoritative value is in the config we have already parsed. That is why
-    there is no .env parser in this script.
+    `docker compose config --format json` already resolves the portal's
+    `environment` from both sources, so the authoritative value is in the config
+    we have already parsed. That is why there is no .env parser in this script.
     """
     if flag:
         return flag
@@ -251,7 +249,7 @@ def resolve_instance_id(config: dict, project: str) -> str:
     """The `postern.instance` label value `--tunnels` filters on.
 
     Mirrors `reconciler.resolve_instance_id`: an explicit INSTANCE_ID override
-    (already folded into services.portal.environment by `docker compose
+    (already resolved into services.portal.environment by `docker compose
     config`, the same way SHADOWSOCKS_IMAGE is) wins; otherwise the compose
     project name IS the value the reconciler derives, because compose.yaml's
     `COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}` passthrough feeds

@@ -452,7 +452,7 @@ def test_collect_scopes_tunnels_to_this_deployments_instance():
 
 
 def test_collect_honors_an_instance_id_override():
-    """INSTANCE_ID reaches the portal via env_file, same as SHADOWSOCKS_IMAGE;
+    """INSTANCE_ID reaches the portal as a passthrough, same as SHADOWSOCKS_IMAGE;
     `docker compose config` already resolves it into services.portal.environment."""
     config = _ok(
         json.dumps({
@@ -923,12 +923,12 @@ def test_resolve_ss_image_prefers_the_flag():
 
 
 def test_resolve_ss_image_reads_the_portals_resolved_environment(monkeypatch):
-    """`docker compose config` folds env_file into services.<n>.environment, so
-    the value the portal will actually see is already in the config."""
+    """`docker compose config` resolves services.<n>.environment from the shell and
+    .env, so the value the portal will actually see is already in the config."""
     monkeypatch.setenv("SHADOWSOCKS_IMAGE", "local/from-shell")
     config = {"services": {"portal": {"environment": {"SHADOWSOCKS_IMAGE": "local/from-compose"}}}}
-    # The host shell must NOT win: SHADOWSOCKS_IMAGE reaches the portal through
-    # env_file, which compose does not interpolate from the shell.
+    # This script's own process environment must NOT win: compose already folded
+    # the deploying shell's value into the config it printed.
     assert vd.resolve_ss_image(config, "") == "local/from-compose"
 
 
@@ -942,9 +942,8 @@ def test_resolve_ss_image_without_a_portal_service():
 
 
 def test_resolve_ss_image_is_case_insensitive():
-    """`Settings` (pydantic-settings) has no model_config overriding the
-    library default of case-INSENSITIVE env vars -- a lowercase `.env` entry
-    is authoritative for the portal and must not be missed here."""
+    """`Settings` (pydantic-settings) matches env names case-insensitively, so a
+    differently-spelled name in the config must not be missed here."""
     config = {"services": {"portal": {"environment": {"shadowsocks_image": "local/from-lowercase-env"}}}}
     assert vd.resolve_ss_image(config, "") == "local/from-lowercase-env"
 

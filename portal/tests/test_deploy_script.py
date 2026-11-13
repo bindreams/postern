@@ -248,9 +248,9 @@ def test_default_tag_when_the_portal_reports_the_default(tmp_path):
 
 
 def test_the_tag_comes_from_the_portal_not_the_shell_environment(tmp_path):
-    """compose.yaml gives the portal SHADOWSOCKS_IMAGE only via `env_file: .env`, so a
-    value exported in the deploying shell never reaches it. Honouring the shell here
-    would build a tag the reconciler never looks up."""
+    """The tag is whatever the portal itself resolves (compose passes SHADOWSOCKS_IMAGE
+    through from the shell and .env). Reading the shell here instead would skip .env and
+    could build a tag the reconciler never looks up."""
     _proc, calls = _run(tmp_path, SHADOWSOCKS_IMAGE="local/ss-shell", FAKE_PORTAL_SS_IMAGE="local/ss-portal")
     assert any(a.endswith("-t local/ss-portal .") for a in _args_of(calls, "docker"))
     assert not any("ss-shell" in a for a in _args_of(calls, "docker"))
@@ -467,7 +467,7 @@ def test_no_provisioner_note_when_it_is_not_in_the_active_profiles(tmp_path):
 
 
 def test_a_broken_compose_config_is_refused_before_anything_is_built(tmp_path):
-    """A missing .env is fatal for the portal's env_file:. Finding out at `compose up`
+    """A missing .env is fatal (the portal's `${SECRET_KEY:?}`). Finding out at `compose up`
     would mean two image builds and a restarted stack first."""
     proc, calls = _run(tmp_path, FAKE_DOCKER_FAIL="compose config -q")
     assert proc.returncode != 0

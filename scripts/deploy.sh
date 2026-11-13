@@ -169,9 +169,9 @@ check_revision() {
     fi
 }
 
-# Refuse early on a broken compose setup (a missing .env is a hard failure for the
-# portal's `env_file:`). Without this the operator finds out at `compose up`, minutes
-# later, after two image builds -- which contradicts the whole "refuse before you
+# Refuse early on a broken compose setup (a missing .env, or one without SECRET_KEY,
+# fails `config` through the portal's `${SECRET_KEY:?}`). Without this the operator
+# finds out at `compose up`, minutes later, after two image builds -- which contradicts the whole "refuse before you
 # touch anything" premise of the precondition gate.
 check_compose_config() {
     if ! docker compose config -q; then
@@ -220,11 +220,11 @@ resolve_git_revision() {
 
 # Tunnel image =========================================================================================================
 # The tag to build is whatever the portal's Settings will resolve at runtime
-# (SHADOWSOCKS_IMAGE, default local/shadowsocks-server). compose hands the portal that
-# variable through `env_file: .env` only -- never through the deploying shell -- so the
-# only way to be sure we build the tag the reconciler will look up is to ask the portal
-# image itself. `compose run` applies the identical env_file. Re-implementing compose's
-# dotenv parser here would be a second source of truth, and any disagreement between
+# (SHADOWSOCKS_IMAGE, default local/shadowsocks-server). compose resolves that variable
+# for the portal from the deploying shell, then .env, so the only way to be sure we
+# build the tag the reconciler will look up is to ask the portal image itself.
+# `compose run` applies the identical environment. Re-implementing compose's
+# resolution here would be a second source of truth, and any disagreement between
 # the two is a silent wrong-image deploy.
 resolve_shadowsocks_image() {
     local image

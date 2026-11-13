@@ -2,9 +2,9 @@
 COMPOSE_PROJECT_NAME forwarding, and SHADOWSOCKS_NETWORK's network-name /
 portal-env sync.
 
-This module exists because Compose interpolates `${VAR}` from the shell (or
---env-file), while a service's `env_file:` is a separate lookup against
-./.env, and the two can disagree. Static YAML checks below;
+This module exists because the network's `name:` and the portal's own
+SHADOWSOCKS_NETWORK are two separate places that must resolve to the same value
+(shell first, then ./.env, as Compose resolves any variable). Static YAML checks below;
 `test_compose_config_*` shells out to the real Compose CLI.
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ SHADOWSOCKS_NETWORK_EXPR = "${SHADOWSOCKS_NETWORK:-shadowsocks}"
 
 def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expression():
     """Network name and portal env must interpolate the identical expression --
-    see the module docstring for why `env_file:` alone can't guarantee that."""
+    see the module docstring for why they must not be typed independently."""
     compose = _load_compose("compose.yaml")
 
     net_name = compose["networks"]["shadowsocks"]["name"]
@@ -69,7 +69,7 @@ def test_production_shadowsocks_network_name_and_portal_env_read_the_same_expres
     assert portal_env == SHADOWSOCKS_NETWORK_EXPR, (
         "compose.yaml's portal service must set SHADOWSOCKS_NETWORK in its own environment: block to the "
         f"identical expression as networks.shadowsocks.name ({SHADOWSOCKS_NETWORK_EXPR!r}), not rely on "
-        f"env_file: .env for it; got {portal_env!r}."
+        f"a bare passthrough for it; got {portal_env!r}."
     )
 
 
@@ -105,8 +105,8 @@ def test_e2e_portal_and_nginx_agree_on_the_shadowsocks_network(compose_relpath):
 def _compose_config(tmp_path: Path, shell_env: str | None, env_file_value: str | None) -> dict:
     """Resolve compose.yaml with the real Compose CLI and return its JSON.
 
-    compose.yaml is copied into `tmp_path` because the portal's `env_file: .env`
-    resolves against the project directory: pointing the CLI at the repo's own
+    compose.yaml is copied into `tmp_path` because Compose resolves `.env` against
+    the project directory: pointing the CLI at the repo's own
     compose.yaml would read the operator's real .env (or fail without one). The
     copy is byte-identical, so what is resolved is the shipped file.
     """
@@ -139,8 +139,7 @@ def test_compose_config_resolves_network_name_and_portal_env_identically(
 ):
     """The real Compose CLI must resolve the network's name and the portal's
     SHADOWSOCKS_NETWORK to the SAME value under every source combination --
-    the last case being the one no YAML parse can check (see the module
-    docstring for why the two sources can disagree).
+    the last case being the one no YAML parse can check (shell and .env disagree).
     """
     config = _compose_config(tmp_path, shell_env, env_file_value)
     net_name = config["networks"]["shadowsocks"]["name"]

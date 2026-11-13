@@ -8,7 +8,7 @@ RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 FROM fetch AS download-ex-ray
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG EX_RAY_VERSION=v0.3.0
+ARG EX_RAY_VERSION=v0.3.1
 # ex-ray is bindreams/hole's first-party v2ray-core SIP003 shim. It is
 # wire-compatible with stock shadowsocks/v2ray-plugin, so we install it under
 # the `v2ray-plugin` name: ssserver execs `v2ray-plugin` by SIP003 name and the
@@ -32,7 +32,7 @@ EOF
 
 FROM fetch AS download-ex-ray-license
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG EX_RAY_VERSION=v0.3.0
+ARG EX_RAY_VERSION=v0.3.1
 # ex-ray is Apache-2.0; NOTICES.md carries the MIT attribution for the
 # v2ray-plugin-derived config-building (see crates/ex-ray/README.md).
 RUN <<-EOF
@@ -45,7 +45,7 @@ EOF
 FROM fetch AS download-galoshes
 ARG TARGETARCH
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.4.0
+ARG GALOSHES_VERSION=v0.4.1
 RUN <<-EOF
 	set -eu
 	# Release asset names omit the leading `v`; tags include it.
@@ -62,7 +62,7 @@ EOF
 
 FROM fetch AS download-galoshes-license
 # renovate: datasource=github-tags depName=bindreams/hole
-ARG GALOSHES_VERSION=v0.4.0
+ARG GALOSHES_VERSION=v0.4.1
 RUN wget -q -O /LICENSE.md \
 	"https://raw.githubusercontent.com/bindreams/hole/refs/tags/releases/galoshes/${GALOSHES_VERSION}/crates/galoshes/LICENSE.md"
 

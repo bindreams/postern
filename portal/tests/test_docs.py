@@ -4,10 +4,17 @@ These gates catch enumerable drift (names, paths, defaults) and act as
 deletion tripwires for load-bearing caveats -- they detect a dropped caveat,
 not a softened one.
 """
+import functools
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[2]
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from ci_lint_lib import is_vendored  # noqa: E402
+from ci_lint_lib import tracked_files  # noqa: E402
+
 DOCS_DIR = REPO_ROOT / "docs"
 
 REPO_URL = re.compile(r"https://github\.com/bindreams/postern(/[^)\s`\"'<>]*)?")
@@ -278,33 +285,27 @@ def test_cli_reference_complete():
     assert documented == actual, (f"undocumented: {sorted(actual - documented)}; stale: {sorted(documented - actual)}")
 
 
-def _tracked_texts():
-    """(repo-relative name, text) for every tracked first-party text file.
+@functools.cache
+def _tracked_texts() -> tuple[tuple[str, str], ...]:
+    """(repo-relative name, text) for every tracked first-party file.
 
-    One scan for every whole-tree gate: `git ls-files` (so untracked and
-    ignored files cannot make local and CI disagree), `external/` excluded
-    (vendored), NUL-containing (binary) files skipped.
+    One scan, cached, for every whole-tree gate. File selection reuses
+    `scripts/ci_lint_lib` (`git ls-files -z`, prek.toml-driven vendored
+    exclusion). Symlinks are skipped (their target is tracked on its own);
+    binaries are decoded with errors="replace" so ASCII findings stay visible.
     """
-    import subprocess
-
-    names = subprocess.run(
-        ["git", "ls-files", "--", ".", ":!external"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
-    assert names, "git ls-files returned nothing -- not a checkout?"
+    names = [name for name in tracked_files() if not is_vendored(name)]
+    assert names, "no tracked first-party files -- not a checkout?"
     texts = []
     for name in names:
         path = REPO_ROOT / name
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
-        raw = path.read_bytes()
-        if b"\x00" in raw:
-            continue
-        texts.append((name, raw.decode("utf-8", errors="replace")))
-    return texts
+        texts.append((name, path.read_bytes().decode("utf-8", errors="replace")))
+    scanned = {name for name, _ in texts}
+    # Vacuity guard: the scan must include this very file.
+    assert Path(__file__).resolve().relative_to(REPO_ROOT.resolve()).as_posix() in scanned
+    return tuple(texts)
 
 
 # DNS is case-insensitive, so the match is too.

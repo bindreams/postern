@@ -958,27 +958,89 @@ def test_a_null_environment_value_is_treated_as_unset():
 # Shell overrides ------------------------------------------------------------------------------------------------------
 _UNINTERPOLATED = {
     "services": {
-        "portal": {"environment": {"SMTP_HOST": None, "DOCKER_HOST": "tcp://docker-proxy:2375", "DOMAIN": "${DOMAIN:-x}"}},
-        "provisioner": {"environment": {"AWS_REGION": None, "CONTAINERS": 1}},
+        "portal": {
+            "environment": {
+                "SMTP_HOST": None,
+                "DOCKER_HOST": "tcp://docker-proxy:2375",
+                "DOMAIN": "${DOMAIN:-x}",
+                "LITERAL": "$${NOT_A_REF}",
+            }
+        },
+        "provisioner": {
+            "environment": {
+                "AWS_REGION": None,
+                "CONTAINERS": 1,
+                "COMPOSE_PROFILES": "${COMPOSE_PROFILES:-}",
+            }
+        },
         "docker-proxy": {},
     }
 }  # yapf: disable
 
 
-def test_shell_overrides_names_the_exported_variables_compose_passes_through():
+class _OverrideRunner:
+    """Stands in for `[env -u NAME] docker compose config --format json`: the resolved config
+    differs from the baseline when a name in `differs_when_unset` is removed from the shell."""
+
+    def __init__(self, differs_when_unset: set[str]):
+        self.differs_when_unset = differs_when_unset
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, cwd):
+        argv = list(argv)
+        self.calls.append(argv)
+        unset = argv[2] if argv[:2] == ["env", "-u"] else ""
+        marker = "without-" + unset if unset in self.differs_when_unset else "baseline"
+        return vd.Completed(0, json.dumps({"marker": marker}), "")
+
+
+def _project(tmp_path: Path, dotenv: str) -> Path:
+    (tmp_path / ".env").write_text(dotenv, encoding="utf-8")
+    return tmp_path
+
+
+def test_shell_overrides_names_a_variable_exported_in_the_shell_and_set_differently_in_dot_env(tmp_path):
+    project = _project(tmp_path, "AWS_REGION=eu-west-1\nexport DOMAIN=postern.test\nSMTP_HOST=smtp\n")
     environ = {"SMTP_HOST": "x", "DOMAIN": "", "AWS_REGION": "y", "PATH": "/bin", "HOME": "/root"}
-    assert vd.shell_overrides(_UNINTERPOLATED, environ) == ["AWS_REGION", "DOMAIN", "SMTP_HOST"]
+    run = _OverrideRunner({"AWS_REGION", "DOMAIN"})
+    assert vd.shell_overrides(_UNINTERPOLATED, environ, run, project) == ["AWS_REGION", "DOMAIN"]
 
 
-def test_shell_overrides_ignores_literals_and_unexported_names():
-    # DOCKER_HOST and CONTAINERS are literal values in the compose file: the shell cannot override them.
-    assert vd.shell_overrides(_UNINTERPOLATED, {"DOCKER_HOST": "tcp://elsewhere", "CONTAINERS": "0"}) == []
+def test_shell_overrides_ignores_a_name_whose_shell_value_equals_dot_env(tmp_path):
+    project = _project(tmp_path, "AWS_REGION=y\n")
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, _OverrideRunner(set()), project) == []
 
 
-def test_print_shell_overrides_prints_names_only_never_values(monkeypatch, capsys):
+def test_shell_overrides_ignores_a_name_dot_env_does_not_set(tmp_path):
+    """Nothing is overridden: the shell is the only source of the value."""
+    project = _project(tmp_path, "# AWS_REGION=commented out\nOTHER=1\n")
+    run = _OverrideRunner({"AWS_REGION"})
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, project) == []
+    assert run.calls == []
+
+
+def test_shell_overrides_ignores_literals_escaped_references_compose_names_and_unexported_names(tmp_path):
+    # DOCKER_HOST and CONTAINERS are literal; `$${NOT_A_REF}` is Compose's escaped dollar sign, not a reference;
+    # COMPOSE_PROFILES is read from the shell by Compose itself, by design.
+    project = _project(tmp_path, "DOCKER_HOST=x\nCONTAINERS=1\nNOT_A_REF=1\nCOMPOSE_PROFILES=with-mta\n")
+    run = _OverrideRunner({"DOCKER_HOST", "CONTAINERS", "NOT_A_REF", "COMPOSE_PROFILES"})
+    environ = {"DOCKER_HOST": "tcp://elsewhere", "CONTAINERS": "0", "NOT_A_REF": "1", "COMPOSE_PROFILES": "with-edge"}
+    assert vd.shell_overrides(_UNINTERPOLATED, environ, run, project) == []
+
+
+def test_shell_overrides_without_a_dot_env_file_names_nothing(tmp_path):
+    run = _OverrideRunner({"AWS_REGION"})
+    assert vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path) == []
+
+
+def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypatch, capsys):
+    for name in ("AWS_REGION", "DOMAIN", "SMTP_HOST", "DOCKER_HOST", "CONTAINERS"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SMTP_HOST", "secret-looking-value")
+    _project(tmp_path, "SMTP_HOST=from-dot-env\n")
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
-    assert vd.main(["--print-shell-overrides"]) == 0
+    monkeypatch.setattr(vd, "run_command", _OverrideRunner({"SMTP_HOST"}))
+    assert vd.main(["--print-shell-overrides", "--project-dir", str(tmp_path)]) == 0
     out = capsys.readouterr()
     assert out.out.split() == ["SMTP_HOST"]
     assert "secret-looking-value" not in out.out + out.err

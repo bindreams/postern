@@ -269,13 +269,35 @@ def resolve_instance_id(config: dict, project: str) -> str:
 _ENV_REFERENCE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 
 
-def shell_overrides(config: dict, environ: Mapping[str, str]) -> list[str]:
-    """Names compose resolves for a service from the deploying shell that `environ` exports.
+def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
+    """`docker compose config --format json`, with `unset` removed from the shell when given."""
+    argv = ["docker", "compose", "config", "--format", "json"]
+    result = run(["env", "-u", unset, *argv] if unset else argv, project_dir)
+    if result.returncode != 0:
+        raise CollectError(f"docker compose config failed: {result.stderr.strip()}")
+    try:
+        return json.loads(result.stdout)
+    except ValueError as exc:
+        raise CollectError(f"docker compose config emitted unparseable JSON: {exc}") from exc
+
+
+def _dotenv_sets(project_dir: Path, name: str) -> bool:
+    try:
+        text = (project_dir / ".env").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return re.search(rf"^\s*(?:export\s+)?{re.escape(name)}\s*=", text, re.MULTILINE) is not None
+
+
+def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
+    """Names the deploying shell exports that replace a different value set in `.env`.
 
     `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
-    key is None and an interpolated one is its `${NAME...}` text. Compose lets a shell value
-    win over the same name in `.env`, which an operator who exported it for another purpose
-    does not expect. Names only: the caller prints them, and a value could be a secret.
+    key is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
+    literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
+    shell value win over `.env`, which an operator who exported the name for another purpose does
+    not expect. A name is reported only when `.env` sets it and the resolved config changes with
+    it removed from the shell. Names only: the caller prints them, and a value could be a secret.
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():
@@ -283,8 +305,15 @@ def shell_overrides(config: dict, environ: Mapping[str, str]) -> list[str]:
             if value is None:
                 names.add(key)
             elif isinstance(value, str):
-                names.update(_ENV_REFERENCE.findall(value))
-    return sorted(name for name in names if name in environ)
+                names.update(_ENV_REFERENCE.findall(value.replace("$$", "")))
+    candidates = sorted(
+        name for name in names
+        if name in environ and not name.startswith("COMPOSE_") and _dotenv_sets(project_dir, name)
+    )
+    if not candidates:
+        return []
+    baseline = _compose_resolved(run, project_dir)
+    return [name for name in candidates if _compose_resolved(run, project_dir, name) != baseline]
 
 
 def _optional_dict(obj: dict, key: str, label: str, context: str) -> dict:
@@ -1099,7 +1128,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"verify-deploy: --print-shell-overrides needs compose config JSON on stdin: {exc}", file=sys.stderr)
             return 2
-        for name in shell_overrides(config, os.environ):
+        try:
+            names = shell_overrides(config, os.environ, run_command, args.project_dir)
+        except CollectError as exc:
+            print(f"verify-deploy: {exc}", file=sys.stderr)
+            return 2
+        for name in names:
             print(name)
         return 0
 

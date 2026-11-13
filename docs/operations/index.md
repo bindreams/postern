@@ -85,8 +85,8 @@ Until step 2 is done, `scripts/deploy.sh` **hard-fails on every future deploy**,
 **Required reading when upgrading past per-service environment delivery.** Services now receive only the variables they read; if you put DNS provider credentials or `SMTP_PASSWORD` in `.env`, consider rotating them. Your `.env` values need no move. Before `scripts/deploy.sh`, check three things:
 
 1. Every name in `.env` is `UPPER_SNAKE_CASE`; a lowercase name (`smtp_host=...`) is no longer read.
-2. You do not export any of these names in the shell that runs `docker compose`: a shell value now overrides `.env`. `scripts/deploy.sh` prints a warning naming every such variable (never its value).
-3. You do not rely on a name that is not documented in [configuration](../deployment/configuration.md) reaching a container: only documented names are passed. For the DNS provider that includes the variables lego documents for it, but not their `*_FILE` forms or lego's own `LEGO_*` settings.
+2. You do not export any of these names in the shell that runs `docker compose`: a shell value now overrides `.env`. `scripts/deploy.sh` prints a warning naming every such variable whose shell value differs from `.env` (never the value). A name that `.env` does not set is not reported: the shell is then the only source.
+3. You do not rely on a name that is not documented in [configuration](../deployment/configuration.md) reaching a container: only documented names are passed. For the DNS provider that includes the variables lego documents for it, but not their `*_FILE` forms, lego's own `LEGO_*` settings or route53's profile-based credentials (`AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_SDK_LOAD_CONFIG`).
 
 `scripts/deploy.sh` also refuses to run when neither the shell nor `.env` provides `SECRET_KEY`.
 ```

@@ -60,6 +60,9 @@ _RECEIVED_WITHOUT_BEING_SPELLED = {"portal": {"DOCKER_HOST"}}
 # https://github.com/go-acme/lego/blob/v4.35.2/providers/dns/<slug>/<slug>.toml, plus AWS_SESSION_TOKEN, which the
 # route53 description names. The provisioner runs lego with its whole environment, so lego reads these without any
 # Postern code naming them. A new lego version means re-reading those pages (see test_lego_variables_match_the_pin).
+# Left out on purpose: route53's file-based credentials (AWS_PROFILE, AWS_SHARED_CREDENTIALS_FILE, AWS_SDK_LOAD_CONFIG).
+# The provisioner is read-only with no ~/.aws, so they can only break it (a profile that names nothing is an error).
+# Static keys, optionally with AWS_SESSION_TOKEN, are the supported route53 credentials.
 _LEGO_DOCS_VERSION = "v4.35.2"
 _LEGO_TUNING = ("POLLING_INTERVAL", "PROPAGATION_TIMEOUT", "TTL", "HTTP_TIMEOUT")
 LEGO_NATIVE_VARS = frozenset({
@@ -68,10 +71,9 @@ LEGO_NATIVE_VARS = frozenset({
     "CLOUDFLARE_DNS_API_TOKEN", "CLOUDFLARE_ZONE_API_TOKEN", "CLOUDFLARE_BASE_URL",
     *(f"CLOUDFLARE_{t}" for t in _LEGO_TUNING),
     # route53
-    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_HOSTED_ZONE_ID", "AWS_PROFILE",
-    "AWS_SDK_LOAD_CONFIG", "AWS_ASSUME_ROLE_ARN", "AWS_EXTERNAL_ID", "AWS_WAIT_FOR_RECORD_SETS_CHANGED",
-    "AWS_PRIVATE_ZONE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_MAX_RETRIES", "AWS_POLLING_INTERVAL",
-    "AWS_PROPAGATION_TIMEOUT", "AWS_TTL",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_HOSTED_ZONE_ID",
+    "AWS_ASSUME_ROLE_ARN", "AWS_EXTERNAL_ID", "AWS_WAIT_FOR_RECORD_SETS_CHANGED", "AWS_PRIVATE_ZONE", "AWS_MAX_RETRIES",
+    "AWS_POLLING_INTERVAL", "AWS_PROPAGATION_TIMEOUT", "AWS_TTL",
     # gandi (lego slug gandiv5)
     "GANDIV5_PERSONAL_ACCESS_TOKEN", "GANDIV5_API_KEY", *(f"GANDIV5_{t}" for t in _LEGO_TUNING),
     # digitalocean
@@ -134,13 +136,13 @@ def provisioner_provider_vars(provider_vars: frozenset[str]) -> frozenset[str]:
 
 
 @pytest.fixture(scope="module")
-def reads(provider_vars: frozenset[str]) -> dict[str, set[str]]:
+def reads(provisioner_provider_vars: frozenset[str]) -> dict[str, set[str]]:
     """What each service's code reads, derived from source."""
     derived = {
         "portal": {field.upper()
                    for field in Settings.model_fields},
         "mta": _python_env_reads("mta/entrypoint.py") - _MTA_TEST_HOOKS,
-        "provisioner": (_python_env_reads(*_provisioner_python_modules()) | provider_vars | LEGO_NATIVE_VARS)
+        "provisioner": (_python_env_reads(*_provisioner_python_modules()) | provisioner_provider_vars)
                        - _PROVISIONER_TEST_HOOKS,
         "nginx": _shell_env_reads("nginx/render.sh", "nginx/nginx-entrypoint.sh", "nginx/edge.sh") - _NGINX_SEAMS,
     }  # yapf: disable
@@ -167,8 +169,12 @@ def test_provider_credentials_reach_only_the_provisioner(provisioner_provider_va
     assert not problems, "\n".join(problems)
 
 
-def test_the_e2e_real_provisioner_receives_every_postern_dns_provider_variable(provider_vars: frozenset[str]):
-    missing = provider_vars - service_environment(E2E_MTA_REAL, "provisioner").keys()
+def test_the_e2e_real_provisioner_receives_every_provider_variable_production_does(
+    provisioner_provider_vars: frozenset[str]
+):
+    """The overlay's provisioner is the production one with a real DNS provider (maintainer-run); a
+    credential the production list delivers but the overlay drops fails only on that manual run."""
+    missing = provisioner_provider_vars - service_environment(E2E_MTA_REAL, "provisioner").keys()
     assert not missing, f"{repo_relative(E2E_MTA_REAL)}: provisioner lacks {sorted(missing)}"
 
 

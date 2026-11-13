@@ -164,6 +164,7 @@ func TestNewProvider_FieldWiring(t *testing.T) {
 				"AWS_REGION":            "us-east-1",
 				"AWS_ACCESS_KEY_ID":     "akid-sentinel",
 				"AWS_SECRET_ACCESS_KEY": "secret-sentinel",
+				"AWS_SESSION_TOKEN":     "session-sentinel",
 			},
 			check: func(t *testing.T, p providerOps) {
 				r := p.(*route53.Provider)
@@ -175,6 +176,9 @@ func TestNewProvider_FieldWiring(t *testing.T) {
 				}
 				if r.SecretAccessKey != "secret-sentinel" {
 					t.Errorf("route53 SecretAccessKey = %q; want secret-sentinel", r.SecretAccessKey)
+				}
+				if r.SessionToken != "session-sentinel" {
+					t.Errorf("route53 SessionToken = %q; want session-sentinel", r.SessionToken)
 				}
 			},
 		},

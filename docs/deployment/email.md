@@ -175,7 +175,7 @@ header-rows: 1
   -
 ```
 
-Certificate renewal runs [lego](https://go-acme.github.io/lego/dns/) with the provisioner's environment, so the provisioner also receives every variable lego documents for these eight providers (for example `AWS_SESSION_TOKEN`, `AWS_PROFILE`, `AWS_HOSTED_ZONE_ID`, `CLOUDFLARE_PROPAGATION_TIMEOUT`). Their `*_FILE` forms and lego's own `LEGO_*` settings are not delivered.
+Certificate renewal runs [lego](https://go-acme.github.io/lego/dns/) with the provisioner's environment, so the provisioner also receives every variable lego documents for these eight providers (for example `AWS_SESSION_TOKEN`, `AWS_HOSTED_ZONE_ID`, `CLOUDFLARE_PROPAGATION_TIMEOUT`). Their `*_FILE` forms, lego's own `LEGO_*` settings and route53's profile-based credentials (`AWS_PROFILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_SDK_LOAD_CONFIG`) are not delivered: the provisioner has no `~/.aws`, so use static keys, optionally with `AWS_SESSION_TOKEN`. Both certificate renewal and DNS record publishing use the same keys and session token.
 
 ```{tip}
 Use a token scoped to **only** the DNS zone for `<your-domain>`. The token lives only in the provisioner container (zero inbound listeners), but tighter scope is still better.

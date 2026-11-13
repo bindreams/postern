@@ -7,7 +7,7 @@ Settings live in `.env` at the repository root — copy [example.env](https://gi
 Each container receives only the variables it reads. `compose.yaml` lists them per service, and no service loads `.env` wholesale.
 
 - Names in `.env` must be `UPPER_SNAKE_CASE`. Compose is case-sensitive, so a lowercase name (`smtp_host=...`) is ignored.
-- A value exported in the shell that runs `docker compose` overrides the same name in `.env`. `scripts/deploy.sh` warns, by name only, about every such variable.
+- A value exported in the shell that runs `docker compose` overrides the same name in `.env`. `scripts/deploy.sh` warns, by name only, about every variable that is exported in the shell with a value different from the one in `.env` (`COMPOSE_*` names are the shell's by design and are not reported).
 - Only the names documented on this page, plus the DNS provider variables described in [email](email.md), reach a container. Any other name in `.env` is ignored.
 - A variable left unset stays unset in the container, so each setting falls back to its default.
 

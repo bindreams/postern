@@ -51,10 +51,12 @@ def test_ovh_passes_four_vars():
     assert cfg.env == env
 
 
-def test_hetzner_renames_token():
+def test_hetzner_pass_through():
+    """lego's hetzner provider reads HETZNER_API_TOKEN (a Hetzner Cloud token, as postern-dns does);
+    HETZNER_API_KEY is its deprecated legacy-DNS-API variable, which a Cloud token cannot satisfy."""
     cfg = lego_env.lego_config("hetzner", {"HETZNER_API_TOKEN": "tok"})
     assert cfg.dns_slug == "hetzner"
-    assert cfg.env == {"HETZNER_API_KEY": "tok"}
+    assert cfg.env == {"HETZNER_API_TOKEN": "tok"}
 
 
 def test_linode_pass_through():

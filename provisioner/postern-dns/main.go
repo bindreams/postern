@@ -75,14 +75,11 @@ func newProvider(name string) (providerOps, error) {
 	case "cloudflare":
 		return &cloudflare.Provider{APIToken: os.Getenv("CLOUDFLARE_API_TOKEN")}, nil
 	case "route53":
-		// route53 v1.6 exposes a SessionToken field (the prior deprecated
-		// Token field was removed). We don't currently wire a session
-		// token through; add SessionToken: os.Getenv("AWS_SESSION_TOKEN")
-		// if/when we need IAM role/STS credentials.
 		return &route53.Provider{
 			Region:          os.Getenv("AWS_REGION"),
 			AccessKeyId:     os.Getenv("AWS_ACCESS_KEY_ID"),
 			SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
+			SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
 		}, nil
 	case "gandi":
 		return &gandi.Provider{BearerToken: os.Getenv("GANDI_API_TOKEN")}, nil

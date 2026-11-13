@@ -256,9 +256,10 @@ services:
       EDGE_CF_SSL_MODE:
       # DNS provider variables: the only place they enter the stack. Per provider,
       # what provisioner/postern-dns/main.go newProvider reads plus the variables
-      # lego documents for it (v4.35.2; lego runs with this whole environment).
-      # Adding a provider means adding its variables here; pinned by
-      # test_compose_env_scoping.py.
+      # lego documents for it (lego runs with this whole environment). Static
+      # credentials only: route53's profile/credentials-file variables are left out
+      # (no ~/.aws in this container). Adding a provider means adding its variables
+      # here; pinned by test_compose_env_scoping.py, which also pins the lego version.
       # cloudflare
       CLOUDFLARE_API_TOKEN:
       CF_API_EMAIL:
@@ -280,13 +281,10 @@ services:
       AWS_SECRET_ACCESS_KEY:
       AWS_SESSION_TOKEN:
       AWS_HOSTED_ZONE_ID:
-      AWS_PROFILE:
-      AWS_SDK_LOAD_CONFIG:
       AWS_ASSUME_ROLE_ARN:
       AWS_EXTERNAL_ID:
       AWS_WAIT_FOR_RECORD_SETS_CHANGED:
       AWS_PRIVATE_ZONE:
-      AWS_SHARED_CREDENTIALS_FILE:
       AWS_MAX_RETRIES:
       AWS_POLLING_INTERVAL:
       AWS_PROPAGATION_TIMEOUT:

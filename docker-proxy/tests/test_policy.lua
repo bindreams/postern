@@ -244,10 +244,18 @@ check("a failed probe is not remembered", 403, req{path = v("/containers/" .. ID
   fake_io{probe = function() return nil, "boom" end, remember = function() error("must not be called") end})
 check("no instance id: the cache is not consulted", 403, req{path = v("/containers/" .. ID .. "/json")},
   {image = IMAGE, network = NETWORK, instance = nil}, fake_io{owned = function() return true end})
-check("a raising remember does not turn an allow into an error", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
-  fake_io{remember = function() error("boom") end})
-check("a raising owned() falls back to the probe", "allow", req{path = v("/containers/" .. ID .. "/json")}, CFG,
-  fake_io{owned = function() error("boom") end})
+-- A bug in an optional hook is not swallowed: it reaches the caller (pn_filter's pcall), which fails closed.
+local function raises(name, io)
+  total = total + 1
+  local ok = pcall(P.decide, req{path = v("/containers/" .. ID .. "/json")}, CFG, io)
+  if ok then
+    fails = fails + 1
+    print("FAIL " .. name)
+  end
+end
+raises("a raising remember propagates", fake_io{remember = function() error("boom") end})
+raises("a raising owned() propagates", fake_io{owned = function() error("boom") end})
+raises("a raising mark() propagates", fake_io{mark = function() error("boom") end})
 -- Eviction: an id leaves the vouched-for table when the daemon confirms its removal (2xx) or its absence (404).
 local DEL = "/containers/" .. ID
 local function evicted(name, want, method, path, status)
@@ -303,9 +311,6 @@ cache.evict(ID)
 check("an eviction of another id also blocks a probe in flight (the counter is global)", "allow",
   req{path = v(DEL .. "/json")}, CFG, wired(function(id) cache.evict(string.rep("e", 64)); return owned_reply(id, INSTANCE) end))
 eq("global counter: that probe was not remembered", cache.owned(ID), false)
-check("a failing mark does not turn an allow into an error or remember the id", "allow", req{path = v(DEL .. "/json")}, CFG,
-  fake_io{mark = function() error("boom") end, remember = function(id, mark) if mark ~= nil then error("remembered") end end})
-
 check("unversioned ping needs no version read", "allow", req{path = "/_ping"}, CFG,
   fake_io{ping = function() error("must not be called") end})
 

@@ -6,9 +6,8 @@
 --   io.probe(id)  -> reply to GET /containers/json?all=1&filters={"id":["<id>"]}
 -- Optional, so the glue can keep a table of vouched-for ids (new_owned_cache builds one): io.owned(id) (true if this
 -- id was already vouched for), io.mark() (called before a probe) and io.remember(id, mark) (called after the probe
--- vouches for it, with the mark taken before it). An id leaves the table when evict_id says its container is gone. The version is never cached: it is read on every versioned request. It comes from /_ping, not /version:
--- dockerd answers /version by running `runc --version` and `docker-init --version`, /_ping by writing headers.
--- Default deny: a request is allowed only if it matches one route exactly. See docs/development/architecture.md.
+-- vouches for it, with the mark taken before it).
+-- Default deny: a request is allowed only if it matches one route exactly.
 --
 -- decide(req, cfg, io) returns `true`, or `false, status, reason` (403, or 404 for a container id the daemon
 -- does not know, so docker-py raises NotFound exactly as it would against dockerd).
@@ -257,7 +256,8 @@ local function parse_http_reply(raw)
 end
 M.parse_http_reply = parse_http_reply
 
--- reply to GET /_ping -> "1.56" | nil, err
+-- reply to GET /_ping -> "1.56" | nil, err. Read from /_ping, not /version (which makes dockerd exec runc and
+-- docker-init), on every versioned request.
 local function api_version(raw)
   local status, _, headers = parse_http_reply(raw)
   if status ~= 200 then return nil, "version read failed" end
@@ -495,21 +495,13 @@ local function decide(req, cfg, io)
       local ok, why = query_within(q, want)
       if not ok then return deny(why) end
       if not cfg.instance then return deny("no instance id") end
-      -- An id the daemon already vouched for stays vouched for: ids are never reused and labels are immutable.
-      if io.owned then
-        local kok, known = pcall(io.owned, id)
-        if kok and known == true then return true end
-      end
-      local mark
-      if io.mark then
-        local mok, m = pcall(io.mark)
-        if mok then mark = m end
-      end
+      if io.owned and io.owned(id) == true then return true end
+      local mark = io.mark and io.mark()
       local pok, raw, err = pcall(io.probe, id)
       local outcome, perr = nil, "probe failed (" .. tostring(pok and err or raw) .. ")"
       if pok and raw then outcome, perr = probe_outcome(raw, id, cfg) end
       if outcome == "owned" then
-        if io.remember then pcall(io.remember, id, mark) end
+        if io.remember then io.remember(id, mark) end
         return true
       end
       if outcome == "gone" then return false, 404, "No such container: " .. id end

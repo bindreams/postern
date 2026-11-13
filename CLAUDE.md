@@ -14,7 +14,7 @@ These are load-bearing. Changing any of them without understanding the chain wil
   - [nginx/etc/nginx.conf:36](nginx/etc/nginx.conf) regex `^/t/([a-f0-9]{24})$`
   - [portal/src/postern/cli.py:137](portal/src/postern/cli.py#L137) `secrets.token_hex(12)` (12 bytes → 24 hex chars)
   - [portal/src/postern/reconciler.py:29-30](portal/src/postern/reconciler.py#L29-L30) `f"ss-{conn.path_token}"`
-- **Container name = DNS hostname.** Nginx proxies `http://ss-$1`, resolved via Docker's embedded DNS (`resolver 127.0.0.11` in nginx.conf). The `ss-` prefix is not cosmetic.
+- **Container name = DNS hostname.** Nginx proxies `http://ss-$1`, resolved via Docker's embedded DNS (`resolver 127.0.0.11` in nginx.conf). The `ss-` prefix is not cosmetic. The portal upstream is likewise a variable (`set $portal_upstream portal:8000;`, then `proxy_pass http://$portal_upstream;`), never a literal `proxy_pass http://portal:8000`: a literal is resolved once at config load, so a recreated portal container (new IP) would 502 until nginx restarts (#233). Pinned by `test_no_proxy_pass_resolves_its_upstream_at_startup_in_both_configs`.
 - **Reconciler is the source of truth.** DB state → container state. Connection creation is CLI-only (there is no `POST /connection` route). Reconciler responsibilities, all in [portal/src/postern/reconciler.py](portal/src/postern/reconciler.py):
   - Create missing containers, remove orphans
   - Restart exited containers (lines 111–120)

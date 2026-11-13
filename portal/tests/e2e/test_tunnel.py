@@ -609,3 +609,57 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
     finally:
         subprocess.run(["docker", "rm", "-f", foreign], check=False, capture_output=True)
         subprocess.run(["docker", "rm", "-f", legacy], check=False, capture_output=True)
+
+
+# Upstream re-resolution ===============================================================================================
+@pytest.mark.timeout(180)
+def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
+    """Recreating the portal container hands it a new IP. nginx must pick that up on
+    its own (#233): with a startup-resolved `proxy_pass` it kept dialing the dead IP
+    and every portal route answered 502 until nginx itself was restarted.
+
+    A throwaway container takes the freed address while the portal is down, so the
+    recreated portal provably lands on a different IP whatever order Docker allocates in."""
+    network = "postern-e2e-default"
+    holder = "postern-e2e-ip-holder"
+
+    def container_field(service: str, template: str) -> str:
+        cid = subprocess.run(compose("ps", "-q", service), capture_output=True, text=True, check=True).stdout.strip()
+        return subprocess.run(["docker", "inspect", "--format", template, cid],
+                              capture_output=True,
+                              text=True,
+                              check=True).stdout.strip()
+
+    portal_ip_template = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
+
+    assert portal_client.get("/login").status_code == 200  # nginx has used the old address
+    old_ip = container_field("portal", portal_ip_template)
+    nginx_started = container_field("nginx", "{{.State.StartedAt}}")
+
+    subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
+    subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
+    try:
+        subprocess.run(
+            [
+                "docker", "run", "-d", "--init", "--name", holder, "--network", network, "dhi.io/alpine-base:3.23-dev",
+                "sleep", "infinity"
+            ],
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(compose("up", "-d", "--wait", "--no-deps", "portal"), check=True, capture_output=True)
+        assert container_field(
+            "portal", portal_ip_template
+        ) != old_ip, "portal did not move to a new IP; the test no longer exercises #233"
+
+        # nginx caches a resolved name for `valid=5s`, so requests just after the move
+        # may still see the old answer. Wait on the real condition, uncapped: the
+        # per-test timeout above is the failure bound, and the bug's signature is
+        # "never recovers".
+        while portal_client.get("/login").status_code != 200:
+            pass
+
+        assert container_field("nginx", "{{.State.StartedAt}}") == nginx_started, "nginx was restarted mid-test"
+    finally:
+        subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
+        subprocess.run(compose("up", "-d", "--wait", "portal"), check=False, capture_output=True)

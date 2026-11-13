@@ -108,3 +108,20 @@ def test_at_miss_body_identical_to_location_root_in_both_configs():
         body = path.read_text()
         assert _location_block_body(body, r"location @miss") == _location_block_body(body, r"location /"), \
             f"@miss and location / diverged in {path}; a /t/ miss is no longer indistinguishable"
+
+
+# Static upstreams (#233) ==============================================================================================
+def test_no_proxy_pass_resolves_its_upstream_at_startup_in_both_configs():
+    """A `proxy_pass` with a literal host is resolved ONCE when nginx loads its config
+    and cached for the worker's life (the `resolver` directive does not apply to it).
+    After a portal container is recreated at a new IP, every portal route then 502s until
+    nginx restarts (#233). A variable in `proxy_pass` defers resolution to request time,
+    via `resolver 127.0.0.11`, as the per-tunnel `ss-$1` location already does. Must hold
+    in the production template and the static e2e config, which stay in sync."""
+    for path in ((NGINX_ETC / "nginx.conf.tmpl"), E2E_NGINX_CONF):
+        body = "\n".join(ln for ln in path.read_text().splitlines() if not ln.strip().startswith("#"))
+        targets = re.findall(r"proxy_pass\s+([^;]+);", body)
+        assert targets, f"no proxy_pass found in {path}; this test has gone blind"
+        static = [t for t in targets if "$" not in t]
+        assert not static, f"static proxy_pass upstream(s) {static} in {path} are resolved once at startup (#233)"
+        assert not re.search(r"^\s*upstream\s", body, re.M), f"upstream block in {path} resolves at startup (#233)"

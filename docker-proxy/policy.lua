@@ -35,7 +35,7 @@ local OBJ = {}
 --   "reply":   general compact JSON as dockerd emits it. Escapes and UTF-8 pass through as opaque string bytes
 --              (a label value written with an escape never equals the plain string it is compared with), nesting
 --              is allowed up to a fixed depth, duplicate keys and trailing data are rejected, and no whitespace
---              is accepted outside strings.
+--              is accepted outside strings, except after the value (Docker Engine ends its bodies with a newline).
 local function parse_json(s, mode)
   local request = mode == "request"
   if request then
@@ -162,7 +162,7 @@ local function parse_json(s, mode)
 
   local ok, v = pcall(function()
     local r = value(1)
-    ws()
+    if request then ws() else i = s:find("[^ \t\r\n]", i) or (#s + 1) end
     if i <= #s then error("trailing data") end
     return r
   end)
@@ -257,8 +257,7 @@ M.parse_http_reply = parse_http_reply
 local function api_version(raw)
   local status, body = parse_http_reply(raw)
   if status ~= 200 then return nil, "version read failed" end
-  -- /version is written with a trailing newline (the list endpoints are not).
-  local v = parse_json((body:gsub("\n$", "")), "reply")
+  local v = parse_json(body, "reply")
   if not is_obj(v) or type(v.ApiVersion) ~= "string" or not v.ApiVersion:find("^%d+%.%d+$") then
     return nil, "version reply unusable"
   end

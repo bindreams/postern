@@ -4,8 +4,9 @@
 --   stdin            the requests the real reconciler sends (docker-py 7.1.0 against a recording fake daemon):
 --                    name TAB method TAB uri TAB content-type TAB body, one request per line.
 --   TEST_* env       the Settings values the reconciler ran with (image, network, instance, API version).
--- tests/fixtures.lua holds raw dockerd replies recorded from daemon 29.9.3 (API 1.56): an HTTP/1.0 and an
--- HTTP/1.1 form of each; the CRLFs are part of what is tested.
+-- tests/fixtures.lua holds raw dockerd replies, one set per recorded daemon version (their framing differs): an
+-- HTTP/1.0 and an HTTP/1.1 form of each; the CRLFs are part of what is tested. Every probe and version case runs
+-- over every set.
 --
 -- Every negative case is differential: the unmodified baseline is accepted in the same run (see "baseline" below).
 
@@ -20,8 +21,7 @@ local TOKEN = string.rep("a1", 12)
 local ID = string.rep("c", 64)
 local CFG = {image = IMAGE, network = NETWORK, instance = INSTANCE}
 
-local FIXTURES = dofile("/pn/tests/fixtures.lua")
-local function fixture(name) return assert(FIXTURES[name], name) end
+local FIXTURE_SETS = dofile("/pn/tests/fixtures.lua")
 
 -- Fakes ---------------------------------------------------------------------------------------------------------------
 local function owned_reply(id, instance)
@@ -174,8 +174,17 @@ version_case("the daemon's minimum version", "/v1.40/containers/json", 403)
 version_case("version with a leading zero", "/v" .. major .. ".0" .. minor .. "/containers/json", 403)
 version_case("version with another major", "/v2." .. minor .. "/containers/json", 403)
 version_case("version without a minor", "/v" .. major .. "/containers/json", 403)
-check("version reply as dockerd really writes it", "allow", req{path = v("/containers/json"), query = lq},
-  {image = IMAGE, network = NETWORK, instance = INSTANCE}, fake_io{version = function() return (fixture("version.http10"):gsub("1%.56", API)) end})
+for _, set in ipairs(FIXTURE_SETS) do
+  for _, form in ipairs({"http10", "http11"}) do
+    -- The recorded daemon may be at another API version than the one the suite runs with.
+    local raw = set.replies["version." .. form]
+    local reply = raw and (raw:gsub('"ApiVersion":"' .. set.api:gsub("%.", "%%.") .. '"', '"ApiVersion":"' .. API .. '"'))
+    if reply then
+      check("version reply as dockerd " .. set.daemon .. " writes it (" .. form .. ")", "allow",
+        req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() return reply end})
+    end
+  end
+end
 check("version read returns nothing", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() return nil, "boom" end})
 check("version read raises", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() error("boom") end})
 check("version reply is garbage", 403, req{path = v("/containers/json"), query = lq}, CFG,
@@ -306,54 +315,85 @@ check("delete with a name", 403, req{method = "DELETE", path = base_id, query = 
 check("inspect with a body", 403, req{path = base_id .. "/json", body = "x", headers = {["content-length"] = {"1"}}})
 
 -- Ownership probe ------------------------------------------------------------------------------------------------------
-local FIXTURE_ID = "b070c49b099dbac0f6c2a7796ee6d4d4b55f323e019b1e51e948471da1820094"
 local FIXTURE_CFG = {image = IMAGE, network = NETWORK, instance = "l11r"}
-local function probe_case(name, want, raw, cfg, id)
-  id = id or FIXTURE_ID
-  check("probe: " .. name, want, req{path = v("/containers/" .. id .. "/json")}, cfg or FIXTURE_CFG,
-    fake_io{probe = function() return raw end})
-end
-for _, form in ipairs({"http10", "http11"}) do
-  local one, empty = fixture("list-one." .. form), fixture("list-empty." .. form)
-  probe_case("owned container (" .. form .. ")", "allow", one)
-  probe_case("no such container (" .. form .. ")", 404, empty)
-  probe_case("owned, another instance (" .. form .. ")", 403, one, {image = IMAGE, network = NETWORK, instance = "l11r2"})
-  probe_case("owned, a different id asked (" .. form .. ")", 403, one, nil, string.rep("b", 64))
-  probe_case("a 404 reply to the probe (" .. form .. ")", 403, fixture("inspect-404." .. form))
-end
-local one10 = fixture("list-one.http10")
 local function edit(s, from, to)
   local a, b = s:find(from, 1, true)
   assert(a, "fixture lacks " .. from)
   return s:sub(1, a - 1) .. to .. s:sub(b + 1)
 end
-probe_case("instance label edited", 403, edit(one10, '"postern.instance":"l11r"', '"postern.instance":"other"'))
-probe_case("managed label edited", 403, edit(one10, '"postern.managed":"true"', '"postern.managed":"false"'))
-probe_case("instance label missing", 403, edit(one10, '"postern.instance":"l11r",', ""))
-probe_case("managed label missing", 403, edit(one10, ',"postern.managed":"true"', ""))
-probe_case("labels null", 403, edit(one10, '"Labels":{"desktop.docker.io/ports.scheme":"v2","postern.instance":"l11r","postern.managed":"true"}', '"Labels":null'))
-probe_case("Id edited", 403, edit(one10, FIXTURE_ID, string.rep("d", 64)))
-probe_case("label value written with an escape", 403, edit(one10, '"postern.managed":"true"', '"postern.managed":"tru\\u0065"'))
-local entry = one10:match("\r\n\r\n%[(.*)%]$")
-probe_case("two entries", 403, edit(one10, "\r\n\r\n[", "\r\n\r\n[" .. entry .. ","))
-probe_case("one entry then a stray byte", 403, one10 .. "x")
-probe_case("trailing newline after the list", 403, one10 .. "\n")
+-- Over every recorded daemon version.
+for _, set in ipairs(FIXTURE_SETS) do
+  local function probe_case(name, want, raw, cfg, id)
+    id = id or set.id
+    check("probe " .. set.daemon .. ": " .. name, want, req{path = v("/containers/" .. id .. "/json")}, cfg or FIXTURE_CFG,
+      fake_io{probe = function() return raw end})
+  end
+  for _, form in ipairs({"http10", "http11"}) do
+    local one, empty = set.replies["list-one." .. form], set.replies["list-empty." .. form]
+    probe_case("owned container (" .. form .. ")", "allow", one)
+    probe_case("no such container (" .. form .. ")", 404, empty)
+    probe_case("owned, another instance (" .. form .. ")", 403, one, {image = IMAGE, network = NETWORK, instance = "l11r2"})
+    probe_case("owned, a different id asked (" .. form .. ")", 403, one, nil, string.rep("b", 64))
+    probe_case("a 404 reply to the probe (" .. form .. ")", 403, set.replies["inspect-404." .. form])
+  end
+  local one10 = set.replies["list-one.http10"]
+  probe_case("instance label edited", 403, edit(one10, '"postern.instance":"l11r"', '"postern.instance":"other"'))
+  probe_case("managed label edited", 403, edit(one10, '"postern.managed":"true"', '"postern.managed":"false"'))
+  probe_case("instance label missing", 403, edit(one10, '"postern.instance":"l11r",', ""))
+  probe_case("managed label missing", 403, edit(one10, ',"postern.managed":"true"', ""))
+  probe_case("labels null", 403, (one10:gsub('"Labels":%b{}', '"Labels":null')))
+  probe_case("Id edited", 403, edit(one10, set.id, string.rep("d", 64)))
+  probe_case("label value written with an escape", 403, edit(one10, '"postern.managed":"true"', '"postern.managed":"tru\\u0065"'))
+  local entry = one10:match("\r\n\r\n%[(.*)%]%s*$")
+  probe_case("two entries", 403, edit(one10, "\r\n\r\n[", "\r\n\r\n[" .. entry .. ","))
+  probe_case("one entry then a stray byte", 403, one10 .. "x")
+  probe_case("one entry, newline, then a stray byte", 403, one10 .. "\nx")
+  probe_case("duplicate Labels key", 403, edit(one10, '"Labels":{', '"Labels":{"postern.managed":"true",'))
+  probe_case("truncated body", 403, one10:sub(1, #one10 - 40))
+end
+
+local function probe_case(name, want, raw)
+  check("probe: " .. name, want, req{path = v("/containers/" .. FIXTURE_SETS[1].id .. "/json")}, FIXTURE_CFG,
+    fake_io{probe = function() return raw end})
+end
+-- Every framing HTTP permits for this request, built by hand (the fixtures cover what dockerd does today), each with
+-- every kind of trailing whitespace after the JSON.
+local function framed(framing, body)
+  local head = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+  if framing == "length" then return head .. "Content-Length: " .. #body .. "\r\n\r\n" .. body end
+  if framing == "chunked" then
+    return head .. "Transfer-Encoding: chunked\r\n\r\n" .. string.format("%x", #body) .. "\r\n" .. body .. "\r\n0\r\n\r\n"
+  end
+  if framing == "chunked-split" then
+    local h = math.floor(#body / 2)
+    return head .. "Transfer-Encoding: chunked\r\n\r\n" .. string.format("%x", h) .. "\r\n" .. body:sub(1, h) .. "\r\n"
+      .. string.format("%X", #body - h) .. "\r\n" .. body:sub(h + 1) .. "\r\n0\r\n\r\n"
+  end
+  return head .. "\r\n" .. body -- close-delimited
+end
+local owned_body = FIXTURE_SETS[1].replies["list-one.http10"]:match("\r\n\r\n(.*)$")
+for _, framing in ipairs({"length", "chunked", "chunked-split", "close"}) do
+  for _, tail in ipairs({"", "\n", "\r\n", " ", "\t\n"}) do
+    local label = framing .. ", " .. string.format("%q", tail)
+    probe_case("owned, " .. label, "allow", framed(framing, owned_body .. tail))
+    probe_case("no such container, " .. label, 404, framed(framing, "[]" .. tail))
+    probe_case("not a list, " .. label, 403, framed(framing, '{"message":"x"}' .. tail))
+  end
+end
 probe_case("pretty-printed empty list", 403, "HTTP/1.0 200 OK\r\n\r\n[\n]")
+probe_case("whitespace inside the list", 403, "HTTP/1.0 200 OK\r\n\r\n[ ]")
 probe_case("empty list with a 500", 403, "HTTP/1.0 500 Internal Server Error\r\n\r\n[]")
 probe_case("empty list, bare", 404, "HTTP/1.0 200 OK\r\n\r\n[]")
-probe_case("truncated body", 403, one10:sub(1, #one10 - 40))
-probe_case("error object instead of a list", 403, "HTTP/1.0 200 OK\r\n\r\n{\"message\":\"x\"}")
 probe_case("HTML instead of JSON", 403, "HTTP/1.0 200 OK\r\n\r\n<html>[]</html>")
 probe_case("entry is not an object", 403, "HTTP/1.0 200 OK\r\n\r\n[1]")
-probe_case("duplicate Labels key", 403, edit(one10, '"Labels":{', '"Labels":{"postern.managed":"true",'))
 probe_case("chunked, bad chunk size", 403, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n[]\r\n0\r\n\r\n")
 probe_case("chunked, short chunk", 403, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n9\r\n[]\r\n0\r\n\r\n")
 probe_case("chunked, no terminator", 403, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n")
 probe_case("chunked, data after the terminator", 403, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\nx")
 probe_case("chunked, extension", 403, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2;x=1\r\n[]\r\n0\r\n\r\n")
-probe_case("chunked, well formed (control)", 404, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n")
-probe_case("content-length matching", 404, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]")
 probe_case("content-length not matching", 403, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n[]")
+probe_case("content-length and chunked", 403, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n")
+probe_case("two content-length", 403, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n[]")
 probe_case("no header terminator", 403, "HTTP/1.0 200 OK\r\n[]")
 probe_case("not HTTP", 403, "[]")
 probe_case("empty reply", 403, "")

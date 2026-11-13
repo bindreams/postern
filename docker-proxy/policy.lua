@@ -2,11 +2,12 @@
 --
 -- Everything here is plain Lua; the HAProxy API is touched only by action.lua. The only external effects
 -- are the two functions in `io`, both of which return the raw bytes of a dockerd reply (or nil, err):
---   io.version()  -> reply to an unversioned GET /version
+--   io.ping()     -> reply to an unversioned GET /_ping (its Api-Version header is the daemon's current API version)
 --   io.probe(id)  -> reply to GET /containers/json?all=1&filters={"id":["<id>"]}
 -- Optional, so the glue can keep a table of vouched-for ids: io.owned(id) (true if this id was already vouched for)
 -- and io.remember(id) (called after a probe vouches for it). An id leaves the table when evict_id says its container
--- is gone. The version is never cached: it is read on every versioned request.
+-- is gone. The version is never cached: it is read on every versioned request. It comes from /_ping, not /version:
+-- dockerd answers /version by running `runc --version` and `docker-init --version`, /_ping by writing headers.
 -- Default deny: a request is allowed only if it matches one route exactly. See docs/development/architecture.md.
 --
 -- decide(req, cfg, io) returns `true`, or `false, status, reason` (403, or 404 for a container id the daemon
@@ -225,7 +226,7 @@ local function dechunk(body)
   end
 end
 
--- raw reply bytes -> status (number), body (string) | nil, err
+-- raw reply bytes -> status (number), body (string), headers (lower-case name -> list of values) | nil, err
 local function parse_http_reply(raw)
   if type(raw) ~= "string" then return nil, "no reply" end
   local head_end = raw:find("\r\n\r\n", 1, true)
@@ -234,10 +235,13 @@ local function parse_http_reply(raw)
   local status = head:match("^HTTP/1%.[01] (%d%d%d) ")
   if not status then return nil, "bad status line" end
   local chunked, content_length
+  local headers = {}
   for line in head:gmatch("\r\n([^\r\n]*)") do
     local name, val = line:match("^([^:]+):[ \t]*(.-)[ \t]*$")
     if not name then return nil, "bad header line" end
     name = name:lower()
+    headers[name] = headers[name] or {}
+    table.insert(headers[name], val)
     if name == "transfer-encoding" then
       if chunked or val:lower() ~= "chunked" then return nil, "unsupported transfer-encoding" end
       chunked = true
@@ -254,19 +258,17 @@ local function parse_http_reply(raw)
   elseif content_length and content_length ~= #body then
     return nil, "truncated body"
   end
-  return tonumber(status), body
+  return tonumber(status), body, headers
 end
 M.parse_http_reply = parse_http_reply
 
--- reply to GET /version -> "1.56" | nil, err
+-- reply to GET /_ping -> "1.56" | nil, err
 local function api_version(raw)
-  local status, body = parse_http_reply(raw)
+  local status, _, headers = parse_http_reply(raw)
   if status ~= 200 then return nil, "version read failed" end
-  local v = parse_json(body, "reply")
-  if not is_obj(v) or type(v.ApiVersion) ~= "string" or not v.ApiVersion:find("^%d+%.%d+$") then
-    return nil, "version reply unusable"
-  end
-  return v.ApiVersion
+  local values = headers["api-version"]
+  if not values or #values ~= 1 or not values[1]:find("^%d+%.%d+$") then return nil, "version reply unusable" end
+  return values[1]
 end
 
 M.api_version = api_version
@@ -430,7 +432,7 @@ local function decide(req, cfg, io)
   -- Version prefix: must equal the daemon's current ApiVersion.
   local ver, rest = path:match("^/v(%d+%.%d+)(/.*)$")
   if ver then
-    local current, why = read_version(io.version)
+    local current, why = read_version(io.ping)
     if not current then return deny("API version could not be read from the daemon (" .. tostring(why) .. ")") end
     if ver ~= current then return deny("API version " .. ver .. " is not the daemon's " .. current) end
     path = rest

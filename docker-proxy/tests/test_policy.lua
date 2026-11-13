@@ -5,7 +5,7 @@
 --                    name TAB method TAB uri TAB content-type TAB body, one request per line.
 --   TEST_* env       the Settings values the reconciler ran with (image, network, instance, API version).
 -- tests/fixtures.lua holds raw dockerd replies, one set per recorded daemon version (their framing differs): an
--- HTTP/1.0 and an HTTP/1.1 form of each; the CRLFs are part of what is tested. Every probe and version case runs
+-- HTTP/1.0 and an HTTP/1.1 form of each; the CRLFs are part of what is tested. Every probe and ping case runs
 -- over every set.
 --
 -- Every negative case is differential: the unmodified baseline is accepted in the same run (see "baseline" below).
@@ -29,12 +29,16 @@ local function owned_reply(id, instance)
     .. '","postern.managed":"true"},"State":"running"}]'
   return "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n" .. body
 end
-local VERSION_REPLY = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ApiVersion\":\"" .. API .. "\",\"Version\":\"29.9.3\"}"
+local function ping_reply(api, extra)
+  return "HTTP/1.0 200 OK\r\n" .. (api and ("Api-Version: " .. api .. "\r\n") or "") .. (extra or "")
+    .. "Content-Type: text/plain; charset=utf-8\r\nContent-Length: 2\r\n\r\nOK"
+end
+local PING_REPLY = ping_reply(API)
 
 local function fake_io(over)
   over = over or {}
   return {
-    version = over.version or function() return VERSION_REPLY end,
+    ping = over.ping or function() return PING_REPLY end,
     probe = over.probe or function(id) return owned_reply(id, INSTANCE) end,
     owned = over.owned, remember = over.remember,
   }
@@ -177,33 +181,42 @@ version_case("version without a minor", "/v" .. major .. "/containers/json", 403
 for _, set in ipairs(FIXTURE_SETS) do
   for _, form in ipairs({"http10", "http11"}) do
     -- The recorded daemon may be at another API version than the one the suite runs with.
-    local raw = set.replies["version." .. form]
-    local reply = raw and (raw:gsub('"ApiVersion":"' .. set.api:gsub("%.", "%%.") .. '"', '"ApiVersion":"' .. API .. '"'))
-    if reply then
-      check("version reply as dockerd " .. set.daemon .. " writes it (" .. form .. ")", "allow",
-        req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() return reply end})
-    end
+    local raw = set.replies["ping." .. form]
+    local reply = raw and (raw:gsub("Api%-Version: " .. set.api:gsub("%.", "%%."), "Api-Version: " .. API))
+    check("ping reply as dockerd " .. set.daemon .. " writes it (" .. form .. ")", "allow",
+      req{path = v("/containers/json"), query = lq}, CFG, fake_io{ping = function() return reply end})
+    -- Left as recorded, the reply names the daemon's own version; only that exact version passes.
+    check("ping reply as dockerd " .. set.daemon .. " writes it, request at its version (" .. form .. ")", "allow",
+      req{path = "/v" .. set.api .. "/containers/json", query = lq}, CFG, fake_io{ping = function() return raw end})
+    check("ping reply as dockerd " .. set.daemon .. " writes it, request at another version (" .. form .. ")", 403,
+      req{path = "/v" .. set.api .. "0/containers/json", query = lq}, CFG, fake_io{ping = function() return raw end})
   end
 end
-check("version read returns nothing", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() return nil, "boom" end})
-check("version read raises", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() error("boom") end})
-check("version reply is garbage", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  fake_io{version = function() return "garbage" end})
-check("version reply has no ApiVersion", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  fake_io{version = function() return "HTTP/1.0 200 OK\r\n\r\n{\"Version\":\"29\"}" end})
-check("version reply ApiVersion is a number", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  fake_io{version = function() return "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":1.56}" end})
-check("version reply status 500", 403, req{path = v("/containers/json"), query = lq}, CFG,
-  fake_io{version = function() return "HTTP/1.0 500 Error\r\n\r\n{\"ApiVersion\":\"" .. API .. "\"}" end})
+local function ping_case(name, want, ping)
+  check("ping: " .. name, want, req{path = v("/containers/json"), query = lq}, CFG, fake_io{ping = ping})
+end
+ping_case("read returns nothing", 403, function() return nil, "boom" end)
+ping_case("read raises", 403, function() error("boom") end)
+ping_case("reply is garbage", 403, function() return "garbage" end)
+ping_case("reply has no Api-Version", 403, function() return ping_reply(nil) end)
+ping_case("Api-Version only in the body", 403, function() return "HTTP/1.0 200 OK\r\nContent-Length: 17\r\n\r\nApi-Version: " .. API end)
+ping_case("Api-Version without a minor", 403, function() return ping_reply("1") end)
+ping_case("Api-Version with a patch part", 403, function() return ping_reply(API .. ".1") end)
+ping_case("Api-Version empty", 403, function() return ping_reply("") end)
+ping_case("Api-Version not numeric", 403, function() return ping_reply("v" .. API) end)
+ping_case("Api-Version twice", 403, function() return ping_reply(API, "Api-Version: " .. API .. "\r\n") end)
+ping_case("Api-Version twice, one stale", 403, function() return ping_reply("1.40", "Api-Version: " .. API .. "\r\n") end)
+ping_case("status 500 with the header", 403, function() return (ping_reply(API):gsub("^HTTP/1.0 200 OK", "HTTP/1.0 500 Error")) end)
+ping_case("header name in lower case", "allow", function() return (ping_reply(API):gsub("Api%-Version", "api-version")) end)
 -- The version is read on every versioned request (no cache): a daemon upgrade is seen by the very next request.
 local reads = 0
 local upgrading = {"1.40", API}
-local function counting() return fake_io{version = function()
+local function counting() return fake_io{ping = function()
   reads = reads + 1
-  return "HTTP/1.0 200 OK\r\n\r\n{\"ApiVersion\":\"" .. upgrading[1] .. "\"}"
+  return ping_reply(upgrading[1])
 end} end
-check("version read, daemon at the request's version", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
-check("version read again for the next request", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
+check("ping read, daemon at the request's version", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
+check("ping read again for the next request", "allow", req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
 eq("one daemon read per versioned request", reads, 2)
 upgrading[1] = API
 check("after the daemon upgrade the old version is refused at once", 403, req{path = "/v1.40/containers/json", query = lq}, CFG, counting())
@@ -273,7 +286,7 @@ check("wired cache: after eviction the id is probed again", "allow", req{path = 
 eq("wired cache: two probes", probes, 2)
 
 check("unversioned ping needs no version read", "allow", req{path = "/_ping"}, CFG,
-  fake_io{version = function() error("must not be called") end})
+  fake_io{ping = function() error("must not be called") end})
 
 -- Container list -------------------------------------------------------------------------------------------------------
 local function list(name, want, query, cfg)

@@ -38,7 +38,7 @@ end
 local owned_ids = {}
 
 local io_daemon = {
-  version = function() return daemon_get("/version") end,
+  ping = function() return daemon_get("/_ping") end,
   owned = function(id) return owned_ids[id] == true end,
   remember = function(id) owned_ids[id] = true end,
   -- docker's id filter is a prefix match; policy.lua only asks with a full 64-hex id.

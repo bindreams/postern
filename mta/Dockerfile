@@ -8,8 +8,8 @@ ARG PYTHON_MINOR=3.14
 
 FROM dhi.io/alpine-base:3.23-dev AS build
 ARG PYTHON_MINOR
-# All privileged setup happens in the -dev stage (the runtime stage at
-# dhi.io/alpine-base:3.23 has no root user and cannot run apk/addgroup).
+# Packages are installed in this stage and copied into the runtime stage, which is the
+# same -dev image (it has root and apk, but installs nothing).
 # The opendkim user is created here so /etc/passwd, /etc/group, and the
 # opendkim home directory exist when we COPY across to the runtime stage.
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
@@ -60,9 +60,14 @@ COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 
 # Build-time import check, run with the same bare `python3` the ENTRYPOINT resolves from
 # PATH: a Python minor that apk and the COPY targets disagree on builds fine and only fails
-# at container start (#266). Covers everything entrypoint.py imports, plus the pip-installed
-# mta-sts daemon, which is started as a subprocess.
-RUN ["python3", "-c", "import dns.resolver, postern_mta.dkim, postern_mta.dns, postern_mta.dnssec, postern_mta.rotation, postfix_mta_sts_resolver.daemon"]
+# at container start (#266). Imports every submodule of postern_mta, the mta-sts daemon
+# module, and everything entrypoint.py imports; see scripts/image-import-check.py. -B keeps
+# root-owned bytecode out of the image. The daemon is started as a subprocess, so its
+# console script is run too.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py \
+	["python3", "-B", "/image-import-check.py", "/usr/local/bin/entrypoint.py", \
+	"postern_mta", "postfix_mta_sts_resolver.daemon"]
+RUN ["mta-sts-daemon", "--help"]
 
 # Postfix expects /var/spool/postfix and chroot tree to be in place at runtime.
 # The compose file mounts a named volume there so the queue persists.

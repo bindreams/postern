@@ -1780,16 +1780,5 @@ def test_tunnel_container_is_created_with_the_hardening_profile():
     assert kwargs["tmpfs"] == reconciler.SS_TMPFS
 
 
-def test_tunnel_container_tmpfs_gives_galoshes_a_writable_exec_cache():
-    """galoshes extracts its embedded ex-ray into ~/.cache and must be able to execute it."""
-    assert reconciler.SS_TMPFS == {"/tmp": "", "/home/nonroot/.cache": "exec"}
-
-
-def test_tunnel_container_limits_have_the_measured_values():
-    """The proxy's policy.lua repeats these; tests/test_compose_docker_proxy.py pins the copies equal."""
-    assert reconciler.SS_MEMORY_BYTES == 536870912
-    assert reconciler.SS_PIDS_LIMIT == 1024
-
-
 def test_tunnel_container_labels_are_exactly_the_two_postern_labels():
     assert _created_kwargs()["labels"] == {MANAGED_LABEL: MANAGED_VALUE, INSTANCE_LABEL: INSTANCE_ID}

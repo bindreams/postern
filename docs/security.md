@@ -57,7 +57,7 @@ What it does not cover, stated as limits:
 - **The proxy holds the Docker socket.** A flaw in HAProxy or in the allow-list is a flaw in the isolation. The base image is pinned by digest, bumps are not merged automatically, and the policy has unit, wire-contract and end-to-end tests.
 - **Reads that remain.** The portal can read the daemon version, the shadowsocks network (names, ids and addresses of attached containers, no environment), this deployment's own container list, and the labels, state and mounts of the one container with a given `ss-<24 hex>` name, including another deployment's tunnel; none of these returns an environment.
 - **Instance identity.** Two Postern deployments on one Docker daemon are told apart by their instance id. With equal ids each treats the other's labelled containers as its own. The id is `INSTANCE_ID`, else the compose project name; the portal logs `Resolved own instance id to ...` at startup and the two deployments must show different values (see [operations](operations/index.md#instance-identity)).
-- **Containers that already exist.** A container created by an older version, without the hardening profile or labels, is not detected or migrated; it is refused on every id route until it is replaced by hand.
+- **Containers that already exist.** A container created by an older version is not detected or migrated. Ownership is the two labels alone: one without them is refused on every id route; one that carries them is served like any other, whatever its hardening, until it is replaced by hand.
 
 This is an allow-list in front of the Docker API, not a sandbox.
 

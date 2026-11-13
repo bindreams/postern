@@ -71,25 +71,6 @@ def _owned_by_instance(labels: dict[str, str], instance_id: str) -> bool:
     return labels.get(MANAGED_LABEL) == MANAGED_VALUE and labels.get(INSTANCE_LABEL) == instance_id
 
 
-def is_unlabelled_and_running(labels: dict[str, str], status: str) -> bool:
-    """True iff `labels`/`status` describe a Postern-managed container that
-    predates instance labelling (`postern.managed=true`, no
-    `postern.instance`) and is currently running. This is the "legacy,
-    still live" predicate, used by
-    `cli._warn_if_disabled_connection_container_survives` (from `connection
-    disable` and `user delete`, since a not-currently-desired connection's
-    container never reaches the 409 path in `_log_name_conflict`).
-    Deliberately NOT `_owned_by_instance`: this checks label ABSENCE, not a
-    specific instance_id match, so a caller can't reuse it to decide
-    whether removal would be safe -- only that a legacy container is
-    present and serving traffic."""
-    if labels.get(MANAGED_LABEL) != MANAGED_VALUE:
-        return False
-    if INSTANCE_LABEL in labels:
-        return False
-    return status == "running"
-
-
 # Whether the resolved instance id + its provenance (override vs
 # COMPOSE_PROJECT_NAME) has already been logged once this process. Only set
 # once a pass actually resolves identity -- a failed pass leaves it False so
@@ -367,13 +348,14 @@ class ContainerSummary:
     state: str
 
 
-def read_container_summaries(client: docker.DockerClient, filters: dict) -> list[ContainerSummary]:
+def _read_container_summaries(client: docker.DockerClient, filters: dict) -> list[ContainerSummary]:
     """List containers matching `filters` and return what the LIST payload carries (name, labels, state).
 
-    This is how a container the portal may not own is read: a list payload has no `Env`, whereas
-    `containers.get()` / docker-py's `containers.list()` inspect each container and return its whole config. The
-    docker-proxy denies an inspect of anything that does not carry this deployment's labels, so reading a foreign
-    container any other way fails there. Use this for every read of a container that may belong to someone else.
+    Private on purpose: the docker-proxy allows exactly two list shapes (this deployment's label pair, and one
+    anchored `ss-<token>` name), so the public surface is one function per shape, not this one.
+
+    A list payload has no `Env`, whereas `containers.get()` / docker-py's `containers.list()` inspect each container
+    and return its whole config; the proxy denies an inspect of anything that does not carry this deployment's labels.
     """
     summaries = []
     for entry in client.api.containers(all=True, filters=filters):
@@ -389,9 +371,12 @@ def read_container_summaries(client: docker.DockerClient, filters: dict) -> list
 
 
 def find_container_summary_by_name(client: docker.DockerClient, name: str) -> ContainerSummary | None:
-    """The container named exactly `name`, or None. The daemon's name filter is an unanchored regex, so the request
-    anchors it and the result is checked for an exact match as well."""
-    for summary in read_container_summaries(client, {"name": [f"^/{name}$"]}):
+    """Read a container the portal may not own, by its exact `ss-<24 hex>` name; None if there is none.
+
+    This is the only way to read such a container. The proxy allows this one list shape (an anchored name filter);
+    any other name is refused. The daemon's name filter is an unanchored regex, so the request anchors it and the
+    result is checked for an exact match as well."""
+    for summary in _read_container_summaries(client, {"name": [f"^/{name}$"]}):
         if summary.name == name:
             return summary
     return None
@@ -452,7 +437,7 @@ def _log_name_conflict(client: docker.DockerClient, name: str, instance_id: str)
       safe; the next pass then creates it correctly.
 
     The squatter is read from a name-filtered list payload (labels only, never
-    its `Env`: see `read_container_summaries`). The 409-then-read sequence is
+    its `Env`: see `find_container_summary_by_name`). The 409-then-read sequence is
     inherently racy: the squatter can be removed between containers.run()
     raising 409 and this read -- most plausibly by an operator following this
     very function's own `docker rm -f` remediation advice, or a `--rm`

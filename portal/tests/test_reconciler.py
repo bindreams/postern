@@ -1644,33 +1644,36 @@ async def test_loop_notifies_a_waiter_registered_during_the_interval_wait_on_shu
 
 
 # Container summaries: reading a container the portal may not own =======================================================
-def test_container_summary_reader_returns_name_labels_and_state_from_the_list_payload():
+TOKEN_NAME = "ss-" + "a1" * 12
+
+
+def test_the_generic_summary_reader_is_not_public():
+    """The docker-proxy allows exactly two list shapes (this deployment's label pair, and one anchored `ss-<token>`
+    name). A public reader taking arbitrary filters would invite a third; the public surface is one function per
+    allowed shape."""
+    assert not hasattr(reconciler, "read_container_summaries")
+    assert callable(reconciler.find_container_summary_by_name)
+
+
+def test_find_container_summary_by_name_returns_name_labels_and_state_from_the_list_payload():
     client = MagicMock()
     client.api.containers.return_value = [
-        {"Id": "a" * 64, "Names": ["/ss-one"], "Labels": {"k": "v"}, "State": "exited", "Mounts": [], "Image": "x"},
+        {"Id": "a" * 64, "Names": ["/" + TOKEN_NAME], "Labels": {"k": "v"}, "State": "exited", "Mounts": [], "Image": "x"},
     ]
 
-    result = reconciler.read_container_summaries(client, {"label": ["k=v"]})
+    found = reconciler.find_container_summary_by_name(client, TOKEN_NAME)
 
-    assert result == [reconciler.ContainerSummary(name="ss-one", labels={"k": "v"}, state="exited")]
-    client.api.containers.assert_called_once_with(all=True, filters={"label": ["k=v"]})
+    assert found == reconciler.ContainerSummary(name=TOKEN_NAME, labels={"k": "v"}, state="exited")
     client.containers.get.assert_not_called()  # a by-id inspect would return the container's Env
 
 
-def test_container_summary_reader_tolerates_missing_fields():
+def test_find_container_summary_by_name_tolerates_missing_fields():
     client = MagicMock()
-    client.api.containers.return_value = [{"Id": "a" * 64, "Names": ["/ss-one"], "Labels": None}]
+    client.api.containers.return_value = [{"Id": "a" * 64, "Names": ["/" + TOKEN_NAME], "Labels": None}]
 
-    assert reconciler.read_container_summaries(client, {}) == [
-        reconciler.ContainerSummary(name="ss-one", labels={}, state="")
-    ]
-
-
-def test_container_summary_reader_returns_nothing_for_an_empty_list():
-    client = MagicMock()
-    client.api.containers.return_value = []
-
-    assert reconciler.read_container_summaries(client, {}) == []
+    assert reconciler.find_container_summary_by_name(client, TOKEN_NAME) == reconciler.ContainerSummary(
+        name=TOKEN_NAME, labels={}, state=""
+    )
 
 
 def test_find_container_summary_by_name_sends_an_anchored_name_filter():

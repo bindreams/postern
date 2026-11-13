@@ -31,10 +31,10 @@ import ssl
 from ._edge_helpers import (
     EDGE_BASE_URL,
     EDGE_NGINX_CONTAINER,
-    current_master_pid,
     hard_restart_nginx,
     live_master_pid,
-    logs_since_last_start,
+    process_tree_master_pids,
+    wait_for_log_line,
 )
 
 _FAKE_CF_IP = "203.0.113.42"  # RFC 5737 TEST-NET-3: publicly routable, never real traffic
@@ -120,7 +120,7 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     """
     import httpx
 
-    stale_pid = hard_restart_nginx()
+    stale_pid, master_pid = hard_restart_nginx()
     # Doubles as the only observation anywhere that nginx really writes the path the
     # entrypoint clears: a unit test can only compare two string literals.
     assert stale_pid.isdigit(), (
@@ -131,18 +131,16 @@ def test_nginx_survives_an_ungraceful_restart_with_a_stale_pidfile(
     # What pins the fix: the entrypoint must report having cleared the killed
     # container's pidfile, or the test passes with the clear removed. The clear is
     # unconditional and the runtime picks the pid, so the stale pid is not compared
-    # with the new one.
-    assert "cleared stale" in logs_since_last_start(), (
-        "the entrypoint did not report clearing the stale pidfile on this boot, so "
-        "the pidfile left by the killed container was carried into the new one -- "
-        "a reload racing startup would SIGHUP the entrypoint (issue #245)"
-    )
+    # with the new one. A timeout here means the line was never logged: the pidfile
+    # left by the killed container was carried into the new one, and a reload racing
+    # startup would SIGHUP the entrypoint (issue #245).
+    wait_for_log_line("cleared stale")
 
-    # hard_restart_nginx already waited for a live master; its pidfile must name it,
-    # or a reload has no valid target.
-    live_pid = live_master_pid()
-    assert live_pid.isdigit() and current_master_pid() == live_pid, (
-        f"/run/nginx.pid ({current_master_pid()!r}) does not name the live nginx master ({live_pid!r})"
+    # hard_restart_nginx already waited for a pidfile naming a live master; it must
+    # be the master actually running, or a reload has no valid target.
+    tree_pids = process_tree_master_pids()
+    assert master_pid in tree_pids, (
+        f"/run/nginx.pid names {master_pid!r}, which is not the nginx master running under PID 1 ({tree_pids!r})"
     )
 
     # Healthy only proves the container is up; prove it is actually serving TLS.
@@ -169,7 +167,7 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
     """
     import subprocess
 
-    pid_before = current_master_pid()
+    pid_before = live_master_pid()
     assert pid_before.isdigit(), f"no live pidfile to begin with: {pid_before!r}"
 
     result = subprocess.run(
@@ -187,7 +185,7 @@ def test_rerunning_the_entrypoint_does_not_orphan_a_live_pidfile(edge_stack):
         f"{result.returncode} with stderr: {result.stderr[:400]!r}"
     )
 
-    assert current_master_pid() == pid_before, (
+    assert live_master_pid() == pid_before, (
         "re-running the entrypoint inside a live container removed the running "
         "master's pidfile; nginx still serves but every reload path (edge watcher "
         "and the 6h cert-renewal loop) is silently dead from here on"

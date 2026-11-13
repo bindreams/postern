@@ -5,8 +5,8 @@ deletion tripwires for load-bearing caveats -- they detect a dropped caveat,
 not a softened one.
 """
 import functools
-import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -286,30 +286,44 @@ def test_cli_reference_complete():
     assert documented == actual, (f"undocumented: {sorted(actual - documented)}; stale: {sorted(documented - actual)}")
 
 
+def _index_modes() -> dict[str, tuple[str, str]]:
+    """Tracked path -> (index mode, blob sha), from `git ls-files -s -z`."""
+    listing = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=REPO_ROOT, capture_output=True, check=True)
+    modes = {}
+    for entry in listing.stdout.decode().split("\0"):
+        if entry:
+            meta, path = entry.split("\t", 1)
+            mode, sha, _stage = meta.split(" ")
+            modes[path] = (mode, sha)
+    return modes
+
+
 @functools.cache
 def _tracked_texts() -> tuple[tuple[str, str], ...]:
     """(repo-relative name, text) for every tracked first-party file.
 
-    One scan, cached, for every whole-tree gate. File selection reuses
-    `scripts/ci_lint_lib` (`git ls-files -z`, prek.toml-driven vendored
-    exclusion). A symlink contributes its link-target text (the tracked blob),
-    never the file it points to. Other files are decoded with
-    errors="replace" so ASCII findings stay visible in uncompressed binaries
-    (compressed bytes are not scanned).
+    Shared by the whole-tree gates. Selection comes from `scripts/ci_lint_lib`.
+    A symlink (index mode 120000) contributes its link-target text, read from
+    the index blob so it is identical on every platform, never the file it
+    points to. Contract: every other tracked first-party path is a regular file,
+    decoded with errors="replace" so ASCII findings stay visible in uncompressed
+    binaries (compressed bytes are not scanned).
     """
     names = [name for name in tracked_files() if not is_vendored(name)]
     assert names, "no tracked first-party files -- not a checkout?"
+    modes = _index_modes()
     texts = []
     for name in names:
-        path = REPO_ROOT / name
-        if path.is_symlink():
-            texts.append((name, os.fsdecode(os.readlink(path))))
-        elif path.is_file():
+        mode, sha = modes[name]
+        if mode == "120000":
+            blob = subprocess.run(["git", "cat-file", "blob", sha], cwd=REPO_ROOT, capture_output=True, check=True)
+            texts.append((name, blob.stdout.decode("utf-8", errors="replace")))
+        else:
+            path = REPO_ROOT / name
+            assert path.is_file(), f"tracked path {name} (mode {mode}) is neither a regular file nor a symlink"
             texts.append((name, path.read_bytes().decode("utf-8", errors="replace")))
-    scanned = {name for name, _ in texts}
-    # Vacuity guard: the scan must include this very file.
     this_file = Path(__file__).resolve().relative_to(REPO_ROOT.resolve()).as_posix()
-    assert this_file in scanned, f"{this_file} missing from the tracked-file scan -- gates would pass vacuously"
+    assert this_file in {name for name, _ in texts}, f"{this_file} missing from the tracked-file scan"
     return tuple(texts)
 
 

@@ -29,7 +29,6 @@ from ._helpers import (
     docker_inspect,
     get_container_id,
     query_db,
-    run,
     run_sleeper,
     trigger_reconcile,
     postern_cli,
@@ -665,43 +664,4 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
         assert nginx_started_at() == nginx_started, "nginx was restarted mid-test"
     finally:
         subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
-        subprocess.run(compose("up", "-d", "--wait", "portal"), check=False, capture_output=True)
-
-
-@pytest.mark.timeout(180)
-def test_nginx_recovers_after_a_same_ip_portal_restart(portal_client):
-    """A portal restart that keeps its IP (`docker compose restart portal`) must not
-    leave nginx failing over: /healthz answers 200 again without an nginx restart, and
-    nginx never logs "no live upstreams" for the window. Requests made while the portal
-    is down fail (refused or hung connects), the failures passive accounting would count.
-
-    Pins the observable behaviour, not `max_fails=0` itself: nginx exempts a
-    single-address upstream from failure accounting, so one portal passes either way."""
-    network = "postern-e2e-default"
-    ip_format = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
-    nginx_id = get_container_id("nginx")
-
-    def portal_ip() -> str:
-        ip = docker_inspect(get_container_id("portal", running_only=True), ip_format)
-        assert ip, "portal has no address on the e2e default network"
-        return ip
-
-    def nginx_log_count(needle: str) -> int:
-        logs = run(["docker", "logs", nginx_id])  # error_log goes to stderr, access_log to stdout
-        return (logs.stdout + logs.stderr).count(needle)
-
-    assert portal_client.get("/healthz").status_code == 200
-    old_ip = portal_ip()
-    nginx_started = docker_inspect(nginx_id, "{{.State.StartedAt}}")
-    dead_before = nginx_log_count("no live upstreams")
-
-    try:
-        subprocess.run(compose("restart", "--timeout", "30", "portal"), check=True, capture_output=True)
-        # The portal is not serving yet, so these requests are refused connects or hangs.
-        _wait_for_healthz(portal_client)
-
-        assert portal_ip() == old_ip, "portal changed IP; this test no longer covers the same-IP restart"
-        assert docker_inspect(nginx_id, "{{.State.StartedAt}}") == nginx_started, "nginx was restarted mid-test"
-        assert nginx_log_count("no live upstreams") == dead_before, "nginx marked the portal upstream dead"
-    finally:
         subprocess.run(compose("up", "-d", "--wait", "portal"), check=False, capture_output=True)

@@ -235,10 +235,11 @@ resolve_git_revision() {
 }
 
 # Tunnel image =========================================================================================================
-# The tag to build is whatever the portal's Settings will resolve at runtime
-# (SHADOWSOCKS_IMAGE, default local/shadowsocks-server). compose resolves that variable
-# for the portal from the deploying shell, then .env, so the only way to be sure we
-# build the tag the reconciler will look up is to ask the portal image itself.
+# The tag to build is whatever the portal's Settings will resolve at runtime. compose gives
+# the portal (and the docker-proxy, which pins create bodies to the same tag) the value of
+# `${SHADOWSOCKS_IMAGE:-local/shadowsocks-server}`: the deploying shell, then .env, then
+# that default, with an empty value counting as unset. So the only way to be sure we build
+# the tag the reconciler will look up is to ask the portal image itself.
 # `compose run` applies the identical environment. Re-implementing compose's
 # resolution here would be a second source of truth, and any disagreement between
 # the two is a silent wrong-image deploy.
@@ -249,10 +250,6 @@ resolve_shadowsocks_image() {
     image="$(docker compose run --rm --no-deps -T portal \
         python -c 'from postern.settings import Settings; print(Settings().shadowsocks_image)')"
     image="${image%$'\r'}"
-
-    if [[ -z "$image" ]]; then
-        die "the portal resolved an empty SHADOWSOCKS_IMAGE -- fix or remove that line in .env"
-    fi
     printf '%s\n' "$image"
 }
 

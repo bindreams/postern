@@ -283,13 +283,6 @@ def test_the_query_uses_a_throwaway_container_with_no_dependencies(tmp_path):
     assert "shadowsocks_image" in query
 
 
-def test_refuses_when_the_portal_reports_an_empty_tag(tmp_path):
-    proc, calls = _run(tmp_path, FAKE_PORTAL_SS_IMAGE="")
-    assert proc.returncode != 0
-    assert "SHADOWSOCKS_IMAGE" in (proc.stdout + proc.stderr)
-    assert not any(a.startswith("build ") for a in _args_of(calls, "docker"))
-
-
 def test_a_failed_portal_build_stops_the_deploy(tmp_path):
     proc, calls = _run(tmp_path, FAKE_DOCKER_FAIL="compose build portal")
     assert proc.returncode != 0

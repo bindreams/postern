@@ -10,6 +10,10 @@
 # ${SHADOWSOCKS_NETWORK:-shadowsocks} literals could (see
 # docs/development/architecture.md).
 x-shadowsocks-network: &shadowsocks_network ${SHADOWSOCKS_NETWORK:-shadowsocks}
+# Same for the tunnel image: the docker-proxy pins create bodies to it, so the portal and the proxy must receive
+# the identical value even when SHADOWSOCKS_IMAGE is exported empty. The default equals Settings.shadowsocks_image
+# (pinned by test_compose_docker_proxy.py).
+x-shadowsocks-image: &shadowsocks_image ${SHADOWSOCKS_IMAGE:-local/shadowsocks-server}
 
 services:
   nginx:
@@ -102,7 +106,7 @@ services:
       OTP_RATE_WINDOW_SECONDS:
       SESSION_EXPIRY_DAYS:
       RECONCILE_INTERVAL_SECONDS:
-      SHADOWSOCKS_IMAGE:
+      SHADOWSOCKS_IMAGE: *shadowsocks_image
       INSTANCE_ID:
       DOMAIN:
       PRODUCT_NAME:
@@ -370,8 +374,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     environment:
       # What the portal is configured with: the policy pins create bodies and every id-addressed request to it.
-      # The image default is the same one Settings.shadowsocks_image has (pinned by test_compose_docker_proxy.py).
-      SHADOWSOCKS_IMAGE: ${SHADOWSOCKS_IMAGE:-local/shadowsocks-server}
+      SHADOWSOCKS_IMAGE: *shadowsocks_image
       SHADOWSOCKS_NETWORK: *shadowsocks_network
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
       INSTANCE_ID:

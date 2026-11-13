@@ -245,13 +245,20 @@ def test_the_proxy_has_no_network_and_publishes_nothing(chain: list[str], tmp_pa
 
 @pytest.mark.compose_cli
 @pytest.mark.parametrize("chain", _CHAINS, ids="+".join)
-@pytest.mark.parametrize("exported", [False, True], ids=["defaults", "exported"])
-def test_the_proxy_is_configured_with_what_the_portal_is(chain: list[str], exported: bool, tmp_path: Path):
-    """If the two disagree every create is denied, or (worse) the proxy pins something the portal does not use."""
+@pytest.mark.parametrize("mode", ["unset", "set", "empty"])
+def test_the_proxy_is_configured_with_what_the_portal_is(chain: list[str], mode: str, tmp_path: Path):
+    """If the two disagree every create is denied, or (worse) the proxy pins something the portal does not use.
+    An exported-but-empty variable is its own case: a bare passthrough would hand the portal "" while an
+    interpolated default hands the proxy the default."""
+    names = ["SHADOWSOCKS_IMAGE", "SHADOWSOCKS_NETWORK", "INSTANCE_ID", "COMPOSE_PROJECT_NAME"]
     shell = {
-        "SHADOWSOCKS_IMAGE": "registry.example/ss:1", "SHADOWSOCKS_NETWORK": "ss-net", "INSTANCE_ID": "pinned",
-        "COMPOSE_PROJECT_NAME": "other",
-    } if exported else {}  # yapf: disable
+        "unset": {},
+        "set": {
+            "SHADOWSOCKS_IMAGE": "registry.example/ss:1", "SHADOWSOCKS_NETWORK": "ss-net", "INSTANCE_ID": "pinned",
+            "COMPOSE_PROJECT_NAME": "other",
+        },
+        "empty": dict.fromkeys(names, ""),
+    }[mode]  # yapf: disable
     services = _config(chain, tmp_path, shell)["services"]
     portal, proxy = services["portal"]["environment"], services["docker-proxy"]["environment"]
     settings = Settings.model_fields
@@ -259,6 +266,7 @@ def test_the_proxy_is_configured_with_what_the_portal_is(chain: list[str], expor
     def effective_value(env: dict, key: str, default: str) -> str:
         return env[key] if env.get(key) is not None else default
 
+    # Settings turns an empty string into an empty image name, so "" is a value here, not an absent one.
     effective = {
         "SHADOWSOCKS_IMAGE": effective_value(portal, "SHADOWSOCKS_IMAGE", settings["shadowsocks_image"].default),
         "SHADOWSOCKS_NETWORK": effective_value(portal, "SHADOWSOCKS_NETWORK", settings["shadowsocks_network"].default),
@@ -266,6 +274,7 @@ def test_the_proxy_is_configured_with_what_the_portal_is(chain: list[str], expor
         "COMPOSE_PROJECT_NAME": effective_value(portal, "COMPOSE_PROJECT_NAME", ""),
     }
     given = {k: effective_value(proxy, k, "") for k in effective}
+    assert effective["SHADOWSOCKS_IMAGE"], "the portal would run with an empty image name"
     # The e2e files pin their own values and never export these; only production reads the exported ones.
     if chain[0] == "compose.yaml":
         assert given == effective

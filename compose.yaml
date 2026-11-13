@@ -362,7 +362,7 @@ services:
       context: ./docker-proxy
       args:
         GIT_REVISION: ${GIT_REVISION:-}
-      # A no-op for the digest-pinned base; kept so every built service refreshes its base (see #254).
+      # A no-op for the digest-pinned base; kept so every built service refreshes its base.
       pull: true
     image: local/postern-docker-proxy
     container_name: docker-proxy

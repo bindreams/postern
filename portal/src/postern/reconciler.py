@@ -38,11 +38,10 @@ INSTANCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$")
 
 # What every tunnel container is created with. The docker-proxy's allow-list (docker-proxy/policy.lua) repeats these
 # three and refuses a create body that differs; tests/test_compose_docker_proxy.py pins the copies equal.
-# 512 MiB and 1024 pids leave generous headroom over the measured footprint (pids count threads and scale with CPU
-# count). The second tmpfs is galoshes' extraction directory: it must be writable and executable while the rest of the
-# root filesystem is read-only.
 SS_MEMORY_BYTES = 536870912
+# pids count threads and scale with CPU count, hence 1024.
 SS_PIDS_LIMIT = 1024
+# The second tmpfs is galoshes' extraction directory: writable and executable while the root filesystem is read-only.
 SS_TMPFS = {"/tmp": "", "/home/nonroot/.cache": "exec"}
 
 # Set by request_reconcile_shutdown() (called from app.py BEFORE cancelling the

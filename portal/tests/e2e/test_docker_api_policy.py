@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import secrets
 import subprocess
 from collections.abc import Callable, Iterator
@@ -95,11 +96,18 @@ def token() -> str:
 
 
 def create_scenario(name: str, body: dict | str, *, query: dict | None = None) -> dict:
+    """A create request. `container` lists the names it could create, so a test removes and counts only those."""
+    params = query if query is not None else {"name": f"ss-{token()}"}
+    named = params.get("name", [])
     return {
-        "id": name, "method": "POST", "path": "/containers/create",
-        "params": query if query is not None else {"name": f"ss-{token()}"},
+        "id": name, "method": "POST", "path": "/containers/create", "params": params,
+        "container": [named] if isinstance(named, str) else list(named),
         "data": body if isinstance(body, str) else json.dumps(body), "headers": JSON_HEADERS,
     }  # yapf: disable
+
+
+def container_names(scenarios: list[dict]) -> set[str]:
+    return {name for s in scenarios for name in s.get("container", [])}
 
 
 @pytest.fixture(scope="module")
@@ -193,15 +201,16 @@ def _mutations(body: dict) -> dict[str, dict]:
 def test_every_create_that_differs_from_the_reconcilers_is_denied(control_body, created):
     variants = _mutations(control_body)
     scenarios = [create_scenario(name, body) for name, body in variants.items()]
-    scenarios.append(create_scenario("control", control_body))
-    before = _host_containers()
+    control = create_scenario("control", control_body)
+    scenarios.append(control)
+    named = container_names(scenarios)
+    created.extend(named)
     results = send(scenarios)
-    new = _host_containers() - before
-    created.extend(new)
     assert results["control"]["status"] == 201, results["control"]
     not_denied = {name: r for name, r in results.items() if name != "control" and not _denied(r)}
     assert not not_denied, not_denied
-    assert len(new) == 1, f"only the control may have produced a container, got {new}"
+    made = named & _host_containers()
+    assert made == set(control["container"]), f"only the control may have produced a container, got {made}"
 
 
 def test_create_names_are_pinned_to_the_tunnel_shape(control_body, created):
@@ -215,7 +224,7 @@ def test_create_names_are_pinned_to_the_tunnel_shape(control_body, created):
     scenarios.append(create_scenario("two names", control_body, query={"name": [good, good]}))
     scenarios.append(create_scenario("platform", control_body, query={"name": good, "platform": "linux/amd64"}))
     scenarios.append(create_scenario("control", control_body, query={"name": good}))
-    created.append(good)
+    created.extend(container_names(scenarios))
     results = send(scenarios)
     assert results["control"]["status"] == 201, results["control"]
     assert {n for n, r in results.items() if n != "control" and not _denied(r)} == set()
@@ -226,9 +235,17 @@ def _image_id() -> str:
     return docker_inspect(E2E_SHADOWSOCKS_IMAGE, "{{.Id}}")
 
 
+def _instance_containers_off_the_tunnel_shape() -> set[str]:
+    """This deployment's labelled containers that the reconciler would not have created (no `ss-<24 hex>` name)."""
+    listed = run([
+        "docker", "ps", "-a", "--filter", f"label=postern.instance={_portal_instance()}", "--format", "{{.Names}}"
+    ]).stdout.split()  # yapf: disable
+    return {name for name in listed if not re.fullmatch(r"ss-[0-9a-f]{24}", name)}
+
+
 def test_no_request_can_introduce_retag_or_replace_an_image(control_body):
     ref = E2E_SHADOWSOCKS_IMAGE
-    before_image, before_containers = _image_id(), _host_containers()
+    before_image, before_containers = _image_id(), _instance_containers_off_the_tunnel_shape()
     cid = "0" * 64
     attacks = {
         "pull alpine": ("POST", "/images/create", {"fromImage": "alpine", "tag": "latest"}),
@@ -253,7 +270,8 @@ def test_no_request_can_introduce_retag_or_replace_an_image(control_body):
     assert results["control"]["status"] == 200, results["control"]
     assert {n for n, r in results.items() if n != "control" and not _denied(r)} == set()
     assert _image_id() == before_image
-    assert _host_containers() == before_containers
+    assert subprocess.run(["docker", "image", "inspect", "evil:latest"], capture_output=True).returncode != 0
+    assert _instance_containers_off_the_tunnel_shape() == before_containers
 
 
 # Everything else on the daemon ----------------------------------------------------------------------------------------

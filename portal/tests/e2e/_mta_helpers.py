@@ -83,21 +83,10 @@ def get_provisioner_state() -> dict:
 
 # Docker introspection (host-side) =====================================================================================
 def get_container_id(service: str) -> str:
-    """Resolve a service name to its container ID for `docker inspect`.
-
-    Uses ``compose ps -aq <service>`` (-a to include exited containers) so we
-    don't have to guess the ``<project>-<service>-N`` naming Compose uses
-    internally. The provisioner is ``restart: 'no'`` and intentionally exits
-    after generating the keypair, so it's "exited" by the time tests inspect it.
-    """
-    cid = run(compose_mta("ps", "-aq", service)).stdout.strip()
-    if not cid:
-        raise AssertionError(f"no container for service {service!r} in project {PROJECT_MTA}")
-    return cid.splitlines()[0]
+    return _helpers.get_container_id(service, project=PROJECT_MTA, files=COMPOSE_FILES_MTA)
 
 
-def docker_inspect(container_id: str, fmt: str) -> str:
-    return run(["docker", "inspect", container_id, "--format", fmt]).stdout.strip()
+docker_inspect = _helpers.docker_inspect
 
 
 def network_inspect(name: str) -> dict:

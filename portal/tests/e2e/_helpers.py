@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 
 # Resolve key paths once.
@@ -32,6 +33,8 @@ E2E_NGINX_IMAGE = "local/nginx-test"
 E2E_PROVISIONER_IMAGE = "local/postern-provisioner-test"
 E2E_MTA_IMAGE = "local/postern-mta-test"
 E2E_PORTAL_IMAGE = "local/postern-portal-test"
+# Third-party image used for throwaway `sleep infinity` fixture containers.
+E2E_SLEEPER_IMAGE = "dhi.io/alpine-base:3.23-dev"
 
 PORTAL_BASE_URL = "https://postern.test:8443"
 MAILPIT_BASE_URL = "http://localhost:8025"
@@ -122,6 +125,42 @@ def container_running(name: str) -> bool:
         text=True,
     )
     return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def get_container_id(
+    service: str,
+    *,
+    project: str = PROJECT,
+    files: tuple[Path, ...] = COMPOSE_FILES,
+    running_only: bool = False,
+) -> str:
+    """Resolve a service to its container ID via `compose ps`. Includes exited containers (e.g. the one-shot provisioner) unless ``running_only``."""
+    ps_flags = "-q" if running_only else "-aq"
+    cid = run(compose("ps", ps_flags, service, project=project, files=files)).stdout.strip()
+    if not cid:
+        kind = "running container" if running_only else "container"
+        raise AssertionError(f"no {kind} for service {service!r} in project {project}")
+    return cid.splitlines()[0]
+
+
+def docker_inspect(container_id: str, fmt: str) -> str:
+    return run(["docker", "inspect", container_id, "--format", fmt]).stdout.strip()
+
+
+def run_sleeper(name: str, network: str, *, labels: Iterable[str] = (), ip: str | None = None) -> None:
+    """Start a detached `sleep infinity` container on ``network``; ``ip`` pins its address. Reclaims a leftover from a killed run (a `--name` conflict would otherwise persist)."""
+    subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+    cmd = ["docker", "run", "-d", "--init", "--name", name]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += ["--network", network]
+    if ip is not None:
+        cmd += ["--ip", ip]
+    cmd += [E2E_SLEEPER_IMAGE, "sleep", "infinity"]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"docker run {name} failed: {e.stderr}") from e
 
 
 # Path-token regex used by the connection fixture

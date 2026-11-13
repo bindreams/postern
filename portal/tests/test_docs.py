@@ -4,10 +4,18 @@ These gates catch enumerable drift (names, paths, defaults) and act as
 deletion tripwires for load-bearing caveats -- they detect a dropped caveat,
 not a softened one.
 """
+import functools
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parents[2]
+
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+from ci_lint_lib import is_vendored  # noqa: E402
+from ci_lint_lib import tracked_files  # noqa: E402
+
 DOCS_DIR = REPO_ROOT / "docs"
 
 REPO_URL = re.compile(r"https://github\.com/bindreams/postern(/[^)\s`\"'<>]*)?")
@@ -278,15 +286,59 @@ def test_cli_reference_complete():
     assert documented == actual, (f"undocumented: {sorted(actual - documented)}; stale: {sorted(documented - actual)}")
 
 
-REAL_DOMAIN = re.compile(r"binarydreams\.me")
+def _index_modes() -> dict[str, tuple[str, str]]:
+    """Tracked path -> (index mode, blob sha), from `git ls-files -s -z`."""
+    listing = subprocess.run(["git", "ls-files", "-s", "-z"], cwd=REPO_ROOT, capture_output=True, check=True)
+    modes = {}
+    for entry in listing.stdout.decode().split("\0"):
+        if entry:
+            meta, path = entry.split("\t", 1)
+            mode, sha, _stage = meta.split(" ")
+            modes[path] = (mode, sha)
+    return modes
+
+
+@functools.cache
+def _tracked_texts() -> tuple[tuple[str, str], ...]:
+    """(repo-relative name, text) for every tracked first-party file.
+
+    Shared by the whole-tree gates. Selection comes from `scripts/ci_lint_lib`.
+    A symlink (index mode 120000) contributes its link-target text, read from
+    the index blob so it is identical on every platform, never the file it
+    points to. Contract: every other tracked first-party path is a regular file,
+    decoded with errors="replace" so ASCII findings stay visible in uncompressed
+    binaries (compressed bytes are not scanned).
+    """
+    names = [name for name in tracked_files() if not is_vendored(name)]
+    assert names, "no tracked first-party files -- not a checkout?"
+    modes = _index_modes()
+    texts = []
+    for name in names:
+        mode, sha = modes[name]
+        if mode == "120000":
+            blob = subprocess.run(["git", "cat-file", "blob", sha], cwd=REPO_ROOT, capture_output=True, check=True)
+            texts.append((name, blob.stdout.decode("utf-8", errors="replace")))
+        else:
+            path = REPO_ROOT / name
+            assert path.is_file(), f"tracked path {name} (mode {mode}) is neither a regular file nor a symlink"
+            texts.append((name, path.read_bytes().decode("utf-8", errors="replace")))
+    this_file = Path(__file__).resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    assert this_file in {name for name, _ in texts}, f"{this_file} missing from the tracked-file scan"
+    return tuple(texts)
+
+
+# DNS is case-insensitive, so the match is too.
+REAL_DOMAIN = re.compile(r"binarydreams\.me", re.IGNORECASE)
 
 
 def test_no_real_domains():
-    """docs/ never mentions the maintainer's real deployment domains."""
+    """No tracked first-party file mentions the maintainer's real deployment domains."""
     # Sentinel self-check: a broken pattern must fail here, not pass vacuously.
+    # Built from fragments -- this file is itself scanned below.
     assert REAL_DOMAIN.search("hole." + "binarydreams" + ".me")
-    hits = [f"{md.relative_to(REPO_ROOT)}" for md in _docs_md() if REAL_DOMAIN.search(md.read_text(encoding="utf-8"))]
-    assert not hits, f"real domains leaked into docs: {hits}"
+    assert REAL_DOMAIN.search("hole." + "BinaryDreams" + ".ME")
+    hits = [name for name, text in _tracked_texts() if REAL_DOMAIN.search(text)]
+    assert not hits, f"real domains leaked into tracked files: {hits}"
 
 
 STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.md|CONTRIBUTING\.md#")
@@ -294,28 +346,12 @@ STALE_DOC_REFS = re.compile(r"docs/(?:mta|certs|edge|gateway|frontend|rename)\.m
 
 def test_no_stale_doc_references():
     """No tracked first-party file references the pre-refactor doc paths."""
-    import subprocess
-
     # Sentinel self-check: a broken pattern must fail here, not pass
     # vacuously. Built from fragments -- this file is itself scanned below,
     # and a verbatim literal would make the gate permanently red.
     assert STALE_DOC_REFS.search("docs/" + "mta.md")
     assert STALE_DOC_REFS.search("CONTRIBUTING" + ".md#setup")
-    files = subprocess.run(
-        ["git", "ls-files", "--", ".", ":!external"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
-    assert files, "git ls-files returned nothing -- not a checkout?"
     hits = []
-    for name in files:
-        path = REPO_ROOT / name
-        if not path.is_file():
-            continue
-        # errors="replace" keeps ASCII intact, so the pattern is still
-        # findable in binary blobs.
-        text = path.read_text(encoding="utf-8", errors="replace")
+    for name, text in _tracked_texts():
         hits += [f"{name}: {m.group(0)}" for m in STALE_DOC_REFS.finditer(text)]
     assert not hits, "stale references to pre-refactor doc paths:\n" + "\n".join(hits)

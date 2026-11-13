@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
 
+# One Python minor for apk and for the site-packages path the first-party code is copied
+# to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
+# either fails to solve or installs a minor the py3-* packages were not built for.
+# Keep equal to the portal's Python (portal/Dockerfile); test_python_pin.py enforces it.
+ARG PYTHON_MINOR=3.14
+
 FROM dhi.io/alpine-base:3.23-dev AS build
-# All privileged setup happens in the -dev stage (the runtime stage at
-# dhi.io/alpine-base:3.23 has no root user and cannot run apk/addgroup).
+ARG PYTHON_MINOR
+# The runtime stage is the same -dev image; packages are installed here and copied across.
 # The opendkim user is created here so /etc/passwd, /etc/group, and the
 # opendkim home directory exist when we COPY across to the runtime stage.
 # unbound-anchor's binary lives inside the `unbound` package -- no separate
@@ -19,7 +25,7 @@ RUN mkdir -p /var/lib/opendkim \
 		postfix postfix-doc \
 		opendkim opendkim-utils \
 		'ca-certificates>=20261020-r0' tzdata \
-		python3 py3-pip py3-dnspython \
+		"python3~${PYTHON_MINOR}" py3-pip py3-dnspython \
 		unbound \
 		postsrsd \
 		netcat-openbsd \
@@ -27,10 +33,9 @@ RUN mkdir -p /var/lib/opendkim \
 		--break-system-packages postfix-mta-sts-resolver \
 	&& apk del --no-cache py3-pip
 
-# Runtime stage: locked-down DHI image. Postfix's master needs root; the compose
-# file leaves USER unset so the container runs as the image default. Capabilities
-# (NET_BIND_SERVICE et al) are granted via cap_add in compose.yaml.
+# Runtime stage: same -dev image, runs as root (Postfix master needs it); capabilities come from cap_add in compose.yaml.
 FROM dhi.io/alpine-base:3.23-dev
+ARG PYTHON_MINOR
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
 LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"
@@ -40,23 +45,33 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 # Copy the package tree from the build stage. Mass-copy /etc, /usr, /var so we
 # pick up postfix, opendkim, unbound, postsrsd, and the pip-installed
-# postfix-mta-sts-resolver under /usr/lib/python3.*.
+# postfix-mta-sts-resolver under /usr/lib/python${PYTHON_MINOR}.
 COPY --from=build /etc /etc
 COPY --from=build /usr /usr
 COPY --from=build /var /var
 
 COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
-COPY portal/src/postern/mta /usr/lib/python3.13/site-packages/postern_mta
+COPY portal/src/postern/mta /usr/lib/python${PYTHON_MINOR}/site-packages/postern_mta
 COPY mta/etc /usr/local/share/mta-templates
 COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
+
+# Build-time import check (scripts/image-import-check.py), run with the bare `python3` the
+# ENTRYPOINT uses: a minor mismatch between apk and the COPY targets otherwise only fails at
+# container start. `-P` keeps / off sys.path; PYTHONDONTWRITEBYTECODE keeps bytecode out of
+# the image. mta-sts-daemon is spawned as a subprocess, so its console script is run too.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
+	set -eu
+	export PYTHONDONTWRITEBYTECODE=1
+	python3 -P /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+		--first-party postern_mta \
+		--third-party dns.resolver postfix_mta_sts_resolver.daemon
+	mta-sts-daemon --help
+EOF
 
 # Postfix expects /var/spool/postfix and chroot tree to be in place at runtime.
 # The compose file mounts a named volume there so the queue persists.
 EXPOSE 25 587
 
-# PYTHONPATH so `python3` finds postern_mta regardless of which interpreter the
-# runtime image's PATH resolves to.
-ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
 
 # Build provenance. Last in the stage: a new revision invalidates only this layer.

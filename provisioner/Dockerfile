@@ -72,20 +72,21 @@ COPY --chmod=755 provisioner/entrypoint.py /usr/local/bin/entrypoint.py
 COPY --from=go-build /out/postern-dns /usr/local/bin/postern-dns
 COPY --from=go-build /go/bin/lego /usr/local/bin/lego
 
-# Build-time import check, run with the same bare `python3` the ENTRYPOINT and HEALTHCHECK
-# resolve from PATH: a Python minor that apk and the COPY targets disagree on builds fine
-# and only fails at container start (#266). Imports every submodule of the first-party
-# packages entrypoint.py and the healthcheck use, and everything entrypoint.py imports; see
-# scripts/image-import-check.py. -B keeps root-owned bytecode out of the image.
-RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py \
-	["python3", "-B", "/image-import-check.py", "/usr/local/bin/entrypoint.py", \
-	"postern_mta", "postern.cert", "postern.mta", "postern_provisioner"]
-
 # Healthcheck script: see postern_provisioner.healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD ["python3", "-m", "postern_provisioner.healthcheck"]
 
 USER opendkim
+# Build-time import check, run as the runtime user (opendkim, uid 110) with the same bare
+# `python3` the ENTRYPOINT and HEALTHCHECK resolve from PATH: a Python minor that apk and
+# the COPY targets disagree on builds fine and only fails at container start (#266).
+# Imports every submodule of the first-party packages entrypoint.py and the healthcheck
+# use, and everything entrypoint.py and those packages import; see
+# scripts/image-import-check.py. -B keeps bytecode out of the image.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py \
+	["python3", "-B", "/image-import-check.py", "/usr/local/bin/entrypoint.py", \
+	"postern_mta", "postern.cert", "postern.mta", "postern_provisioner"]
+
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
 
 # Build provenance. Last in the stage: a new revision invalidates only this layer.

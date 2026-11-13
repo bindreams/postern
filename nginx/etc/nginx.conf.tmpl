@@ -29,6 +29,16 @@ http {
 	# MTA-STS policy endpoint =====
 	include conf.d/mta-sts.conf;
 
+	# `resolve` makes nginx re-resolve the portal via `resolver` (honouring `valid=5s`); a literal
+	# `proxy_pass http://portal:8000` is resolved once at load and 502s after the portal gets a new IP.
+	# Needs `zone` and nginx >= 1.27.3.
+	# `max_fails=0`: with several resolved addresses the default would mark one down for 10s after one
+	# refused connect; inert for a single address.
+	upstream portal {
+		zone portal 64k;
+		server portal:8000 resolve max_fails=0;
+	}
+
 	# Portal + new path-based VPN routing =====
 	server {
 		server_name ${DOMAIN};
@@ -86,7 +96,7 @@ http {
 		location /login {
 			limit_req zone=auth burst=5 nodelay;
 
-			proxy_pass http://portal:8000;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -96,7 +106,7 @@ http {
 		location = /login/verify {
 			limit_req zone=auth burst=5 nodelay;
 
-			proxy_pass http://portal:8000;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -105,7 +115,7 @@ http {
 
 		# Portal (all other paths) -----
 		location / {
-			proxy_pass http://portal:8000;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -114,7 +124,7 @@ http {
 
 		# Unknown-path / dead-tunnel fallthrough so a /t/ miss looks like any other miss. -----
 		location @miss {
-			proxy_pass http://portal:8000;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

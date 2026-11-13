@@ -9,18 +9,30 @@ State machine:
 
     NO_CERT --(adopt: existing on-disk cert with valid SANs)--> INSTALLED
     NO_CERT --(no on-disk cert; or SAN mismatch)--> ISSUING
-    ISSUING --(lego success; record last_issued_iso)--> ISSUED_PENDING_INSTALL
+    ISSUING --(lego success; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
     ISSUED_PENDING_INSTALL --(symlink-flip success)--> INSTALLED
-    INSTALLED --(expiry / SAN mismatch / directory drift / .renew-cert)--> RENEWING
+    INSTALLED --(directory drift / SAN mismatch / .renew-cert; guard clear)--> ISSUING
+    INSTALLED --(expiry)--> RENEWING
     RENEWING --(success)--> ISSUED_PENDING_INSTALL
     *  --(consecutive_failures >= 6)--> FAILED
     FAILED --(60-min hold-off)--> prior pre-FAILED state retried
 
 `FAILED` is non-terminal -- after a hold-off the state machine retries
 whatever it was doing when it failed. Combined with the 24-hour rate-limit
-guard (refuse to call Lego if last_issued_iso < 24h, except when
+guard (refuse to call Lego if last_issued_by_directory[directory] < 24h, except when
 CERT_FORCE_REISSUE=true), this self-heals through transient outages
-without burning Let's Encrypt rate limits.
+without burning Let's Encrypt rate limits. The guard and the FAILED hold-off
+are scoped to one ACME directory: a staging issuance never delays the switch
+to production. The guard is checked before leaving INSTALLED (the state stays put while it is active), and a
+deferral from ISSUING/RENEWING returns to INSTALLED only when a cert is installed.
+
+`acme_directory` moves only when an install completes, so a failed switch stays visible as drift and is retried.
+
+ISSUING runs `lego run` (always issues); RENEWING runs `lego renew --days N`
+(a no-op on a cert that is not yet due, and fatal without both an account
+registered for the directory and a certificate under Lego's own path), so only
+the expiry path takes it, and only while both exist and the directory has not
+drifted -- otherwise it falls back to `run`.
 """
 
 from __future__ import annotations
@@ -29,7 +41,8 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
@@ -49,14 +62,26 @@ class CertState:
     state: State = "NO_CERT"
     not_after_iso: str | None = None
     sans: list[str] = field(default_factory=list)
-    last_issued_iso: str | None = None  # set BEFORE calling Lego (defends rate limits)
+    # Legacy; read only by the migration in `read_state`.
+    last_issued_iso: str | None = None
+    # ACME directory -> time of the last Lego attempt under it, set BEFORE calling Lego (defends rate limits).
+    last_issued_by_directory: dict[str, str] = field(default_factory=dict)
     last_attempt_iso: str | None = None
     last_failed_state: str | None = None  # so FAILED knows what to retry
     consecutive_failures: int = 0
+    # Directory the installed cert was issued under; set only when the install completes.
     acme_directory: str = ""
     acme_account_email: str = ""  # tracks email used for Lego account; mismatch forces account dir recreate
     pending_cert_paths: dict[str,
                              str] = field(default_factory=dict)  # raw Lego output paths during ISSUED_PENDING_INSTALL
+    pending_acme_directory: str = ""  # directory Lego ran under for pending_cert_paths; becomes acme_directory
+
+    @property
+    def latest_issued_iso(self) -> str | None:
+        """Time of the most recent Lego attempt under any directory (display only)."""
+        if not self.last_issued_by_directory:
+            return None
+        return max(self.last_issued_by_directory.values(), key=datetime.fromisoformat)
 
 
 # Persistence ==========================================================================================================
@@ -94,6 +119,9 @@ def read_state(certdir: Path | None = None) -> CertState:
     Newer schemas are read with best-effort: unknown fields are dropped, missing
     fields fall back to their dataclass defaults. A schema version higher than
     we know logs a warning so the operator can upgrade the portal.
+
+    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner
+    writes it back (see `_migrate_legacy`).
     """
     path = state_path(certdir)
     if not path.exists():
@@ -115,10 +143,22 @@ def read_state(certdir: Path | None = None) -> CertState:
                 SCHEMA_VERSION,
             )
         fields_known = {f for f in CertState.__dataclass_fields__}
-        return CertState(**{k: v for k, v in raw.items() if k in fields_known})
+        known = {k: v for k, v in raw.items() if k in fields_known}
+        state = CertState(**known)
+        if "last_issued_by_directory" not in known:
+            state = _migrate_legacy(state)
+        return state
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("cert: state.json unreadable (%s); treating as NO_CERT", e)
         return CertState()
+
+
+def _migrate_legacy(state: CertState) -> CertState:
+    """Seed `last_issued_by_directory` from the single pre-per-directory attempt time, keyed by the state's own
+    `acme_directory` (every state with a `last_issued_iso` has one)."""
+    if not (state.last_issued_iso and state.acme_directory):
+        return state
+    return replace(state, last_issued_by_directory={state.acme_directory: state.last_issued_iso})
 
 
 def write_state(state: CertState, *, certdir: Path | None = None) -> None:
@@ -146,7 +186,7 @@ def write_state(state: CertState, *, certdir: Path | None = None) -> None:
 
 # Trigger files ========================================================================================================
 def trigger_renewal(certdir: Path | None = None) -> Path:
-    """Request the provisioner force INSTALLED -> RENEWING regardless of expiry.
+    """Request the provisioner force INSTALLED -> ISSUING (a `lego run` reissue) regardless of expiry.
 
     Mirrors the DKIM rotation `.rotate-dkim` pattern: existence is the signal,
     consumer deletes after handling, double-trigger may collapse into one

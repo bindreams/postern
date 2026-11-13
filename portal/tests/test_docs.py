@@ -5,6 +5,7 @@ deletion tripwires for load-bearing caveats -- they detect a dropped caveat,
 not a softened one.
 """
 import functools
+import os
 import re
 import sys
 from pathlib import Path
@@ -291,20 +292,24 @@ def _tracked_texts() -> tuple[tuple[str, str], ...]:
 
     One scan, cached, for every whole-tree gate. File selection reuses
     `scripts/ci_lint_lib` (`git ls-files -z`, prek.toml-driven vendored
-    exclusion). Symlinks are skipped (their target is tracked on its own);
-    binaries are decoded with errors="replace" so ASCII findings stay visible.
+    exclusion). A symlink contributes its link-target text (the tracked blob),
+    never the file it points to. Other files are decoded with
+    errors="replace" so ASCII findings stay visible in uncompressed binaries
+    (compressed bytes are not scanned).
     """
     names = [name for name in tracked_files() if not is_vendored(name)]
     assert names, "no tracked first-party files -- not a checkout?"
     texts = []
     for name in names:
         path = REPO_ROOT / name
-        if path.is_symlink() or not path.is_file():
-            continue
-        texts.append((name, path.read_bytes().decode("utf-8", errors="replace")))
+        if path.is_symlink():
+            texts.append((name, os.fsdecode(os.readlink(path))))
+        elif path.is_file():
+            texts.append((name, path.read_bytes().decode("utf-8", errors="replace")))
     scanned = {name for name, _ in texts}
     # Vacuity guard: the scan must include this very file.
-    assert Path(__file__).resolve().relative_to(REPO_ROOT.resolve()).as_posix() in scanned
+    this_file = Path(__file__).resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+    assert this_file in scanned, f"{this_file} missing from the tracked-file scan -- gates would pass vacuously"
     return tuple(texts)
 
 

@@ -79,8 +79,8 @@ missing-argument = "ignore"
 invalid-argument-type = "ignore"
 
 [tool.ty.environment]
-# tests/test_ci_lint_job.py and tests/test_ci_lint_lib.py both import
-# scripts/ci_lint_lib.py via a `sys.path.insert(0, "scripts")` at runtime (the
+# tests/test_ci_lint_job.py, tests/test_ci_lint_lib.py and tests/test_docs.py
+# all import scripts/ci_lint_lib.py via a `sys.path.insert(0, "scripts")` at runtime (the
 # same way scripts/ci-lint-run.sh and scripts/ci-lint-selftest.sh reach it from
 # a repo-root CWD), which ty cannot follow statically. Without this, ty reports
 # `unresolved-import` on every run.

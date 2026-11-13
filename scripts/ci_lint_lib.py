@@ -8,7 +8,8 @@ a test-readability rename or refactor there could silently break the CI job
 with nothing in the offline `pytest` run catching it -- exactly the class of
 silent-gap failure this job exists to close for prek's own hooks.
 `portal/tests/test_ci_lint_job.py` imports this module the same way the shell
-scripts do, rather than owning its own private copies.
+scripts do, rather than owning its own private copies. The whole-tree gates in
+`portal/tests/test_docs.py` also use it for tracked-file selection.
 
 Not part of the `postern` package: it has nothing to do with the runtime
 portal and needs `identify`, a dev-only dependency declared alongside `prek`

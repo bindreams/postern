@@ -603,6 +603,24 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
 
 
 # Upstream re-resolution ===============================================================================================
+def _wait_for_healthz(client: httpx.Client) -> None:
+    """Block until /healthz answers 200 through nginx.
+
+    A request made while the portal container is down is not refused: nobody answers
+    its SYN, so nginx's connect hangs for seconds (also with a static `proxy_pass`) and
+    the client's own 5s read timeout can fire first. That is "not recovered yet", not a
+    failure. Wait on the real condition, uncapped: the per-test timeout is the failure
+    bound, and the bug's signature is "never recovers". The pace keeps the loop from
+    hammering the stack."""
+    while True:
+        try:
+            if client.get("/healthz").status_code == 200:
+                return
+        except httpx.TransportError:
+            pass
+        time.sleep(0.25)
+
+
 @pytest.mark.timeout(180)
 def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
     """Recreating the portal container hands it a new IP. nginx must pick that up on
@@ -641,11 +659,8 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
         assert portal_ip() != old_ip, "portal kept its old IP; the test no longer exercises #233"
 
         # nginx caches a resolved name for `valid=5s`, so requests just after the move
-        # may still see the old answer. Wait on the real condition, uncapped: the
-        # per-test timeout above is the failure bound, and the bug's signature is
-        # "never recovers". The pace keeps the loop from hammering the stack.
-        while portal_client.get("/healthz").status_code != 200:
-            time.sleep(0.25)
+        # may still see the old answer.
+        _wait_for_healthz(portal_client)
 
         assert nginx_started_at() == nginx_started, "nginx was restarted mid-test"
     finally:
@@ -658,7 +673,7 @@ def test_nginx_recovers_after_a_same_ip_portal_restart(portal_client):
     """A portal restart that keeps its IP (`docker compose restart portal`) must not
     leave nginx failing over: /healthz answers 200 again without an nginx restart, and
     nginx never logs "no live upstreams" for the window. Requests made while the portal
-    is down are refused connects, the failures passive accounting would count.
+    is down fail (refused or hung connects), the failures passive accounting would count.
 
     Pins the observable behaviour, not `max_fails=0` itself: nginx exempts a
     single-address upstream from failure accounting, so one portal passes either way."""
@@ -682,11 +697,8 @@ def test_nginx_recovers_after_a_same_ip_portal_restart(portal_client):
 
     try:
         subprocess.run(compose("restart", "--timeout", "30", "portal"), check=True, capture_output=True)
-        # The portal is not serving yet, so these 502s are the refused connects.
-        # Wait on the real condition, uncapped: the per-test timeout is the failure bound.
-        # The pace keeps the loop from hammering the stack.
-        while portal_client.get("/healthz").status_code != 200:
-            time.sleep(0.25)
+        # The portal is not serving yet, so these requests are refused connects or hangs.
+        _wait_for_healthz(portal_client)
 
         assert portal_ip() == old_ip, "portal changed IP; this test no longer covers the same-IP restart"
         assert docker_inspect(nginx_id, "{{.State.StartedAt}}") == nginx_started, "nginx was restarted mid-test"

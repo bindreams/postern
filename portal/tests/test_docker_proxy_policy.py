@@ -11,11 +11,12 @@ pinned base image's HAProxy (`core.register_init`, exit 0 on pass). This module 
 * runs the suite and reports its output.
 
 Needs a Docker daemon (it runs `docker run` of the base image, with no network); skipped when the docker CLI
-reports it cannot reach one, and a failure when `$CI` is `true` or the CLI does not answer. Opt out with
-`-m 'not haproxy_harness'`.
+reports it cannot reach one, and a failure when `$CI` is set (other than `0` or `false`) or the CLI does not answer.
+Opt out with `-m 'not haproxy_harness'`.
 
 It also pins that the three places that validate an instance id agree: the portal (`reconciler.resolve_instance_id`),
-the deploy gate (`scripts/verify-deploy.py`) and the proxy (`policy.config_from_env`, run through the harness).
+the deploy gate (`scripts/verify-deploy.py`) and the proxy (`policy.config_from_env`, run through the harness). The
+portal-versus-gate half needs no Docker and always runs.
 """
 from __future__ import annotations
 
@@ -40,8 +41,6 @@ from postern.settings import Settings
 
 from ._compose import REPO_ROOT
 from .test_verify_deploy import vd  # the one loader of scripts/verify-deploy.py
-
-pytestmark = pytest.mark.haproxy_harness
 
 PROXY_DIR = REPO_ROOT / "docker-proxy"
 API_VERSION = "1.56"
@@ -177,6 +176,7 @@ def _settings() -> Settings:
     return Settings(secret_key="x" * 40, domain="postern.example.com", compose_project_name=INSTANCE)
 
 
+@pytest.mark.haproxy_harness
 def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: FakeDaemon) -> None:
     """The contract test below is only as good as the recording: pin what it contains."""
     requests = _record_reconciler(fake_daemon, _settings())
@@ -201,9 +201,14 @@ def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: Fa
     assert len(queries) == 2, "expected the label-scoped list and the name-filtered read"
 
 
+def _in_ci() -> bool:
+    """CI systems set `$CI` to `true`, `1` or similar; only unset, empty, `0` and `false` mean a developer machine."""
+    return os.environ.get("CI", "").lower() not in ("", "0", "false")
+
+
 def _require_docker_daemon() -> None:
     """Skip the harness when the docker CLI says it cannot reach a daemon. Never skip on elapsed time: a CLI that does
-    not answer within the bound fails, as does any missing daemon when `CI=true` (the workflow provisions one)."""
+    not answer within the bound fails, as does any missing daemon in CI (the workflow provisions one)."""
     try:
         # Failure bound on a child process (the CLI against an unreachable remote host can hang), below pyproject's
         # `timeout = 30`.
@@ -218,7 +223,7 @@ def _require_docker_daemon() -> None:
         lines = info.stderr.strip().splitlines()
         reason = f"`docker info` exited {info.returncode}: {lines[-1] if lines else 'no message'}"
     message = f"no reachable Docker daemon: {reason} (the Lua policy suite runs in the pinned HAProxy image)"
-    if os.environ.get("CI", "").lower() == "true":
+    if _in_ci():
         pytest.fail(message)
     pytest.skip(message)
 
@@ -237,9 +242,15 @@ INSTANCE_ID_CASES: list[tuple[str, str]] = [
     ("", "proj"), ("a", "b"), ("  a  ", ""), ("\t\n a\r\v\f", ""), ("", "  b "), ("   ", "b"), ("a\n", ""),
     # Refused, with no fallback from a refused override to the project name
     ("", ""), ("   ", ""), ("   ", "   "), ("a" * 64, ""), ("-a", ""), (".a", ""), ("_a", ""), ("a:b", ""),
-    ("a/b", ""), ("a b", ""), ('a"b', ""), ("a,b", ""), ("a\b", ""), ("a%b", ""), ("a&b", ""), ("a=b", ""),
+    ("a/b", ""), ("a b", ""), ('a"b', ""), ("a,b", ""), ("a" + chr(92) + "b", ""), ("a" + chr(8) + "b", ""),
+    ("a%b", ""), ("a&b", ""), ("a=b", ""),
     ("a\nb", ""), ("é", ""), ("aé", ""), (" a", ""), ("a ", ""), (" ", "b"),
     ("bad:id", "good"), ("", "bad:id"), ("", "a" * 64), ("", " a"),
+    # Whitespace that Python's str.strip() removes but the proxy's ASCII strip does not: refused, and an override made
+    # of it must not fall back to the project name.
+    ("a" + chr(0x2003), ""), (chr(0x1C) + "a", ""), ("a" + chr(0x1F), ""),
+    (chr(0x85) + "a", ""), (chr(0x3000) + "a" + chr(0x3000), "b"), (chr(0x1C), "b"), (chr(160), "b"),
+    ("", "b" + chr(0x2003)),
 ]  # yapf: disable
 
 
@@ -288,6 +299,7 @@ def lua_suite() -> LuaRun:
         return _run_lua_suite(_wire_tsv(_record_reconciler(daemon, settings)), settings)
 
 
+@pytest.mark.haproxy_harness
 def test_lua_policy_suite(lua_suite: LuaRun) -> None:
     assert lua_suite.returncode == 0, (
         f"policy suite failed ({lua_suite.returncode}):\n{lua_suite.stdout}\n{lua_suite.stderr}"
@@ -319,12 +331,19 @@ def _deploy_gate_instance_id(override: str, project: str) -> str | None:
         return None
 
 
-def test_the_proxy_the_portal_and_the_deploy_gate_resolve_every_instance_id_alike(lua_suite: LuaRun) -> None:
-    """The portal must not run with an id the proxy refuses, and the deploy gate must filter on the id the portal
-    labels containers with: all three validate by hand, so they are compared case by case."""
+def test_the_portal_and_the_deploy_gate_resolve_every_instance_id_alike() -> None:
+    """The deploy gate must filter on the id the portal labels containers with. Both validate by hand."""
+    resolved = [_portal_instance_id(*case) for case in INSTANCE_ID_CASES]
+    assert any(v is not None for v in resolved) and any(v is None for v in resolved)
+    for case, portal_id in zip(INSTANCE_ID_CASES, resolved):
+        assert _deploy_gate_instance_id(*case) == portal_id, f"portal and deploy gate disagree on {case!r}"
+
+
+@pytest.mark.haproxy_harness
+def test_the_proxy_resolves_every_instance_id_as_the_portal_does(lua_suite: LuaRun) -> None:
+    """The portal must not run with an id the proxy refuses, and the proxy must accept every id the portal does."""
     proxy = _lua_instance_ids(lua_suite.stdout)
     assert set(proxy) == set(INSTANCE_ID_CASES), "the Lua suite did not report every case"
     assert any(v is not None for v in proxy.values()) and any(v is None for v in proxy.values())
     for case in INSTANCE_ID_CASES:
         assert _portal_instance_id(*case) == proxy[case], f"portal and proxy disagree on {case!r}"
-        assert _deploy_gate_instance_id(*case) == proxy[case], f"deploy gate and proxy disagree on {case!r}"

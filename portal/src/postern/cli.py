@@ -638,8 +638,8 @@ def cert_show() -> None:
     if state_path.exists():
         state = cert_state.read_state()
         typer.echo(f"state:     {state.state}")
-        if state.last_issued_iso:
-            typer.echo(f"last_issued: {state.last_issued_iso}")
+        if state.latest_issued_iso:
+            typer.echo(f"last_issued: {state.latest_issued_iso}")
 
 
 @cert_app.command("verify")
@@ -740,10 +740,12 @@ def cert_renewal_status() -> None:
     typer.echo(f"state:                {state.state}")
     typer.echo(f"sans:                 {', '.join(state.sans) if state.sans else '(none)'}")
     typer.echo(f"not_after:            {state.not_after_iso or '(none)'}")
-    typer.echo(f"last_issued:          {state.last_issued_iso or '(none)'}")
+    typer.echo(f"last_issued:          {state.latest_issued_iso or '(none)'}")
     typer.echo(f"last_attempt:         {state.last_attempt_iso or '(none)'}")
     typer.echo(f"consecutive_failures: {state.consecutive_failures}")
     typer.echo(f"acme_directory:       {state.acme_directory or '(none)'}")
+    for directory, issued in sorted(state.last_issued_by_directory.items()):
+        typer.echo(f"last_issued[{directory}]: {issued}")
     if state.state == "FAILED":
         typer.echo(f"last_failed_state:    {state.last_failed_state}")
 

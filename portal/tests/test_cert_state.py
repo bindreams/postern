@@ -1,5 +1,6 @@
 """Tests for postern.cert.state -- state schema, persistence, triggers."""
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -93,6 +94,77 @@ def test_read_state_malformed_field_shape_degrades_to_default(tmp_path: Path, ca
         loaded = cert_state.read_state(certdir=tmp_path)
     assert loaded == cert_state.CertState()
     assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
+
+
+def test_read_state_accepts_per_directory_times(tmp_path: Path):
+    original = cert_state.CertState(
+        state="INSTALLED",
+        last_issued_by_directory={"https://acme.example/directory": "2026-11-01T00:00:00+00:00"},
+        pending_acme_directory="https://acme.example/directory",
+    )
+    cert_state.write_state(original, certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path) == original
+
+
+def test_latest_issued_iso_prefers_the_per_directory_times():
+    state = cert_state.CertState(
+        last_issued_iso="2026-01-01T00:00:00+00:00",
+        last_issued_by_directory={"a": "2026-11-01T00:00:00+00:00", "b": "2026-11-02T00:00:00+00:00"},
+    )
+    assert state.latest_issued_iso == "2026-11-02T00:00:00+00:00"
+
+
+def test_latest_issued_iso_is_none_without_per_directory_times():
+    assert cert_state.CertState().latest_issued_iso is None
+    assert cert_state.CertState(last_issued_iso="2026-01-01T00:00:00+00:00").latest_issued_iso is None
+
+
+def test_read_state_accepts_failed_with_a_last_failed_state(tmp_path: Path):
+    original = cert_state.CertState(state="FAILED", last_failed_state="RENEWING", consecutive_failures=6)
+    cert_state.write_state(original, certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path) == original
+
+
+# Pre-upgrade state ====================================================================================================
+PROD = "https://acme-v02.api.letsencrypt.org/directory"
+STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
+
+
+def _write_legacy(tmp_path: Path, **fields) -> None:
+    """state.json as the code before `last_issued_by_directory` wrote it."""
+    path = cert_state.state_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"schema_version": 1, **fields}))
+
+
+def test_legacy_state_seeds_the_per_directory_time_from_last_issued_iso(tmp_path: Path):
+    _write_legacy(tmp_path, state="INSTALLED", acme_directory=STAGING, last_issued_iso="2026-11-01T00:00:00+00:00")
+    loaded = cert_state.read_state(certdir=tmp_path)
+    assert loaded.last_issued_by_directory == {STAGING: "2026-11-01T00:00:00+00:00"}
+    assert loaded.latest_issued_iso == "2026-11-01T00:00:00+00:00"
+    assert loaded.acme_directory == STAGING
+
+
+def test_legacy_state_without_any_lego_run_is_untouched(tmp_path: Path):
+    """An adopted BYO cert: nothing to seed."""
+    _write_legacy(tmp_path, state="INSTALLED", sans=["postern.example.com", "*.postern.example.com"])
+    loaded = cert_state.read_state(certdir=tmp_path)
+    assert loaded.acme_directory == ""
+    assert loaded.last_issued_by_directory == {}
+
+
+def test_legacy_migration_is_one_shot(tmp_path: Path):
+    """Once the state is written with the per-directory map, reading it again changes nothing."""
+    _write_legacy(tmp_path, state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
+    migrated = cert_state.read_state(certdir=tmp_path)
+    cert_state.write_state(dataclasses.replace(migrated, last_issued_by_directory={}), certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path).last_issued_by_directory == {}
+
+
+def test_state_written_by_current_code_is_not_migrated(tmp_path: Path):
+    original = cert_state.CertState(state="INSTALLED", acme_directory=PROD, last_issued_iso="2026-11-01T00:00:00+00:00")
+    cert_state.write_state(original, certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path) == original
 
 
 def test_pending_cert_paths_round_trips(tmp_path: Path):

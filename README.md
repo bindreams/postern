@@ -21,7 +21,7 @@ Postern is a self-hosted, multi-user [Shadowsocks](https://shadowsocks.org/) por
 - **nginx** — TLS termination, path-based WebSocket routing, security headers, login rate limiting.
 - **portal** — FastAPI: OTP email login, dashboard, config download, admin CLI, and the container-reconciliation loop.
 - **ss-{token}** — one Shadowsocks-rust container per enabled connection, fronted by [ex-ray](https://github.com/bindreams/hole) (installed as `v2ray-plugin`) or galoshes (adds UDP via yamux).
-- **docker-proxy** — a verb-scoped Docker API; the portal never sees the raw socket.
+- **docker-proxy** — a default-deny allow-list in front of the Docker API; the portal never sees the raw socket.
 
 Optional components: a built-in privacy-preserving MTA (no third party learns who your users are), automatic wildcard-certificate renewal, and CDN/gateway fronting.
 

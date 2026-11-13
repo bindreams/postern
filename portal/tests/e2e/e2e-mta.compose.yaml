@@ -152,6 +152,11 @@ services:
       mta:
         condition: service_healthy
 
+  # The proxy is pinned to the same shadowsocks network the portal above is configured with.
+  docker-proxy:
+    environment:
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks-mta
+
   mailpit:
     networks:
       default:
@@ -182,6 +187,8 @@ networks:
 volumes:
   postern-e2e-data:
     name: postern-e2e-mta-portal-data
+  postern-e2e-docker-api:
+    name: postern-e2e-mta-docker-api
   postern-mta-data:
     name: postern-e2e-mta-dkim-data
   postern-mta-queue:

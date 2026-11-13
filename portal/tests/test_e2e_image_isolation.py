@@ -102,6 +102,7 @@ def test_production_image_inventory_is_complete():
         "local/postern-portal",
         "local/postern-mta",
         "local/postern-provisioner",
+        "local/postern-docker-proxy",
         "local/shadowsocks-server",
     }, (
         "The set of production image tags changed. Check whether the e2e side needs "

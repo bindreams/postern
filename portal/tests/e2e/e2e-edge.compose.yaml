@@ -43,7 +43,7 @@ services:
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
     environment:
-      DOCKER_HOST: tcp://docker-proxy:2375
+      DOCKER_HOST: unix:///run/docker-api/docker.sock
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
       SECRET_KEY: test-e2e-edge-do-not-use-in-production
       SMTP_HOST: mailpit
@@ -66,6 +66,7 @@ services:
       RECONCILE_INTERVAL_SECONDS: "3600"
     volumes:
       - postern-e2e-edge-data:/data
+      - postern-e2e-edge-docker-api:/run/docker-api:ro
     networks: [default]
     depends_on:
       docker-proxy:
@@ -128,21 +129,30 @@ services:
       retries: 6
     init: true
 
+  # First-party allow-list proxy, built from the same docker-proxy/ as production. Only the tag differs.
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.4.2
+    build:
+      context: ../../../docker-proxy
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
+    image: local/postern-docker-proxy-test
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: ["no-new-privileges:true"]
     environment:
-      CONTAINERS: 1
-      NETWORKS: 1
-      IMAGES: 1
-      POST: 1
+      SHADOWSOCKS_IMAGE: local/shadowsocks-server-test
+      SHADOWSOCKS_NETWORK: e2e-shadowsocks-edge
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
     volumes:
       - type: bind
         read_only: true
         source: /var/run/docker.sock
         target: /var/run/docker.sock
-    networks: [default]
+      - postern-e2e-edge-docker-api:/run/docker-api
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2376/_ping"]
       interval: 3s
       timeout: 2s
       retries: 6
@@ -168,5 +178,7 @@ networks:
 volumes:
   postern-e2e-edge-data:
     name: postern-e2e-edge-portal-data
+  postern-e2e-edge-docker-api:
+    name: postern-e2e-edge-docker-api
   postern-edge:
     name: postern-e2e-edge-edge

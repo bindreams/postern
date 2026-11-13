@@ -1,7 +1,7 @@
 -- Unit tests for policy.lua, run inside the pinned HAProxy (the Lua build production uses). See haproxy.test.cfg.
 --
 -- Inputs, both provided by portal/tests/test_docker_proxy_policy.py:
---   /cases/wire.tsv  the requests the real reconciler sends (docker-py 7.1.0 against a recording fake daemon):
+--   stdin            the requests the real reconciler sends (docker-py 7.1.0 against a recording fake daemon):
 --                    name TAB method TAB uri TAB content-type TAB body, one request per line.
 --   TEST_* env       the Settings values the reconciler ran with (image, network, instance, API version).
 -- tests/fixtures.lua holds raw dockerd replies recorded from daemon 29.9.3 (API 1.56): an HTTP/1.0 and an
@@ -77,7 +77,7 @@ end
 
 -- Wire requests the reconciler sends -----------------------------------------------------------------------------------
 local wire, create_wire = {}, nil
-for line in io.lines("/cases/wire.tsv") do
+for line in io.stdin:lines() do
   local name, method, uri, ctype, body = line:match("^([^\t]*)\t([^\t]*)\t([^\t]*)\t([^\t]*)\t(.*)$")
   assert(name, "bad wire line: " .. line)
   local path, query = uri:match("^([^?]*)%??(.*)$")
@@ -173,6 +173,8 @@ version_case("the daemon's minimum version", "/v1.40/containers/json", 403)
 version_case("version with a leading zero", "/v" .. major .. ".0" .. minor .. "/containers/json", 403)
 version_case("version with another major", "/v2." .. minor .. "/containers/json", 403)
 version_case("version without a minor", "/v" .. major .. "/containers/json", 403)
+check("version reply as dockerd really writes it", "allow", req{path = v("/containers/json"), query = lq},
+  {image = IMAGE, network = NETWORK, instance = INSTANCE}, fake_io{version = function() return (fixture("version.http10"):gsub("1%.56", API)) end})
 check("version read returns nothing", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() return nil, "boom" end})
 check("version read raises", 403, req{path = v("/containers/json"), query = lq}, CFG, fake_io{version = function() error("boom") end})
 check("version reply is garbage", 403, req{path = v("/containers/json"), query = lq}, CFG,
@@ -382,7 +384,7 @@ create_q("upper-case hex", 403, "name=ss-" .. TOKEN:upper())
 create_q("non-hex", 403, "name=ss-" .. TOKEN:sub(1, 23) .. "g")
 create_q("other prefix", 403, "name=sx-" .. TOKEN)
 create_q("platform", 403, "name=ss-" .. TOKEN .. "&platform=linux/amd64")
-create_q("encoded dash", 403, "name=ss%2D" .. TOKEN)
+create_q("percent-encoded dash decodes to the same valid name", "allow", "name=ss%2D" .. TOKEN)
 create_q("trailing newline", 403, "name=ss-" .. TOKEN .. "%0A")
 check("create: with no instance id", 403, req{
   method = "POST", path = create_wire.path, query = create_wire.query, body = create_wire.body,

@@ -154,6 +154,8 @@ def test_render_json_shape():
 # Collection -----------------------------------------------------------------------------------------------------------
 HEAD = "c" * 40
 
+# `docker-proxy` here is a stand-in for any third-party (build-less) service: the production proxy is first-party now,
+# and this fixture keeps the third-party branch of verify-deploy covered.
 _CONFIG_JSON = """
 {"name": "postern", "services": {
   "portal": {"image": "local/postern-portal", "build": {"context": "."}},
@@ -1172,8 +1174,7 @@ def _cs(service, name, image_id, revision, health="", *, state="running", exit_c
 
 
 _PROXY_REF = "tecnativa/docker-socket-proxy:v0.4.2"
-# Third-party images ship their OWN project's revision label; docker-socket-proxy
-# really does (verified on the deploy host).
+# Third-party images ship their OWN project's revision label; this one really does (verified on a deploy host).
 _PROXY_REV = "2f04313b042c1bf4dfbd039475dfc42db79bde7a"
 
 

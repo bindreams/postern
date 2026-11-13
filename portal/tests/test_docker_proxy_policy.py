@@ -107,27 +107,35 @@ class _Daemon(BaseHTTPRequestHandler):
         pass
 
 
+@dataclass(frozen=True)
+class FakeDaemon:
+    url: str
+    log: list[Recorded]
+
+
 @pytest.fixture
-def fake_daemon(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[Recorded]]:
+def fake_daemon() -> Iterator[FakeDaemon]:
     log: list[Recorded] = []
     handler = type("Handler", (_Daemon, ), {"log": log})
     server = HTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setenv("DOCKER_HOST", f"tcp://127.0.0.1:{server.server_port}")
     try:
-        yield log
+        yield FakeDaemon(f"tcp://127.0.0.1:{server.server_port}", log)
     finally:
         server.shutdown()
         server.server_close()
         thread.join()
 
 
-def _record_reconciler(log: list[Recorded], settings: Settings) -> list[Recorded]:
+def _record_reconciler(daemon: FakeDaemon, settings: Settings) -> list[Recorded]:
     """Run every Docker-touching path of the reconciler (and nothing else) against the fake daemon."""
     conn = Connection(user_id="u", path_token=TOKEN, label="l", password="pw")
     name = f"ss-{TOKEN}"
-    client = reconciler._get_docker_client()
+    # Only around the client: a `docker run` started later must not inherit it.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("DOCKER_HOST", daemon.url)
+        client = reconciler._get_docker_client()
     try:
         reconciler._image_exists(client, settings.shadowsocks_image)
         reconciler._create_container(client, conn, settings, INSTANCE)
@@ -139,7 +147,7 @@ def _record_reconciler(log: list[Recorded], settings: Settings) -> list[Recorded
         reconciler.find_container_summary_by_name(client, name)
     finally:
         client.close()
-    return log
+    return daemon.log
 
 
 def _wire_tsv(requests: list[Recorded]) -> str:
@@ -156,7 +164,7 @@ def _settings() -> Settings:
     return Settings(secret_key="x" * 40, domain="postern.example.com", compose_project_name=INSTANCE)
 
 
-def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: list[Recorded]) -> None:
+def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: FakeDaemon) -> None:
     """The contract test below is only as good as the recording: pin what it contains."""
     requests = _record_reconciler(fake_daemon, _settings())
     shapes = []
@@ -187,17 +195,13 @@ def _base_image() -> str:
     return match.group(1)
 
 
-def test_lua_policy_suite(fake_daemon: list[Recorded], tmp_path: Path) -> None:
+def test_lua_policy_suite(fake_daemon: FakeDaemon) -> None:
     settings = _settings()
-    cases = tmp_path / "cases"
-    cases.mkdir()
-    (cases /
-     "wire.tsv").write_text(_wire_tsv(_record_reconciler(fake_daemon, settings)), encoding="utf-8", newline="\n")
+    wire = _wire_tsv(_record_reconciler(fake_daemon, settings))
     proc = subprocess.run(
         [
-            "docker", "run", "--rm", "--network", "none",
+            "docker", "run", "--rm", "-i", "--network", "none",
             "-v", f"{PROXY_DIR}:/pn:ro",
-            "-v", f"{cases}:/cases:ro",
             "-e", f"TEST_IMAGE={settings.shadowsocks_image}",
             "-e", f"TEST_NETWORK={settings.shadowsocks_network}",
             "-e", f"TEST_INSTANCE={INSTANCE}",
@@ -206,6 +210,7 @@ def test_lua_policy_suite(fake_daemon: list[Recorded], tmp_path: Path) -> None:
             _base_image(),
             "-f", "/pn/tests/haproxy.test.cfg", "-db",
         ],
+        input=wire,
         capture_output=True,
         text=True,
         check=False,

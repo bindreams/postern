@@ -80,7 +80,8 @@ services:
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
     environment:
-      DOCKER_HOST: tcp://docker-proxy:2375
+      # The docker-proxy's private socket (a volume only the portal and the proxy mount); the proxy has no network.
+      DOCKER_HOST: unix:///run/docker-api/docker.sock
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
       # Aliased to the same node as networks.shadowsocks.name below -- see
       # the x-shadowsocks-network comment at the top of this file.
@@ -130,6 +131,8 @@ services:
       PUBLIC_IPV6:
     volumes:
       - postern-data:/data
+      # Connecting to a unix socket needs no write access to the directory it lives in.
+      - postern-docker-api:/run/docker-api:ro
       # rw so `postern mta show-dns` can read state.json + selector pubkeys, AND
       # `postern mta rotate-dkim` can write the .rotate-dkim trigger. The portal
       # is trusted not to corrupt state.json -- only the provisioner writes it
@@ -348,22 +351,37 @@ services:
     init: true
     restart: "no"
 
+  # The only container that touches the Docker socket. Default-deny allow-list: see docker-proxy/ and
+  # docs/security.md. No network at all; the portal reaches it through the postern-docker-api volume.
   docker-proxy:
-    image: tecnativa/docker-socket-proxy:v0.5.0
+    # The base image is pinned by digest, so it needs no `pull: true`.
+    build:
+      context: ./docker-proxy
+      args:
+        GIT_REVISION: ${GIT_REVISION:-}
+    image: local/postern-docker-proxy
     container_name: docker-proxy
+    network_mode: none
+    read_only: true
+    # CHOWN and FOWNER: the bind that creates the socket sets its owner (the portal's nonroot uid) and mode.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: ["no-new-privileges:true"]
     environment:
-      CONTAINERS: 1
-      NETWORKS: 1
-      IMAGES: 1
-      POST: 1
+      # What the portal is configured with: the policy pins create bodies and every id-addressed request to it.
+      # The image default is the same one Settings.shadowsocks_image has (pinned by test_compose_docker_proxy.py).
+      SHADOWSOCKS_IMAGE: ${SHADOWSOCKS_IMAGE:-local/shadowsocks-server}
+      SHADOWSOCKS_NETWORK: *shadowsocks_network
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-}
+      INSTANCE_ID:
     volumes:
       - type: bind
         read_only: true
         source: /var/run/docker.sock
         target: /var/run/docker.sock
-    networks: [default]
+      - postern-docker-api:/run/docker-api
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:2375/_ping"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2376/_ping"]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -386,6 +404,9 @@ networks:
 volumes:
   postern-data:
     name: postern-data
+  # The docker-proxy's unix socket. Mounted by the proxy (rw) and the portal (ro) and by nothing else.
+  postern-docker-api:
+    name: postern-docker-api
   # CF edge IP-range allowlists: provisioner writes (rw sole-writer), nginx
   # reads (ro). Empty in non-edge deployments. See compose.edge.yaml + docs/deployment/edge.md.
   postern-edge:

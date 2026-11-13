@@ -23,6 +23,7 @@ FIRST_PARTY_DOCKERFILES = (
     "mta/Dockerfile",
     "provisioner/Dockerfile",
     "shadowsocks/Dockerfile",
+    "docker-proxy/Dockerfile",
 )
 
 ARG_LINE = 'ARG GIT_REVISION=""'
@@ -103,7 +104,7 @@ def test_portal_exports_the_revision_to_the_runtime_env():
 
 def test_compose_forwards_the_revision_to_every_built_service():
     built = {n: s for n, s in load_compose(REPO_ROOT / "compose.yaml")["services"].items() if "build" in s}
-    assert set(built) == {"nginx", "portal", "mta", "provisioner"}
+    assert set(built) == {"nginx", "portal", "mta", "provisioner", "docker-proxy"}
     for name, svc in built.items():
         assert svc["build"]["args"]["GIT_REVISION"] == "${GIT_REVISION:-}", name
 

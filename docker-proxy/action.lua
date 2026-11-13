@@ -33,8 +33,10 @@ end
 
 -- Ids the daemon vouched for. Container ids are never reused and labels are immutable, so a vouched id stays this
 -- deployment's for as long as the container exists; it leaves the table when a forwarded DELETE for it is answered
--- 2xx or 404 (pn_evict below). A container removed any other way leaves its id behind: 64 bytes plus table overhead,
--- the bound on that leak. The API version is not cached: it is read on every versioned request.
+-- 2xx or 404 (pn_evict below). A container removed any other way (a `docker rm` on the host, or a probe that
+-- completes after a concurrent DELETE was evicted and re-inserts the id) leaves its id behind. Ids are never reused,
+-- so each such container costs 64 bytes plus table overhead once: that is the bound on the leak. The API version is
+-- not cached: it is read on every versioned request.
 local owned_ids = {}
 
 local io_daemon = {

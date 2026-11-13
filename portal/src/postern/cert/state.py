@@ -11,7 +11,8 @@ State machine:
     NO_CERT --(no on-disk cert; or SAN mismatch)--> ISSUING
     ISSUING --(lego success; record last_issued_iso)--> ISSUED_PENDING_INSTALL
     ISSUED_PENDING_INSTALL --(symlink-flip success)--> INSTALLED
-    INSTALLED --(expiry / SAN mismatch / directory drift / .renew-cert)--> RENEWING
+    INSTALLED --(directory drift)--> ISSUING   (fresh `lego run`: no account exists under the new directory)
+    INSTALLED --(expiry / SAN mismatch / .renew-cert)--> RENEWING
     RENEWING --(success)--> ISSUED_PENDING_INSTALL
     *  --(consecutive_failures >= 6)--> FAILED
     FAILED --(60-min hold-off)--> prior pre-FAILED state retried
@@ -20,7 +21,9 @@ State machine:
 whatever it was doing when it failed. Combined with the 24-hour rate-limit
 guard (refuse to call Lego if last_issued_iso < 24h, except when
 CERT_FORCE_REISSUE=true), this self-heals through transient outages
-without burning Let's Encrypt rate limits.
+without burning Let's Encrypt rate limits. The guard and the FAILED hold-off
+are scoped to one ACME directory: a staging issuance never delays the switch
+to production.
 """
 
 from __future__ import annotations
@@ -50,10 +53,11 @@ class CertState:
     not_after_iso: str | None = None
     sans: list[str] = field(default_factory=list)
     last_issued_iso: str | None = None  # set BEFORE calling Lego (defends rate limits)
+    last_issued_directory: str = ""  # ACME directory last_issued_iso was recorded under (rate limits are per directory)
     last_attempt_iso: str | None = None
     last_failed_state: str | None = None  # so FAILED knows what to retry
     consecutive_failures: int = 0
-    acme_directory: str = ""
+    acme_directory: str = ""  # directory the on-disk cert was issued under; set when Lego succeeds, not before
     acme_account_email: str = ""  # tracks email used for Lego account; mismatch forces account dir recreate
     pending_cert_paths: dict[str,
                              str] = field(default_factory=dict)  # raw Lego output paths during ISSUED_PENDING_INSTALL

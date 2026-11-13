@@ -24,7 +24,7 @@ Prerequisites:
 - Your domain's nameservers are delegated to Cloudflare (the zone is active in your Cloudflare account).
 - A Cloudflare API token with `Zone:DNS:Edit` and `Zone:Zone:Read` on that zone, plus `Zone:Zone Settings:Edit` for the zone ECH/SSL-mode management (see below) — the same token used for DKIM / cert DNS-01 (see [certificates](certificates.md)).
 - Your origin's public IPv4 (IPv6 optional).
-- Authenticated Origin Pulls enabled on the zone in Cloudflare (or `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`). Postern does not enable it; see [Before the first deploy](#before-the-first-deploy-enable-authenticated-origin-pulls).
+- Authenticated Origin Pulls enabled on the zone in Cloudflare (or `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`); see [Before the first deploy](#before-the-first-deploy-enable-authenticated-origin-pulls).
 
 In `.env` (the edge section of [example.env](https://github.com/bindreams/postern/blob/main/example.env) mirrors this):
 
@@ -33,7 +33,7 @@ COMPOSE_FILE=compose.yaml:compose.edge.yaml
 COMPOSE_PROFILES=with-mta,with-edge
 EDGE_PROFILE=cloudflare
 DNS_PROVIDER=cloudflare
-CLOUDFLARE_API_TOKEN=...           # Zone:DNS:Edit
+CLOUDFLARE_API_TOKEN=...           # Zone:DNS:Edit + Zone:Zone:Read + Zone:Zone Settings:Edit
 PUBLIC_IPV4=203.0.113.10           # your origin's real address
 # PUBLIC_IPV6=2001:db8::10         # optional
 DOMAIN=postern.example.com
@@ -62,14 +62,14 @@ Authenticated Origin Pull mTLS is on by default (`EDGE_CF_AUTHENTICATED_ORIGIN_P
 
 ### Before the first deploy: enable Authenticated Origin Pulls
 
-`EDGE_CF_AUTHENTICATED_ORIGIN_PULL` only configures nginx. Postern does **not** turn on the matching Cloudflare zone setting (`tls_client_auth`, **SSL/TLS > Origin Server > Authenticated Origin Pulls** in the dashboard) that makes Cloudflare present the certificate, and it is off on every new zone. With the default `true` and the setting off, nginx rejects every request through Cloudflare with `400 No required SSL certificate was sent`, although the stack reports healthy.
+`EDGE_CF_AUTHENTICATED_ORIGIN_PULL` only configures nginx. Postern does **not** turn on the matching Cloudflare zone setting (`tls_client_auth`, **SSL/TLS > Origin Server > Authenticated Origin Pulls** in the dashboard) that makes Cloudflare present the certificate. With the default `true` and the setting off, nginx rejects every request through Cloudflare with `400 No required SSL certificate was sent`, although the stack reports healthy.
 
 Before the first deploy, do one of:
 
 - Enable Authenticated Origin Pulls on the zone in the Cloudflare dashboard.
-- Set `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`. nginx then stops requiring the certificate, so only the origin firewall restricts the tunnel vhost to Cloudflare. With the built-in MTA that firewall must leave `:443` open to the world for MTA-STS (see [Lock down the origin](#lock-down-the-origin)), so nothing restricts it at all. Prefer enabling Authenticated Origin Pulls.
+- Set `EDGE_CF_AUTHENTICATED_ORIGIN_PULL=false`. nginx then stops requiring the certificate, so only the origin firewall restricts the tunnel vhost to Cloudflare. With the built-in MTA that firewall must leave `:443` open to the world for MTA-STS (see [Lock down the origin](#lock-down-the-origin)), so nothing restricts it at all.
 
-To check the zone setting, find the zone ID on the zone's Overview page in the dashboard (or `GET /zones?name=<domain>`, which needs `Zone : Zone : Read`), then run the following. Reading a zone setting needs `Zone : Zone Settings : Read` or `Edit` ([Cloudflare API reference](https://developers.cloudflare.com/api/resources/zones/subresources/settings/methods/get/)), which the golden-path token has. A token without Zone Settings access should check in the dashboard instead. The token goes in through stdin, so it stays out of `ps` and shell history:
+To check the zone setting, find the zone ID on the zone's Overview page in the dashboard (or `GET /zones?name=<domain>`, which needs `Zone : Zone : Read`), then run the following. The token goes in through stdin, so it stays out of `ps` and shell history:
 
 ```bash
 read -rsp 'Cloudflare API token: ' token   # the value from .env; typed silently

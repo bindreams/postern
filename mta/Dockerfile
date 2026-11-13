@@ -64,6 +64,7 @@ COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 # at container start (#266). Asserts the interpreter is PYTHON_MINOR and that postern_mta
 # and the apk/pip-installed modules entrypoint.py uses load from that minor's site-packages;
 # see scripts/image-import-check.py. The container runs as root, and so does the check.
+# `-P` keeps the script's directory (/) off sys.path, so only installed packages resolve.
 # PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the
 # image and the runtime environment is unchanged; bytecode that pip compiled at install time
 # in the build stage is inherent and stays. The daemon is started as a subprocess, so its
@@ -71,7 +72,7 @@ COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
 	set -eu
 	export PYTHONDONTWRITEBYTECODE=1
-	python3 /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+	python3 -P /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
 		--first-party postern_mta \
 		--third-party dns.resolver postfix_mta_sts_resolver.daemon
 	mta-sts-daemon --help

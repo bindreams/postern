@@ -24,6 +24,8 @@ import sys
 from types import ModuleType
 from typing import NoReturn
 
+# Failure and import primitives ========================================================================================
+
 
 def _fail(what: str, exc: BaseException | str) -> NoReturn:
     detail = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
@@ -43,6 +45,9 @@ def _import(name: str, site_packages: str) -> ModuleType:
     return module
 
 
+# Package walk =========================================================================================================
+
+
 def _import_package_tree(package: str, site_packages: str) -> None:
     root = _import(package, site_packages)
     path = getattr(root, "__path__", None)
@@ -54,6 +59,9 @@ def _import_package_tree(package: str, site_packages: str) -> None:
 
     for info in pkgutil.walk_packages(path, prefix=f"{package}.", onerror=on_error):
         _import(info.name, site_packages)
+
+
+# Entry point ==========================================================================================================
 
 
 def main() -> None:

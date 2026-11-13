@@ -8,6 +8,7 @@ site-packages COPY target from it, so they cannot drift apart. The pin
 follows the portal's Python.
 """
 import re
+import shlex
 from pathlib import Path
 
 import pytest
@@ -34,13 +35,22 @@ def test_python_minor_matches_portal(rel):
     assert m.group(1) == _portal_minor()
 
 
+def _apk_add_python_tokens(code: str) -> list[str]:
+    """Every `python3*` word in every `apk add` list, quotes resolved and backslash continuations joined."""
+    tokens = []
+    for line in code.replace("\\\n", " ").splitlines():
+        for add in re.findall(r"\bapk add\b([^;&|]*)", line):
+            tokens += [t for t in shlex.split(add) if t.startswith("python3")]
+    return tokens
+
+
 @pytest.mark.parametrize("rel", IMAGES)
 def test_apk_python_is_pinned_to_the_minor(rel):
     code = "\n".join(line for line in _text(rel).splitlines() if not line.lstrip().startswith("#"))
-    assert "python3~${PYTHON_MINOR}" in code
-    # A whitespace-delimited bare `python3` in an apk add list is the unpinned form.
-    for add in re.findall(r"apk add.*(?:\\\n.*)*", code):
-        assert not re.search(r"(?<=\s)python3(?=\s|$)", add), add
+    tokens = _apk_add_python_tokens(code)
+    assert tokens, f"{rel} installs no python3 with apk add"
+    # Anything but the exact pinned form (bare, `python3>=3.14`, `python3=3.15`, ...) is unpinned.
+    assert set(tokens) == {"python3~${PYTHON_MINOR}"}, tokens
 
 
 @pytest.mark.parametrize("rel", (*IMAGES, "mta/entrypoint.py", "provisioner/entrypoint.py"))

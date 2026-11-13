@@ -82,11 +82,12 @@ USER opendkim
 # the COPY targets disagree on builds fine and only fails at container start (#266).
 # Asserts the interpreter is PYTHON_MINOR and that the first-party packages and the apk
 # modules they use load from that minor's site-packages; see scripts/image-import-check.py.
+# `-P` keeps the script's directory (/) off sys.path, so only installed packages resolve.
 # PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the image.
 RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
 	set -eu
 	export PYTHONDONTWRITEBYTECODE=1
-	python3 /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+	python3 -P /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
 		--first-party postern_mta postern.cert postern.mta postern_provisioner \
 		--third-party dns.resolver cryptography
 EOF

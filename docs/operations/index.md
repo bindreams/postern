@@ -81,6 +81,16 @@ If the portal cannot determine its own instance id at all (neither variable is s
 Until step 2 is done, `scripts/deploy.sh` **hard-fails on every future deploy**, not just the first one: `--expected-tunnels-from` (see [Updates](#updates)) expects a container named `ss-<path_token>` for that connection, but the one actually running it is unlabelled and therefore invisible to the gate's listing, so the row reads as permanently missing. `postern reconcile --wait` cannot fix this — the name conflict backs off every pass — so the fix hint is a dead end until the container is removed by hand.
 ```
 
+```{important}
+**Required reading when upgrading past per-service environment delivery.** Services now receive only the variables they read; if you put DNS provider credentials or `SMTP_PASSWORD` in `.env`, consider rotating them. Your `.env` values need no move. Before `scripts/deploy.sh`, check three things:
+
+1. Every name in `.env` is `UPPER_SNAKE_CASE`; a lowercase name (`smtp_host=...`) is no longer read.
+2. You do not export any of these names in the shell that runs `docker compose`: a shell value now overrides `.env`.
+3. You do not rely on a name that is not documented in [configuration](../deployment/configuration.md) reaching a container (for example lego tuning variables): only documented names are passed.
+
+`scripts/deploy.sh` also refuses to run with an `.env` that lacks `SECRET_KEY`.
+```
+
 ## Updates
 
 ```bash

@@ -140,7 +140,7 @@ The provisioner generates the initial key on first start, then exits. To rotate:
 
 ### Auto rotation (when `DNS_PROVIDER=<provider>`)
 
-Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env`:
+Set `DNS_PROVIDER` to one of: `cloudflare`, `route53`, `gandi`, `digitalocean`, `ovh`, `hetzner`, `linode`, `namecheap`. Then set the provider's native env vars in `.env` (set in `.env`; delivered only to the provisioner):
 
 ```{list-table}
 ---

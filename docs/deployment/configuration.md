@@ -1,6 +1,22 @@
 # Configuration reference
 
-Settings live in `.env` at the repository root — copy [example.env](https://github.com/bindreams/postern/blob/main/example.env) and edit. The portal reads them via pydantic-settings, and environment names are case-insensitive: `SECRET_KEY` in `.env` is `settings.secret_key` in code. The authoritative list of names and defaults is [settings.py](https://github.com/bindreams/postern/blob/main/portal/src/postern/settings.py). `COMPOSE_FILE` and `COMPOSE_PROFILES` are consumed by docker compose itself, not the portal; `PROXY_PROTOCOL_FROM` is interpolated into the nginx service by compose.
+Settings live in `.env` at the repository root — copy [example.env](https://github.com/bindreams/postern/blob/main/example.env) and edit. The portal reads them via pydantic-settings: `SECRET_KEY` in `.env` is `settings.secret_key` in code. The authoritative list of names and defaults is [settings.py](https://github.com/bindreams/postern/blob/main/portal/src/postern/settings.py). `COMPOSE_FILE` and `COMPOSE_PROFILES` are consumed by docker compose itself, not the portal; `PROXY_PROTOCOL_FROM` is interpolated into the nginx service by compose.
+
+## How `.env` reaches the containers
+
+Each container receives only the variables it reads. `compose.yaml` lists them per service, and no service loads `.env` wholesale.
+
+- Names in `.env` must be `UPPER_SNAKE_CASE`. Compose is case-sensitive, so a lowercase name (`smtp_host=...`) is ignored.
+- A value exported in the shell that runs `docker compose` overrides the same name in `.env`.
+- Only the names documented on this page, plus the provider credentials listed in [email](email.md), reach a container. Any other name in `.env` is ignored.
+- A variable left unset stays unset in the container, so each setting falls back to its default.
+
+| Container     | Secrets it receives                                        |
+| ------------- | ---------------------------------------------------------- |
+| `portal`      | `SECRET_KEY`, `SMTP_USER`, `SMTP_PASSWORD`                 |
+| `provisioner` | the DNS provider credentials (listed in [email](email.md)) |
+| `mta`         | none                                                       |
+| `nginx`       | none                                                       |
 
 ## Core
 

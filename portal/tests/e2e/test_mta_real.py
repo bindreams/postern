@@ -45,7 +45,7 @@ import pytest
 from postern.mta import dnssec as mta_dnssec
 
 from ._helpers import E2E_PROVISIONER_IMAGE
-from ._mta_real_selector import SELECTOR_PREFIX, github_run_is_active_fn, run_selector, stale_selectors
+from ._mta_real_selector import SELECTOR_PREFIX, github_run_finished, run_selector, stale_selectors
 
 logger = logging.getLogger(__name__)
 
@@ -202,17 +202,19 @@ def _sweep_stale_records(env: dict[str, str]) -> None:
     """Delete DKIM records left by crashed CI runs (best-effort; a failed sweep only leaves clutter).
 
     Needs ``GITHUB_RUN_ID`` / ``GITHUB_RUN_ATTEMPT`` / ``GITHUB_REPOSITORY`` / ``GITHUB_TOKEN``, i.e. CI. A local run
-    has no run to ask GitHub about and sweeps nothing.
+    has no run to ask GitHub about and sweeps nothing. CI runs it as its own step ahead of pytest (``__main__`` below),
+    so a backlog cannot eat the test timeout.
     """
     run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
     repo, token = os.environ.get("GITHUB_REPOSITORY", ""), os.environ.get("GITHUB_TOKEN", "")
     if not (run_id and attempt and repo and token):
         logger.info("not in CI (no GITHUB_RUN_ID/GITHUB_TOKEN): skipping the stale-record sweep")
         return
-    domain = env["MTA_TEST_DOMAIN"]
     try:
+        domain = env["MTA_TEST_DOMAIN"]
         listing = _postern_dns(env, "txt-list", domain, SELECTOR_PREFIX).stdout
-        stale = stale_selectors(listing, domain, int(run_id), int(attempt), github_run_is_active_fn(repo, token))
+        with github_run_finished(repo, token) as run_is_finished:
+            stale = stale_selectors(listing, domain, int(run_id), int(attempt), run_is_finished)
     except Exception as e:  # noqa: BLE001 -- hygiene must not fail the test run
         logger.warning("stale DKIM record sweep skipped: %s", e)
         return
@@ -220,8 +222,8 @@ def _sweep_stale_records(env: dict[str, str]) -> None:
         logger.info("sweeping stale record %s", fqdn)
         try:
             _postern_dns(env, "txt-delete", fqdn, value)
-        except subprocess.CalledProcessError as e:
-            logger.warning("could not sweep stale record %s: %s", fqdn, e.stderr)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as e:
+            logger.warning("could not sweep stale record %s: %s", fqdn, getattr(e, "stderr", None) or e)
 
 
 # Fixtures =============================================================================================================
@@ -230,16 +232,14 @@ def published_dkim_record(mta_test_env: dict[str, str]) -> Iterator[tuple[str, s
     """Publish ``<SELECTOR>._domainkey.<MTA_TEST_DOMAIN>`` with an ephemeral
     pubkey via libdns; yield ``(selector, fqdn, pubkey_b64)``; retire on exit.
 
-    ``SELECTOR`` is unique to this run, so setup first sweeps the records crashed
-    CI runs left behind, and teardown deletes only this run's record.
+    ``SELECTOR`` is unique to this run, so teardown deletes only this run's record.
+    Records crashed CI runs left behind are swept by a CI step before pytest.
     """
     domain = mta_test_env["MTA_TEST_DOMAIN"]
     fqdn = f"{SELECTOR}._domainkey.{domain}"
     pubkey = _generate_test_pubkey_b64()
     record_value = f"v=DKIM1; k=rsa; p={pubkey}"
     propagation = float(mta_test_env["MTA_TEST_DNS_PROPAGATION_SECONDS"])
-
-    _sweep_stale_records(mta_test_env)
 
     _postern_dns(mta_test_env, "txt-set", fqdn, record_value)
 
@@ -323,3 +323,9 @@ def test_dnssec_status_detects_signed_domain():
             pytrace=False,
         )
     assert failures == [], (f"DNSSEC AD-bit check failed against {domain!r}:\n  " + "\n  ".join(failures))
+
+
+if __name__ == "__main__":
+    # `python -m tests.e2e.test_mta_real` is CI's pre-pytest sweep step; the provider env is the job's own.
+    logging.basicConfig(level=logging.INFO)
+    _sweep_stale_records(dict(os.environ))

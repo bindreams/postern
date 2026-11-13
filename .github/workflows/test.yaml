@@ -289,7 +289,6 @@ jobs:
       contents: read
       actions: read
     env:
-      GITHUB_TOKEN: ${{ github.token }}
       MTA_TEST_DOMAIN: ${{ vars.MTA_TEST_DOMAIN }}
       MTA_TEST_DNS_PROVIDER: ${{ vars.MTA_TEST_DNS_PROVIDER }}
       MTA_TEST_DNS_PROPAGATION_SECONDS: ${{ vars.MTA_TEST_DNS_PROPAGATION_SECONDS || '60' }}
@@ -338,6 +337,15 @@ jobs:
 
       - run: uv sync --group e2e
         working-directory: portal
+
+      # Best-effort, and its own step so a backlog of stale records cannot eat pytest's timeout. The token is scoped
+      # to this step; the tests never see it.
+      - name: Sweep DKIM records left by crashed runs
+        continue-on-error: true
+        run: uv run python -m tests.e2e.test_mta_real
+        working-directory: portal
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       - run: uv run pytest -m e2e_mta_real -v --timeout=300
         working-directory: portal

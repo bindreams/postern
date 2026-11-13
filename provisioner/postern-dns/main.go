@@ -633,10 +633,12 @@ func doTxtSet(ctx context.Context, provider providerOps, zone, name, value strin
 }
 
 // doTxtList prints, as a JSON array of {"fqdn", "value"} objects, every TXT
-// record in the zone whose FQDN (lowercased, no trailing dot) starts with
-// prefix. "value" is the provider's raw rr.Data, which txt-delete accepts back
-// verbatim (matchTXT compares the raw form first), so a caller can delete
-// exactly what it listed. An empty result is "[]", not an error.
+// record in the zone whose FQDN starts with prefix (compared case-insensitively).
+// "fqdn" keeps the name's case exactly as the provider returned it (no trailing
+// dot), because txt-delete matches the name case-sensitively; "value" is the
+// provider's raw rr.Data, which txt-delete accepts back verbatim (matchTXT
+// compares the raw form first). A caller can therefore delete exactly what it
+// listed. An empty result is "[]", not an error.
 func doTxtList(ctx context.Context, provider providerOps, zone, prefix string, w io.Writer) error {
 	all, err := provider.GetRecords(ctx, zone)
 	if err != nil {
@@ -653,8 +655,8 @@ func doTxtList(ctx context.Context, provider providerOps, zone, prefix string, w
 		if rr.Type != "TXT" {
 			continue
 		}
-		fqdn := strings.ToLower(strings.TrimSuffix(displayFQDN(rr.Name, zone), "."))
-		if strings.HasPrefix(fqdn, prefix) {
+		fqdn := strings.TrimSuffix(displayFQDN(rr.Name, zone), ".")
+		if strings.HasPrefix(strings.ToLower(fqdn), prefix) {
 			out = append(out, entry{FQDN: fqdn, Value: rr.Data})
 		}
 	}

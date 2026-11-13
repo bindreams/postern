@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http/httptest"
@@ -482,10 +483,31 @@ func TestDoTxtList_FiltersByTypeAndPrefix(t *testing.T) {
 	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
 		t.Fatalf("doTxtList: %v", err)
 	}
+	// The mixed-case name keeps its case so txt-delete (case-sensitive) can match it.
 	want := `[{"fqdn":"postern-e2e-1-1._domainkey.example.com","value":"v=DKIM1; p=a"},` +
-		`{"fqdn":"postern-e2e-2-1._domainkey.example.com","value":"v=DKIM1; p=b"}]` + "\n"
+		`{"fqdn":"Postern-E2E-2-1._domainkey.example.com","value":"v=DKIM1; p=b"}]` + "\n"
 	if buf.String() != want {
 		t.Errorf("got %q; want %q", buf.String(), want)
+	}
+}
+
+func TestDoTxtList_EntriesAreDeletable(t *testing.T) {
+	fp := &fakeProvider{stored: []libdns.Record{
+		libdns.TXT{Name: "Postern-E2E-2-1._domainkey", Text: "v=DKIM1; p=b"},
+	}}
+	var buf strings.Builder
+	if err := doTxtList(context.Background(), fp, "example.com.", "postern-e2e-", &buf); err != nil {
+		t.Fatalf("doTxtList: %v", err)
+	}
+	var listed []struct{ FQDN, Value string }
+	if err := json.Unmarshal([]byte(buf.String()), &listed); err != nil || len(listed) != 1 {
+		t.Fatalf("listing %q: %v", buf.String(), err)
+	}
+	if err := runCmd(context.Background(), "cloudflare", fp, "txt-delete", listed[0].FQDN, []string{listed[0].Value}); err != nil {
+		t.Fatalf("txt-delete of a listed record: %v", err)
+	}
+	if len(fp.stored) != 0 {
+		t.Errorf("listed mixed-case record survived txt-delete: %v", fp.stored)
 	}
 }
 

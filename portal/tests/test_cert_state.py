@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from postern.cert import state as cert_state
 
 
@@ -93,6 +95,57 @@ def test_read_state_malformed_field_shape_degrades_to_default(tmp_path: Path, ca
         loaded = cert_state.read_state(certdir=tmp_path)
     assert loaded == cert_state.CertState()
     assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"last_issued_by_directory": None},
+        {"last_issued_by_directory": "https://acme.example/directory"},
+        {"last_issued_by_directory": {"https://acme.example/directory": None}},
+        {"last_issued_by_directory": {"https://acme.example/directory": "not a date"}},
+        {"last_issued_by_directory": {"https://acme.example/directory": 5}},
+        {"pending_cert_paths": ["a"]},
+        {"pending_cert_paths": {"fullchain": 1}},
+        {"pending_acme_directory": None},
+        {"acme_directory": 7},
+        {"last_attempt_iso": "yesterday"},
+        {"last_issued_iso": 3},
+    ],
+)
+def test_read_state_malformed_field_types_degrade_to_default(tmp_path: Path, caplog, bad):
+    """The provisioner tick and the healthcheck read state.json uncaught: a null/str/wrong-typed field must degrade
+    like the other malformed shapes, not raise."""
+    cert_state.state_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    cert_state.state_path(tmp_path).write_text(json.dumps({"state": "INSTALLED", **bad}))
+    with caplog.at_level("WARNING"):
+        loaded = cert_state.read_state(certdir=tmp_path)
+    assert loaded == cert_state.CertState()
+    assert any("treating as NO_CERT" in rec.getMessage() for rec in caplog.records)
+
+
+def test_read_state_accepts_per_directory_times(tmp_path: Path):
+    original = cert_state.CertState(
+        state="INSTALLED",
+        last_issued_by_directory={"https://acme.example/directory": "2026-11-01T00:00:00+00:00"},
+        pending_acme_directory="https://acme.example/directory",
+    )
+    cert_state.write_state(original, certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path) == original
+
+
+def test_latest_issued_iso_prefers_the_per_directory_times():
+    state = cert_state.CertState(
+        last_issued_iso="2026-01-01T00:00:00+00:00",
+        last_issued_by_directory={"a": "2026-11-01T00:00:00+00:00", "b": "2026-11-02T00:00:00+00:00"},
+    )
+    assert state.latest_issued_iso == "2026-11-02T00:00:00+00:00"
+
+
+def test_latest_issued_iso_falls_back_to_the_pre_upgrade_field():
+    state = cert_state.CertState(last_issued_iso="2026-01-01T00:00:00+00:00")
+    assert state.latest_issued_iso == "2026-01-01T00:00:00+00:00"
+    assert cert_state.CertState().latest_issued_iso is None
 
 
 def test_pending_cert_paths_round_trips(tmp_path: Path):

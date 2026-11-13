@@ -4,6 +4,7 @@ The driver is a pure function over (state, settings, lego, time). We mock
 LegoRunner and exercise every transition.
 """
 
+import dataclasses
 import datetime as dt
 import os
 from pathlib import Path
@@ -120,7 +121,7 @@ def test_issuing_runs_lego_then_pending_install(settings, lego_mock, now):
         cert_dir=cert_driver.CERT_DIR,
     )
     assert next_state.state == "ISSUED_PENDING_INSTALL"
-    assert next_state.last_issued_iso == now.isoformat()
+    assert next_state.last_issued_by_directory == {settings.cert_acme_directory: now.isoformat()}
     assert "fullchain" in next_state.pending_cert_paths
     lego_mock.issue_or_renew.assert_called_once()
 
@@ -507,7 +508,8 @@ def test_failures_under_the_old_directory_do_not_count_toward_the_new_one(prod_s
     assert next_state.consecutive_failures == 1
 
 
-def test_failed_state_does_not_hold_off_directory_switch(prod_settings, lego_mock, now):
+def test_failed_state_does_not_hold_off_directory_switch(prod_settings, lego_mock, now, cert_dir):
+    _install_live_cert(cert_dir, prod_settings)
     state = _staging_issued(
         now,
         state="FAILED",
@@ -520,6 +522,22 @@ def test_failed_state_does_not_hold_off_directory_switch(prod_settings, lego_moc
     assert next_state.state == "INSTALLED"
     assert next_state.consecutive_failures == 0
     assert _advance(next_state, prod_settings, lego_mock, now).state == "ISSUING"
+
+
+def test_failed_under_another_directory_without_an_installed_cert_issues_instead_of_installed(
+    prod_settings, lego_mock, now
+):
+    """INSTALLED with no cert would open the healthcheck gate under compose.cert.yaml with nothing to serve."""
+    state = _staging_issued(
+        now,
+        state="FAILED",
+        last_failed_state="ISSUING",
+        consecutive_failures=6,
+        last_attempt_iso=(now - dt.timedelta(minutes=5)).isoformat(),
+    )
+    next_state = _advance(state, prod_settings, lego_mock, now)
+    assert next_state.state == "ISSUING"
+    assert next_state.consecutive_failures == 0
 
 
 def test_failed_state_holds_off_after_an_attempt_under_the_new_directory(prod_settings, lego_mock, now):
@@ -608,8 +626,17 @@ def test_renewing_without_a_registered_account_runs(settings, lego_mock, now):
     assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
 
 
+def test_renewing_with_an_account_but_no_lego_cert_runs(settings, lego_mock, now, cert_dir):
+    """An adopted BYO cert plus an earlier failed lego run leaves an account but nothing for `renew` to renew."""
+    _register_account(cert_dir, STAGING, "ops@postern.test")
+    state = cert_state.CertState(state="RENEWING", acme_directory=STAGING)
+    _advance(state, settings, lego_mock, now)
+    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
+
+
 def test_renewing_with_a_registered_account_renews(settings, lego_mock, now, cert_dir):
     _register_account(cert_dir, STAGING, "ops@postern.test")
+    _lego_cert(cert_dir, settings)
     state = cert_state.CertState(state="RENEWING", acme_directory=STAGING)
     _advance(state, settings, lego_mock, now)
     assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "renew"
@@ -651,3 +678,94 @@ def test_full_staging_to_production_switch(settings, prod_settings, lego_mock, n
     lego_mock.issue_or_renew.assert_called_once()
     assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
     assert (staging_account / "account.json").exists()
+
+
+def test_stranded_rescue_runs_once_per_directory(prod_settings, lego_mock, now, cert_dir):
+    """If lego's account layout is not what we expect, the rescue must not reissue on every tick."""
+    state = _stranded(cert_dir, prod_settings)
+    attempted = (now - dt.timedelta(days=2)).isoformat()
+    state = dataclasses.replace(state, last_issued_by_directory={PROD: attempted})
+    assert _advance(state, prod_settings, lego_mock, now).state == "INSTALLED"
+
+
+def test_stranded_rescue_does_not_loop_when_the_account_is_never_found(prod_settings, lego_mock, now, cert_dir):
+    """lego leaves no account where `_lego_account_registered` looks (layout change): one issuance, not one a day."""
+    runs = []
+
+    def run_without_account(*, settings, action):
+        runs.append(action)
+        out = LegoOutput(
+            *
+            (cert_dir / "lego" / "certificates" / f"{settings.domain}{ext}" for ext in (".crt", ".key", ".issuer.crt"))
+        )
+        for f in (out.fullchain, out.privkey, out.chain):
+            f.write_text("x")
+        return out
+
+    lego_mock.issue_or_renew.side_effect = run_without_account
+    state = _stranded(cert_dir, prod_settings)
+    state = _advance(state, prod_settings, lego_mock, now)  # INSTALLED -> ISSUING
+    state = _advance(state, prod_settings, lego_mock, now)  # lego run
+    assert state.state == "ISSUED_PENDING_INSTALL"
+    state = dataclasses.replace(state, state="INSTALLED", pending_cert_paths={})
+    later = now + dt.timedelta(days=2)
+    for _ in range(3):
+        state = _advance(state, prod_settings, lego_mock, later)
+        assert state.state == "INSTALLED"
+    assert runs == ["run"]
+
+
+# Install under the directory lego ran with ============================================================================
+def test_issuing_records_the_directory_it_ran_under_with_the_pending_paths(settings, lego_mock, now):
+    state = _advance(cert_state.CertState(state="ISSUING"), settings, lego_mock, now)
+    assert state.pending_acme_directory == STAGING
+
+
+def test_install_uses_the_recorded_directory_not_the_latest_clock_entry(prod_settings, lego_mock, now):
+    """A clock step can make another directory's entry the newest; the install must not guess from timestamps."""
+    state = _advance(_staging_issued(now, last_issued_by_directory={}), prod_settings, lego_mock, now)
+    assert state.state == "ISSUED_PENDING_INSTALL"
+    assert state.pending_acme_directory == PROD
+    stepped = dataclasses.replace(
+        state,
+        last_issued_by_directory={PROD: now.isoformat(), STAGING: (now + dt.timedelta(days=30)).isoformat()},
+    )
+    installed = _advance(stepped, prod_settings, lego_mock, now)
+    assert installed.state == "INSTALLED"
+    assert installed.acme_directory == PROD
+    assert installed.pending_acme_directory == ""
+
+
+def test_install_of_pre_upgrade_pending_state_falls_back_to_acme_directory(prod_settings, lego_mock, now):
+    state = _advance(cert_state.CertState(state="ISSUING"), prod_settings, lego_mock, now)
+    legacy = dataclasses.replace(state, pending_acme_directory="", acme_directory=PROD)
+    assert _advance(legacy, prod_settings, lego_mock, now).acme_directory == PROD
+
+
+# ACME account email change ============================================================================================
+def test_email_change_resets_lego_account_dir(settings, lego_mock, now, cert_dir):
+    old_account = _register_account(cert_dir, STAGING, "previous@old.example")
+    state = cert_state.CertState(
+        state="ISSUING",
+        acme_account_email="previous@old.example",
+        acme_directory=STAGING,
+    )
+    next_state = _advance(state, settings, lego_mock, now)
+    assert not old_account.exists()
+    assert next_state.acme_account_email == settings.cert_acme_email
+
+
+def test_unchanged_email_keeps_lego_account_dir(settings, lego_mock, now, cert_dir):
+    account = _register_account(cert_dir, STAGING, "ops@postern.test")
+    state = cert_state.CertState(state="ISSUING", acme_account_email="ops@postern.test", acme_directory=STAGING)
+    _advance(state, settings, lego_mock, now)
+    assert (account / "account.json").exists()
+
+
+# last_issued_iso is legacy ============================================================================================
+def test_attempt_records_only_the_per_directory_time(settings, lego_mock, now):
+    legacy = "2026-01-01T00:00:00+00:00"
+    state = cert_state.CertState(state="ISSUING", last_issued_iso=legacy)
+    state = _advance(state, settings, lego_mock, now)
+    assert state.last_issued_by_directory == {STAGING: now.isoformat()}
+    assert state.last_issued_iso == legacy

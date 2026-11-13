@@ -89,7 +89,7 @@ If you already have certs in `/etc/letsencrypt` on the host, the simplest path i
 
 Two layers protect Let's Encrypt's 5-issuances-per-7-days limit:
 
-1. **24-hour guard** — `last_issued_iso` is recorded BEFORE calling Lego, so any new issuance within 24 hours is refused regardless of state, even on partial-failure paths (e.g. a successful Lego run that then fails to install). The guard is per ACME directory (`last_issued_by_directory`, shown by `postern cert renewal-status`), like Let's Encrypt's own limits: an issuance under staging never delays one under production, and a detour through staging does not reset production's clock.
+1. **24-hour guard** — the attempt time is recorded BEFORE calling Lego, so any new issuance within 24 hours is refused regardless of state, even on partial-failure paths (e.g. a successful Lego run that then fails to install). The guard is per ACME directory (`last_issued_by_directory`, shown by `postern cert renewal-status`; the older single `last_issued_iso` is only read from state written before this existed), like Let's Encrypt's own limits: an issuance under staging never delays one under production, and a detour through staging does not reset production's clock.
 1. **`CERT_FORCE_REISSUE=true`** — a one-shot bypass of the 24-hour guard, used after a cert revocation or compromise. Reset it to `false` after the next renewal.
 
 ````{dropdown} State machine detail
@@ -97,16 +97,16 @@ Two layers protect Let's Encrypt's 5-issuances-per-7-days limit:
 ```
 NO_CERT  ──(adopt: existing on-disk cert with valid SANs)──▶  INSTALLED
 NO_CERT  ──(no on-disk cert; or SAN mismatch)──▶  ISSUING
-ISSUING  ──(lego success; record last_issued_iso)──▶  ISSUED_PENDING_INSTALL
+ISSUING  ──(lego success; record pending paths and the directory)──▶  ISSUED_PENDING_INSTALL
 ISSUED_PENDING_INSTALL  ──(symlink-flip success)──▶  INSTALLED
 INSTALLED  ──(ACME directory drift / no Lego account for the directory / SAN mismatch / .renew-cert)──▶  ISSUING   (`lego run`)
-INSTALLED  ──(expiry)──▶  RENEWING   (`lego renew`, or `run` when no account is registered)
+INSTALLED  ──(expiry)──▶  RENEWING   (`lego renew`, or `run` when no account or no Lego-issued cert exists)
 RENEWING   ──(success)──▶  ISSUED_PENDING_INSTALL
 *  ──(consecutive_failures >= 6)──▶  FAILED
 FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried
 ```
 
-`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`. State is persisted at `/etc/letsencrypt/state.json`.
+`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. State is persisted at `/etc/letsencrypt/state.json`.
 ````
 
 ### Threat-model notes

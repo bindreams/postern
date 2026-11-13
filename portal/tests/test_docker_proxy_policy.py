@@ -10,12 +10,13 @@ pinned base image's HAProxy (`core.register_init`, exit 0 on pass). This module 
   not an option: it is regenerated on every run.
 * runs the suite and reports its output.
 
-Needs a Docker daemon (it runs `docker run` of the base image, with no network). Opt out with
-`-m 'not haproxy_harness'`.
+Needs a Docker daemon (it runs `docker run` of the base image, with no network); skipped without one, and a
+failure when `$CI` is set. Opt out with `-m 'not haproxy_harness'`.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import threading
@@ -188,6 +189,23 @@ def test_the_recording_covers_every_request_the_reconciler_sends(fake_daemon: Fa
     assert len(queries) == 2, "expected the label-scoped list and the name-filtered read"
 
 
+def _require_docker_daemon() -> None:
+    """Skip the harness when there is no daemon to run it in. In CI a missing daemon fails instead: the workflow
+    provisions one, and a skip there would hide a policy suite that never ran."""
+    try:
+        # Failure bound on a child process (the CLI against an unreachable remote host can hang), below pyproject's
+        # `timeout = 30`.
+        reachable = subprocess.run(["docker", "info"], capture_output=True, check=False, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        reachable = False
+    if reachable:
+        return
+    message = "no reachable Docker daemon (the Lua policy suite runs in the pinned HAProxy image)"
+    if os.environ.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def _base_image() -> str:
     dockerfile = (PROXY_DIR / "Dockerfile").read_text(encoding="utf-8")
     match = re.search(r"^FROM\s+(\S+)", dockerfile, re.M)
@@ -195,7 +213,24 @@ def _base_image() -> str:
     return match.group(1)
 
 
+def test_no_daemon_skips_the_harness_locally(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLAUDE.md: unit tests need no Docker daemon. Without one the harness is skipped, with the reason."""
+    monkeypatch.setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+    monkeypatch.delenv("CI", raising=False)
+    with pytest.raises(pytest.skip.Exception, match="no reachable Docker daemon"):
+        _require_docker_daemon()
+
+
+def test_no_daemon_fails_the_harness_in_ci(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI provisions a daemon; a missing one there must not turn the policy suite into a silent skip."""
+    monkeypatch.setenv("DOCKER_HOST", "tcp://127.0.0.1:1")
+    monkeypatch.setenv("CI", "true")
+    with pytest.raises(pytest.fail.Exception, match="no reachable Docker daemon"):
+        _require_docker_daemon()
+
+
 def test_lua_policy_suite(fake_daemon: FakeDaemon) -> None:
+    _require_docker_daemon()
     settings = _settings()
     wire = _wire_tsv(_record_reconciler(fake_daemon, settings))
     proc = subprocess.run(

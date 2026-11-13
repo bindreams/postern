@@ -134,7 +134,6 @@ def postmap_hash(path: Path) -> None:
 # DNS verification =====================================================================================================
 def build_local_resolver() -> dns.resolver.Resolver:
     """Construct a dns.resolver.Resolver pointed at the local validating Unbound."""
-    sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     import dns.resolver as _resolver
     resolver = _resolver.Resolver(configure=False)
     resolver.nameservers = ["127.0.0.1"]
@@ -149,7 +148,6 @@ def verify_dns(
     *,
     resolver: dns.resolver.Resolver,
 ) -> None:
-    sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     from postern_mta import dkim as mta_dkim
     from postern_mta import dns as mta_dns
     from postern_mta import rotation
@@ -268,7 +266,6 @@ async def reload_watcher(opendkim_proc: subprocess.Popen, poll_seconds: float = 
 
 # Main =================================================================================================================
 def main() -> NoReturn:
-    sys.path.insert(0, "/usr/lib/python3.13/site-packages")
     from postern_mta import dnssec
 
     domain = _require("DOMAIN")

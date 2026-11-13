@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
 
+# One Python minor for apk and for the site-packages path the first-party code is copied
+# to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
+# either fails to solve or installs a minor the py3-* packages were not built for.
+# Keep equal to the portal's Python (portal/Dockerfile); test_python_pin.py enforces it.
+ARG PYTHON_MINOR=3.14
+
 FROM dhi.io/golang:1-alpine3.23-dev AS go-build
 # go.mod's `go` line is then the floor for both binaries; under `auto`, `go install
 # lego@...` would take its toolchain from lego's go.mod instead.
@@ -18,6 +24,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v4/cmd/lego@v4.35.2
 
 FROM dhi.io/alpine-base:3.23-dev AS build
+ARG PYTHON_MINOR
 # All privileged setup happens in the -dev stage (the runtime stage at
 # dhi.io/alpine-base:3.23-dev shares the same image but the runtime user is
 # opendkim, not root). Pin opendkim user/group to 110:110 so this container's
@@ -29,9 +36,10 @@ RUN mkdir -p /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& addgroup -g 110 -S opendkim \
 	&& adduser -u 110 -S -G opendkim -h /var/lib/opendkim opendkim \
 	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
-	&& apk add --no-cache python3 py3-dnspython py3-cryptography opendkim-utils 'ca-certificates>=20261020-r0' tzdata
+	&& apk add --no-cache "python3~${PYTHON_MINOR}" py3-dnspython py3-cryptography opendkim-utils 'ca-certificates>=20261020-r0' tzdata
 
 FROM dhi.io/alpine-base:3.23-dev
+ARG PYTHON_MINOR
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
 LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"
@@ -54,12 +62,12 @@ COPY --from=build --chown=110:110 /var/lib/postern-edge /var/lib/postern-edge
 
 COPY LICENSE.md /usr/share/licenses/postern/LICENSE.md
 # postern_mta -- legacy COPY consumed by entrypoint.py (existing DKIM rotation code).
-COPY portal/src/postern/mta /usr/lib/python3.13/site-packages/postern_mta
+COPY portal/src/postern/mta /usr/lib/python${PYTHON_MINOR}/site-packages/postern_mta
 # Full postern package -- gives `from postern.cert import ...` and `from postern.mta import ...`
 # used by postern_provisioner.
-COPY portal/src/postern /usr/lib/python3.13/site-packages/postern
+COPY portal/src/postern /usr/lib/python${PYTHON_MINOR}/site-packages/postern
 # postern_provisioner -- cert state-machine driver, install logic, healthcheck.
-COPY portal/src/postern_provisioner /usr/lib/python3.13/site-packages/postern_provisioner
+COPY portal/src/postern_provisioner /usr/lib/python${PYTHON_MINOR}/site-packages/postern_provisioner
 COPY --chmod=755 provisioner/entrypoint.py /usr/local/bin/entrypoint.py
 COPY --from=go-build /out/postern-dns /usr/local/bin/postern-dns
 COPY --from=go-build /go/bin/lego /usr/local/bin/lego
@@ -68,12 +76,18 @@ COPY --from=go-build /go/bin/lego /usr/local/bin/lego
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 	CMD ["python3", "-m", "postern_provisioner.healthcheck"]
 
-# PYTHONPATH so `python3` finds postern_mta regardless of which interpreter the
-# runtime image's PATH resolves to. dhi.io/alpine-base:3.23-dev may ship its own
-# /usr/local/bin/python with a different site-packages path; prepending the
-# build stage's site-packages keeps the import working either way.
-ENV PYTHONPATH=/usr/lib/python3.13/site-packages
 USER opendkim
+# Build-time import check (scripts/image-import-check.py), run as the runtime user with the
+# bare `python3` the ENTRYPOINT and HEALTHCHECK use. `-P` keeps / off sys.path;
+# PYTHONDONTWRITEBYTECODE keeps bytecode out of the image.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
+	set -eu
+	export PYTHONDONTWRITEBYTECODE=1
+	python3 -P /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+		--first-party postern_mta postern.cert postern.mta postern_provisioner \
+		--third-party dns.resolver cryptography
+EOF
+
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
 
 # Build provenance. Last in the stage: a new revision invalidates only this layer.

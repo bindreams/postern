@@ -29,6 +29,15 @@ http {
 	# MTA-STS policy endpoint =====
 	include conf.d/mta-sts.conf;
 
+	# The portal is an upstream with `resolve` so nginx re-resolves it on its own via
+	# `resolver` above (honouring `valid=5s`). A literal `proxy_pass http://portal:8000`
+	# is resolved once at config load, so a recreated portal (new IP) 502s until nginx
+	# restarts (#233). `resolve` needs a shared-memory `zone` and nginx >= 1.27.3.
+	upstream portal {
+		zone portal 64k;
+		server portal:8000 resolve;
+	}
+
 	# Portal + new path-based VPN routing =====
 	server {
 		server_name ${DOMAIN};
@@ -50,13 +59,6 @@ http {
 		add_header Content-Security-Policy "default-src 'self'" always;
 		add_header Referrer-Policy "no-referrer" always;
 		add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
-
-		# The portal is reached through a variable so nginx re-resolves it per request via
-		# `resolver` above (cached `valid=5s`). A literal `proxy_pass http://portal:8000` is
-		# resolved once at config load, so a recreated portal (new IP) 502s until nginx is
-		# restarted (#233). A variable proxy_pass with no URI part still forwards the request
-		# URI (path and query) unchanged.
-		set $portal_upstream portal:8000;
 
 		# VPN tunnel endpoints (path-based, WebSocket only, no logs) -----
 		location ~ "^/t/([a-f0-9]{24})$" {
@@ -93,7 +95,7 @@ http {
 		location /login {
 			limit_req zone=auth burst=5 nodelay;
 
-			proxy_pass http://$portal_upstream;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -103,7 +105,7 @@ http {
 		location = /login/verify {
 			limit_req zone=auth burst=5 nodelay;
 
-			proxy_pass http://$portal_upstream;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -112,7 +114,7 @@ http {
 
 		# Portal (all other paths) -----
 		location / {
-			proxy_pass http://$portal_upstream;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -121,7 +123,7 @@ http {
 
 		# Unknown-path / dead-tunnel fallthrough so a /t/ miss looks like any other miss. -----
 		location @miss {
-			proxy_pass http://$portal_upstream;
+			proxy_pass http://portal;
 			proxy_set_header Host $host;
 			proxy_set_header X-Real-IP $remote_addr;
 			proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

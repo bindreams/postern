@@ -31,6 +31,8 @@ E2E_SHADOWSOCKS_IMAGE = "local/shadowsocks-server-test"
 E2E_NGINX_IMAGE = "local/nginx-test"
 E2E_PROVISIONER_IMAGE = "local/postern-provisioner-test"
 E2E_MTA_IMAGE = "local/postern-mta-test"
+# Third-party image used for throwaway `sleep infinity` fixture containers.
+E2E_SLEEPER_IMAGE = "dhi.io/alpine-base:3.23-dev"
 
 PORTAL_BASE_URL = "https://postern.test:8443"
 MAILPIT_BASE_URL = "http://localhost:8025"
@@ -121,6 +123,43 @@ def container_running(name: str) -> bool:
         text=True,
     )
     return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def get_container_id(
+    service: str,
+    *,
+    project: str = PROJECT,
+    files: tuple[Path, ...] = COMPOSE_FILES,
+) -> str:
+    """Resolve a service name to its container ID for `docker inspect`.
+
+    Uses ``compose ps -aq <service>`` (-a to include exited containers) so we
+    don't have to guess the ``<project>-<service>-N`` naming Compose uses
+    internally. The provisioner is ``restart: 'no'`` and intentionally exits
+    after generating the keypair, so it's "exited" by the time tests inspect it.
+    """
+    cid = run(compose("ps", "-aq", service, project=project, files=files)).stdout.strip()
+    if not cid:
+        raise AssertionError(f"no container for service {service!r} in project {project}")
+    return cid.splitlines()[0]
+
+
+def docker_inspect(container_id: str, fmt: str) -> str:
+    return run(["docker", "inspect", container_id, "--format", fmt]).stdout.strip()
+
+
+def run_sleeper(name: str, network: str, *, labels: tuple[str, ...] = (), ip: str | None = None) -> None:
+    """Start a detached `sleep infinity` container on ``network``, replacing any
+    leftover of the same name from a killed prior run. ``ip`` pins its address."""
+    subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+    cmd = ["docker", "run", "-d", "--init", "--name", name]
+    for label in labels:
+        cmd += ["--label", label]
+    cmd += ["--network", network]
+    if ip is not None:
+        cmd += ["--ip", ip]
+    cmd += [E2E_SLEEPER_IMAGE, "sleep", "infinity"]
+    subprocess.run(cmd, check=True, capture_output=True)
 
 
 # Path-token regex used by the connection fixture

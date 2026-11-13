@@ -26,7 +26,10 @@ from ._helpers import (
     compose_exec,
     container_exists,
     container_running,
+    docker_inspect,
+    get_container_id,
     query_db,
+    run_sleeper,
     trigger_reconcile,
     postern_cli,
 )
@@ -442,17 +445,11 @@ def test_reconciler_removes_orphan(e2e_stack):
     still RUNNING."""
 
     def _run_labelled(name: str, labels: list[str]) -> None:
-        # Idempotent: these are fixed names shared across test runs, and this
-        # test's whole point is that the reconciler must NOT remove foreign/
-        # legacy ones -- so a leftover from a prior killed run (CI timeout,
-        # Ctrl-C) must be reclaimed here rather than poisoning every run after
-        # it with a permanent `docker run --name` conflict.
-        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
-        cmd = ["docker", "run", "-d", "--init", "--name", name]
-        for label in labels:
-            cmd += ["--label", label]
-        cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
-        subprocess.run(cmd, check=True, capture_output=True)
+        # `run_sleeper` is idempotent: these are fixed names shared across test runs, and
+        # this test's whole point is that the reconciler must NOT remove foreign/legacy
+        # ones -- so a leftover from a prior killed run (CI timeout, Ctrl-C) must be
+        # reclaimed rather than poisoning every run after it with a `--name` conflict.
+        run_sleeper(name, "e2e-shadowsocks", labels=tuple(labels))
 
     orphan = "ss-orphan0000000000000000"
     foreign = "ss-foreign000000000000000"
@@ -561,15 +558,8 @@ def test_portal_shutdown_cleans_ss_containers(fresh_user, fresh_connection):
             (foreign, ["postern.managed=true", "postern.instance=some-other-postern-deployment"]),
             (legacy, ["postern.managed=true"]),
         ):
-            # Idempotent, same reasoning as test_reconciler_removes_orphan's
-            # _run_labelled: reclaim a leftover from a killed prior run instead
-            # of letting it poison every run after it.
-            subprocess.run(["docker", "rm", "-f", fixture_name], check=False, capture_output=True)
-            cmd = ["docker", "run", "-d", "--init", "--name", fixture_name]
-            for label in labels:
-                cmd += ["--label", label]
-            cmd += ["--network", "e2e-shadowsocks", "dhi.io/alpine-base:3.23-dev", "sleep", "infinity"]
-            subprocess.run(cmd, check=True, capture_output=True)
+            # Idempotent, same reasoning as test_reconciler_removes_orphan's _run_labelled.
+            run_sleeper(fixture_name, "e2e-shadowsocks", labels=tuple(labels))
 
         subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
         try:
@@ -618,48 +608,41 @@ def test_nginx_follows_portal_to_a_new_ip_without_restart(portal_client):
     its own (#233): with a startup-resolved `proxy_pass` it kept dialing the dead IP
     and every portal route answered 502 until nginx itself was restarted.
 
-    A throwaway container takes the freed address while the portal is down, so the
-    recreated portal provably lands on a different IP whatever order Docker allocates in."""
+    The portal is stopped to free its address, a throwaway container is pinned to
+    exactly that address, then the portal is force-recreated (the path `deploy.sh`
+    takes when the image changed). The address is taken, so the new portal cannot
+    land on it: the IP change is guaranteed, not left to Docker's allocation order."""
     network = "postern-e2e-default"
     holder = "postern-e2e-ip-holder"
+    ip_format = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
 
-    def container_field(service: str, template: str) -> str:
-        cid = subprocess.run(compose("ps", "-q", service), capture_output=True, text=True, check=True).stdout.strip()
-        return subprocess.run(["docker", "inspect", "--format", template, cid],
-                              capture_output=True,
-                              text=True,
-                              check=True).stdout.strip()
+    def portal_ip() -> str:
+        return docker_inspect(get_container_id("portal"), ip_format)
 
-    portal_ip_template = f'{{{{(index .NetworkSettings.Networks "{network}").IPAddress}}}}'
+    def nginx_started_at() -> str:
+        return docker_inspect(get_container_id("nginx"), "{{.State.StartedAt}}")
 
-    assert portal_client.get("/login").status_code == 200  # nginx has used the old address
-    old_ip = container_field("portal", portal_ip_template)
-    nginx_started = container_field("nginx", "{{.State.StartedAt}}")
+    # /healthz, not /login: /login is rate-limited and the suite shares one source IP (#7).
+    assert portal_client.get("/healthz").status_code == 200  # nginx has used the old address
+    old_ip = portal_ip()
+    nginx_started = nginx_started_at()
 
-    subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
     subprocess.run(compose("stop", "--timeout", "30", "portal"), check=True, capture_output=True)
     try:
+        run_sleeper(holder, network, ip=old_ip)
         subprocess.run(
-            [
-                "docker", "run", "-d", "--init", "--name", holder, "--network", network, "dhi.io/alpine-base:3.23-dev",
-                "sleep", "infinity"
-            ],
-            check=True,
-            capture_output=True,
+            compose("up", "-d", "--force-recreate", "--wait", "--no-deps", "portal"), check=True, capture_output=True
         )
-        subprocess.run(compose("up", "-d", "--wait", "--no-deps", "portal"), check=True, capture_output=True)
-        assert container_field(
-            "portal", portal_ip_template
-        ) != old_ip, "portal did not move to a new IP; the test no longer exercises #233"
+        assert portal_ip() != old_ip, "portal kept its old IP; the test no longer exercises #233"
 
         # nginx caches a resolved name for `valid=5s`, so requests just after the move
         # may still see the old answer. Wait on the real condition, uncapped: the
         # per-test timeout above is the failure bound, and the bug's signature is
-        # "never recovers".
-        while portal_client.get("/login").status_code != 200:
-            pass
+        # "never recovers". The pace keeps the loop from hammering the stack.
+        while portal_client.get("/healthz").status_code != 200:
+            time.sleep(0.25)
 
-        assert container_field("nginx", "{{.State.StartedAt}}") == nginx_started, "nginx was restarted mid-test"
+        assert nginx_started_at() == nginx_started, "nginx was restarted mid-test"
     finally:
         subprocess.run(["docker", "rm", "-f", holder], check=False, capture_output=True)
         subprocess.run(compose("up", "-d", "--wait", "portal"), check=False, capture_output=True)

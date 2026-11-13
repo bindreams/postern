@@ -380,7 +380,7 @@ def _try_advance_dkim(domain: str, selector_prefix: str, counters: dict[str, int
 def _try_advance_cert(domain: str, counters: dict[str, int]) -> None:
     try:
         settings = _build_cert_settings(domain)
-        state = cert_state.read_state()
+        state = cert_state.read_state(configured_directory=settings.cert_acme_directory)
         had_trigger = _has_cert_trigger()
         lego = cert_driver.LegoRunner()
         new_state = cert_driver.advance_cert_state(
@@ -388,6 +388,7 @@ def _try_advance_cert(domain: str, counters: dict[str, int]) -> None:
             settings=settings,
             lego=lego,
             trigger_present=had_trigger,
+            persist=cert_state.write_state,
         )
         if had_trigger:
             _consume_cert_trigger()

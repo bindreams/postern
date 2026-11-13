@@ -86,3 +86,42 @@ def test_show_with_existing_cert(env, tmp_path):
     assert result.exit_code == 0
     assert "postern.test" in result.output
     assert "*.postern.test" in result.output
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink semantics required")
+def test_show_last_issued_comes_from_the_per_directory_times(env, tmp_path):
+    from postern_provisioner import install
+    from tests.e2e._certs import generate_test_pki
+    scratch = tmp_path / "scratch"
+    generate_test_pki(scratch, hostname="postern.test")
+    (env / "live").mkdir()
+    install.install_cert_triple(
+        fullchain_src=scratch / "fullchain.pem",
+        privkey_src=scratch / "privkey.pem",
+        chain_src=scratch / "chain.pem",
+        live_dir=env / "live",
+        domain="postern.test",
+    )
+    cert_state.write_state(
+        cert_state.CertState(
+            state="INSTALLED",
+            last_issued_by_directory={
+                "https://a.example/directory": "2026-11-01T00:00:00+00:00",
+                "https://b.example/directory": "2026-11-04T00:00:00+00:00",
+            },
+        )
+    )
+    result = runner.invoke(app, ["cert", "show"])
+    assert result.exit_code == 0
+    assert "last_issued: 2026-11-04T00:00:00+00:00" in result.output
+
+
+def test_renewal_status_of_pre_upgrade_state_shows_the_seeded_time_and_unknown_origin(env):
+    """The portal reads state the provisioner has not yet rewritten."""
+    cert_state.state_path().write_text(
+        '{"schema_version": 1, "state": "INSTALLED", "acme_directory": "https://acme.example/directory",'
+        ' "last_issued_iso": "2026-11-03T00:00:00+00:00"}'
+    )
+    result = runner.invoke(app, ["cert", "renewal-status"])
+    assert "last_issued:          2026-11-03T00:00:00+00:00" in result.output
+    assert f"acme_directory:       {cert_state.UNKNOWN_DIRECTORY}" in result.output

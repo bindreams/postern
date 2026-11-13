@@ -11,7 +11,7 @@ State machine:
     NO_CERT --(no on-disk cert; or SAN mismatch)--> ISSUING
     ISSUING --(lego success; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
     ISSUED_PENDING_INSTALL --(symlink-flip success)--> INSTALLED
-    INSTALLED --(directory drift / no Lego account for the directory / SAN mismatch / .renew-cert)--> ISSUING
+    INSTALLED --(directory drift / SAN mismatch / .renew-cert; guard clear)--> ISSUING
     INSTALLED --(expiry)--> RENEWING
     RENEWING --(success)--> ISSUED_PENDING_INSTALL
     *  --(consecutive_failures >= 6)--> FAILED
@@ -23,13 +23,19 @@ guard (refuse to call Lego if last_issued_by_directory[directory] < 24h, except 
 CERT_FORCE_REISSUE=true), this self-heals through transient outages
 without burning Let's Encrypt rate limits. The guard and the FAILED hold-off
 are scoped to one ACME directory: a staging issuance never delays the switch
-to production.
+to production. The guard is checked before leaving INSTALLED (the state stays put while it is active), and a
+deferral from ISSUING/RENEWING returns to INSTALLED only when a cert is installed.
+
+`acme_directory` moves only when an install completes, so a failed switch stays visible as drift and is retried.
+State written before `last_issued_by_directory` existed is migrated by `read_state`: its `acme_directory` was
+set before Lego ran and proves nothing about the installed cert, so it becomes UNKNOWN_DIRECTORY and the ordinary
+drift path reissues once under the configured directory.
 
 ISSUING runs `lego run` (always issues); RENEWING runs `lego renew --days N`
 (a no-op on a cert that is not yet due, and fatal without both an account
 registered for the directory and a certificate under Lego's own path), so only
-the expiry path takes it, and only while both exist -- otherwise it falls back
-to `run`.
+the expiry path takes it, and only while both exist and the directory has not
+drifted -- otherwise it falls back to `run`.
 """
 
 from __future__ import annotations
@@ -38,10 +44,10 @@ import json
 import logging
 import os
 import tempfile
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,10 @@ SCHEMA_VERSION = 1
 
 State = Literal["NO_CERT", "ISSUING", "ISSUED_PENDING_INSTALL", "INSTALLED", "RENEWING", "FAILED"]
 
+# `acme_directory` of an installed cert whose origin is not known: it can never equal a configured directory, so the
+# ordinary directory-drift path reissues it until an install under the configured directory records the real one.
+UNKNOWN_DIRECTORY = "(unknown)"
+
 
 # Schema ===============================================================================================================
 @dataclass
@@ -59,8 +69,8 @@ class CertState:
     state: State = "NO_CERT"
     not_after_iso: str | None = None
     sans: list[str] = field(default_factory=list)
-    # Legacy: the single pre-per-directory attempt time. No longer written; read only for state that has no
-    # `last_issued_by_directory` yet (and by `latest_issued_iso`).
+    # Legacy: the single pre-per-directory attempt time. No longer updated; `read_state` seeds
+    # `last_issued_by_directory` from it once and nothing else reads it.
     last_issued_iso: str | None = None
     # ACME directory -> time of the last Lego attempt under it, set BEFORE calling Lego (defends rate limits). Let's
     # Encrypt limits are per directory, so the 24h guard reads its own directory's entry only.
@@ -68,7 +78,8 @@ class CertState:
     last_attempt_iso: str | None = None
     last_failed_state: str | None = None  # so FAILED knows what to retry
     consecutive_failures: int = 0
-    acme_directory: str = ""  # directory the installed cert was issued under; set when the install completes
+    # Directory the installed cert was issued under; set when the install completes. UNKNOWN_DIRECTORY: not known.
+    acme_directory: str = ""
     acme_account_email: str = ""  # tracks email used for Lego account; mismatch forces account dir recreate
     pending_cert_paths: dict[str,
                              str] = field(default_factory=dict)  # raw Lego output paths during ISSUED_PENDING_INSTALL
@@ -77,9 +88,9 @@ class CertState:
     @property
     def latest_issued_iso(self) -> str | None:
         """Time of the most recent Lego attempt under any directory (display only)."""
-        if self.last_issued_by_directory:
-            return max(self.last_issued_by_directory.values(), key=datetime.fromisoformat)
-        return self.last_issued_iso
+        if not self.last_issued_by_directory:
+            return None
+        return max(self.last_issued_by_directory.values(), key=datetime.fromisoformat)
 
 
 # Persistence ==========================================================================================================
@@ -111,12 +122,16 @@ def mta_tls_reload_path(keydir: Path | None = None) -> Path:
     return _resolve_keydir(keydir) / ".reload-mta-tls"
 
 
-def read_state(certdir: Path | None = None) -> CertState:
+def read_state(certdir: Path | None = None, *, configured_directory: str | None = None) -> CertState:
     """Read state.json. Returns a default ``NO_CERT`` state if the file is absent.
 
     Newer schemas are read with best-effort: unknown fields are dropped, missing
     fields fall back to their dataclass defaults. A schema version higher than
     we know logs a warning so the operator can upgrade the portal.
+
+    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner
+    writes it back (see `_migrate_legacy`); `configured_directory` is the ACME directory the caller is configured
+    for, which keys the legacy attempt time when the state names no directory.
     """
     path = state_path(certdir)
     if not path.exists():
@@ -140,24 +155,72 @@ def read_state(certdir: Path | None = None) -> CertState:
         fields_known = {f for f in CertState.__dataclass_fields__}
         known = {k: v for k, v in raw.items() if k in fields_known}
         _check_field_types(known)
-        return CertState(**known)
+        state = CertState(**known)
+        if "last_issued_by_directory" not in known:
+            state = _migrate_legacy(state, configured_directory)
+        return state
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("cert: state.json unreadable (%s); treating as NO_CERT", e)
         return CertState()
+
+
+def _migrate_legacy(state: CertState, configured_directory: str | None) -> CertState:
+    """Re-express state written before the per-directory attempt times in the current shape.
+
+    The old code set `acme_directory` to the configured directory at the start of every attempt, before Lego ran, so
+    a failed `renew` after a directory switch left it naming a directory the installed cert never came from. It
+    therefore proves nothing about the installed cert: mark the origin unknown and the ordinary drift path reissues
+    under the configured directory, once. The attempt time moves under the directory the attempt ran with (that same
+    `acme_directory`, or the configured one when none was recorded), and a pending install keeps that directory too.
+    A state with no recorded directory never ran Lego (an adopted BYO cert): nothing to doubt.
+    """
+    ran_under = state.acme_directory or configured_directory
+    by_directory = dict(state.last_issued_by_directory)
+    if state.last_issued_iso and ran_under:
+        by_directory[ran_under] = state.last_issued_iso
+    pending = state.pending_acme_directory
+    if state.pending_cert_paths and not pending:
+        pending = state.acme_directory
+    return replace(
+        state,
+        last_issued_by_directory=by_directory,
+        pending_acme_directory=pending,
+        acme_directory=UNKNOWN_DIRECTORY if state.acme_directory else "",
+    )
 
 
 _STR_FIELDS = ("acme_directory", "acme_account_email", "pending_acme_directory")
 _ISO_FIELDS = ("not_after_iso", "last_issued_iso", "last_attempt_iso")
 
 
+def _check_aware_iso(value: object) -> None:
+    """Raise unless `value` is an ISO timestamp with a UTC offset: the provisioner compares these against an aware
+    `now`, and a naive one raises TypeError mid-tick."""
+    if not isinstance(value, str):
+        raise TypeError(f"{value!r} is not a string")
+    if datetime.fromisoformat(value).tzinfo is None:
+        raise ValueError(f"{value!r} has no timezone")
+
+
 def _check_field_types(fields: dict) -> None:
     """Raise TypeError/ValueError unless the fields the provisioner tick dereferences have the shapes it assumes."""
+    valid_states = get_args(State)
+    if "state" in fields and fields["state"] not in valid_states:
+        raise ValueError(f"state {fields['state']!r} is not one of {valid_states}")
+    if fields.get("last_failed_state") is not None and fields["last_failed_state"] not in valid_states:
+        raise ValueError(f"last_failed_state {fields['last_failed_state']!r} is not one of {valid_states}")
+    failures = fields.get("consecutive_failures", 0)
+    if isinstance(failures, bool) or not isinstance(failures, int):
+        raise TypeError("consecutive_failures is not an integer")
+    sans = fields.get("sans", [])
+    if not isinstance(sans, list) or not all(isinstance(s, str) for s in sans):
+        raise TypeError("sans is not a list of strings")
     for name in _STR_FIELDS:
         if name in fields and not isinstance(fields[name], str):
             raise TypeError(f"{name} is not a string")
     for name in _ISO_FIELDS:
         if fields.get(name) is not None:
-            datetime.fromisoformat(fields[name])  # TypeError if not a string, ValueError if not a timestamp
+            _check_aware_iso(fields[name])
     for name in ("pending_cert_paths", "last_issued_by_directory"):
         if name in fields:
             mapping = fields[name]
@@ -165,7 +228,7 @@ def _check_field_types(fields: dict) -> None:
                               dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
                 raise TypeError(f"{name} is not a mapping of strings")
     for iso in fields.get("last_issued_by_directory", {}).values():
-        datetime.fromisoformat(iso)
+        _check_aware_iso(iso)
 
 
 def write_state(state: CertState, *, certdir: Path | None = None) -> None:

@@ -636,7 +636,7 @@ def cert_show() -> None:
     typer.echo(f"days_left:  {info.days_until_expiry():.1f}")
     state_path = cert_state.state_path()
     if state_path.exists():
-        state = cert_state.read_state()
+        state = cert_state.read_state(configured_directory=settings.cert_acme_directory)
         typer.echo(f"state:     {state.state}")
         if state.latest_issued_iso:
             typer.echo(f"last_issued: {state.latest_issued_iso}")
@@ -736,7 +736,7 @@ def cert_renew() -> None:
 def cert_renewal_status() -> None:
     """Show the cert renewal state machine."""
     from postern.cert import state as cert_state
-    state = cert_state.read_state()
+    state = cert_state.read_state(configured_directory=_settings().cert_acme_directory)
     typer.echo(f"state:                {state.state}")
     typer.echo(f"sans:                 {', '.join(state.sans) if state.sans else '(none)'}")
     typer.echo(f"not_after:            {state.not_after_iso or '(none)'}")

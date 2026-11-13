@@ -427,12 +427,17 @@ def test_http2_prior_knowledge_is_refused(e2e_stack):
     """`proto h1` on the bind: an HTTP/2 client preface must not be answered with an HTTP/2 SETTINGS frame."""
     script = (
         "import socket\n"
-        "s = socket.socket(socket.AF_UNIX); s.settimeout(10); s.connect('/run/docker-api/docker.sock')\n"
-        "s.sendall(b'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n' + b'\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00')\n"
-        "print(s.recv(64).hex())\n"
+        "def talk(data):\n"
+        "    s = socket.socket(socket.AF_UNIX); s.settimeout(10); s.connect('/run/docker-api/docker.sock')\n"
+        "    s.sendall(data)\n"
+        "    return s.recv(64).hex()\n"
+        "print(talk(b'GET /_ping HTTP/1.1\\r\\nHost: docker\\r\\nConnection: close\\r\\n\\r\\n'))\n"
+        "print(talk(b'PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n' + b'\\x00\\x00\\x00\\x04\\x00\\x00\\x00\\x00\\x00'))\n"
     )
-    reply = bytes.fromhex(compose_exec("python", "-c", script).stdout.strip())
-    assert reply.startswith(b"HTTP/1.") or reply == b"", reply[:16]
+    lines = compose_exec("python", "-c", script).stdout.split("\n")
+    http1, h2 = bytes.fromhex(lines[0]), bytes.fromhex(lines[1])
+    assert http1.startswith(b"HTTP/1.1 200"), f"the socket does not answer a valid HTTP/1 request: {http1[:16]!r}"
+    assert h2.startswith(b"HTTP/1.") or h2 == b"", h2[:16]
 
 
 def test_the_proxy_is_the_first_party_image_with_no_network(e2e_stack):

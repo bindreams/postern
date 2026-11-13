@@ -9,16 +9,14 @@ Requires the dnspython[doh] backend (h2/httpcore2/httpx2); see portal/pyproject.
 from __future__ import annotations
 
 import logging
-import struct
 from typing import Literal
 
 import dns.exception
 import dns.message
 import dns.name
 import dns.query
-import dns.rdata
-import dns.rdataclass
 import dns.rdatatype
+import dns.wire
 from dns.rdtypes.svcbbase import ECHParam, ParamKey
 
 logger = logging.getLogger(__name__)
@@ -26,10 +24,6 @@ logger = logging.getLogger(__name__)
 EchFrontStatus = Literal["present", "absent", "inconclusive"]
 
 _ECH_PARAM_KEY = int(ParamKey.ECH)
-
-
-class _Unreadable(ValueError):
-    """The DNS wire does not have the shape the generic walk expects."""
 
 
 # Public API ===========================================================================================================
@@ -42,19 +36,28 @@ def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFro
       such a param (or over any other bad SvcParam), so that case is classified from
       the raw reply instead (`_classify_unparsed`). The front is not serving ECH.
     - "inconclusive": no HTTPS record yet (propagation), DoH unreachable, or a reply that
-      is unreadable (not a DNS message, truncated) or bad outside its HTTPS records.
-      Callers treat this as "unknown", never as a confirmed failure.
+      does not answer this query, is unreadable (not a DNS message, truncated) or is bad
+      outside its HTTPS records. Callers treat this as "unknown", never as a confirmed
+      failure.
     """
     # One try covers the exchange, the parse and the SvcParam loop: a dnspython
     # version whose HTTPS rdata shape differs from _has_ech_param's assumption
     # must degrade to "inconclusive", not propagate (contract: never raises).
     try:
-        wire = _fetch_wire(domain, doh_url, timeout)
+        query = dns.message.make_query(dns.name.from_text(domain), dns.rdatatype.HTTPS)
+        bodies: list[bytes] = []
         try:
-            rrs = _parse_https_rrs(wire)
+            reply = _query_doh(query, doh_url, timeout, bodies)
+        except dns.query.BadResponse:
+            return "inconclusive"  # a well-formed reply to some other query
+        except dns.query.NoDOH:
+            raise
         except dns.exception.DNSException as e:
+            if not bodies:  # not a parse failure: the exchange itself failed
+                raise
             logger.debug("ech: %s reply rejected by dnspython (%s); classifying from the raw reply", domain, e)
-            return _classify_unparsed(wire)
+            return _classify_unparsed(query, bodies[-1])
+        rrs = _https_rrs(reply)
         if not rrs:
             return "inconclusive"
         return "present" if any(_has_ech_param(rr) for rr in rrs) else "absent"
@@ -71,36 +74,31 @@ def check_apex_ech(domain: str, doh_url: str, *, timeout: float = 5.0) -> EchFro
 
 
 # Internal =============================================================================================================
-def _fetch_wire(domain: str, doh_url: str, timeout: float) -> bytes:
-    """POST the apex HTTPS query to `doh_url` (RFC 8484) and return the reply wire.
+def _query_doh(query: dns.message.Message, doh_url: str, timeout: float, bodies: list[bytes]) -> dns.message.Message:
+    """Send `query` with dns.query.https and return its parsed, validated reply.
 
-    Raises on transport errors, a non-2xx status, or a body that is not a reply to
-    this query (caller maps to inconclusive). The wire is returned unparsed so a
-    reply dnspython refuses can still be read generically."""
+    The session is the one dnspython would build for itself (its transport owns hostname
+    resolution and bootstrap) minus the environment: `trust_env=False` keeps HTTP(S)_PROXY
+    and SSL_CERT_FILE from steering the lookup. A response hook appends each raw body to
+    `bodies`, so a reply dnspython refuses to parse can still be read by the caller."""
     if not dns.query.have_doh:
         raise dns.query.NoDOH
     import httpx2
-    query = dns.message.make_query(dns.name.from_text(domain), dns.rdatatype.HTTPS)
-    with httpx2.Client(http2=True) as client:
-        response = client.post(
-            doh_url,
-            headers={"accept": "application/dns-message", "content-type": "application/dns-message"},
-            content=query.to_wire(),
-            timeout=timeout,
-        )
-    if not 200 <= response.status_code <= 299:
-        raise ValueError(f"{doh_url} responded with status code {response.status_code}")
-    wire = response.content
-    if len(wire) < 12 or wire[:2] != struct.pack("!H", query.id) or not wire[2] & 0x80:
-        raise ValueError("not a DNS reply to the query")
-    return wire
+
+    def keep_body(response: httpx2.Response) -> None:
+        response.read()
+        bodies.append(response.content)
+
+    transport = dns.query._HTTPTransport(http1=True, http2=True)
+    with httpx2.Client(
+        http1=True, http2=True, transport=transport, trust_env=False, event_hooks={"response": [keep_body]}
+    ) as session:
+        return dns.query.https(query, doh_url, timeout=timeout, session=session)
 
 
-def _parse_https_rrs(wire: bytes) -> list:
-    """The HTTPS records in the reply's answer section. Raises DNSException if
-    dnspython rejects any part of the reply."""
-    resp = dns.message.from_wire(wire)
-    return [rr for rrset in resp.answer if rrset.rdtype == dns.rdatatype.HTTPS for rr in rrset]
+def _https_rrs(message: dns.message.Message) -> list:
+    """The HTTPS records in the reply's answer section."""
+    return [rr for rrset in message.answer if rrset.rdtype == dns.rdatatype.HTTPS for rr in rrset]
 
 
 def _has_ech_param(rr) -> bool:
@@ -119,102 +117,70 @@ def _has_ech_param(rr) -> bool:
 
 
 # Generic reply classification -----------------------------------------------------------------------------------------
-def _classify_unparsed(wire: bytes) -> EchFrontStatus:
-    """Classify a reply dnspython refused to parse, from its raw bytes.
+def _classify_unparsed(query: dns.message.Message, wire: bytes) -> EchFrontStatus:
+    """Classify a reply dnspython refused to parse.
 
-    Walks the message with RFC 1035 framing only, then reads each answer HTTPS record's
-    SvcParams directly:
-    - "present" if any record carries a usable ech (e.g. beside an unrelated bad param);
-    - "inconclusive" if the framing is broken anywhere (not a DNS message, truncated) or
-      a record's SvcParams cannot be walked to look for ech;
-    - "absent" only if dnspython rejects at least one HTTPS record on its own, which
-      pins the failure on SvcParam content, and no record has a usable ech. A reply
-      that is bad elsewhere (say a malformed A record) explains nothing about ech."""
+    The reply is re-read with `continue_on_error`, which keeps every record dnspython
+    accepts and lists the failures. Then:
+    - "inconclusive" if it does not answer `query`, or is not a DNS message at all;
+    - "present" if any HTTPS record carries a usable ech (parsed, or read raw out of a
+      rejected record, e.g. beside an unrelated bad param);
+    - "inconclusive" if a rejected record's SvcParams cannot be walked to look for ech,
+      or the message framing is broken;
+    - "absent" only if dnspython rejected at least one answer HTTPS record, which pins
+      the failure on SvcParam content, and no record has a usable ech. A reply that is
+      bad elsewhere (say a malformed A record) explains nothing about ech."""
     try:
-        spans = _answer_https_spans(wire)
-        failure_is_in_an_https_record = False
-        unwalkable = False
-        for offset, length in spans:
-            try:
-                dns.rdata.from_wire(dns.rdataclass.IN, dns.rdatatype.HTTPS, wire, offset, length)
-            except dns.exception.DNSException:
-                failure_is_in_an_https_record = True
-            try:
-                value = _raw_ech_value(wire, offset, length)
-            except _Unreadable:
-                unwalkable = True
+        message = dns.message.from_wire(wire, continue_on_error=True)
+        if not query.is_response(message):
+            return "inconclusive"
+        if any(_has_ech_param(rr) for rr in _https_rrs(message)):
+            return "present"
+        rejected = False
+        for start, end in _answer_https_spans(wire):
+            if not any(start <= error.offset <= end for error in message.errors):
                 continue
+            rejected = True
+            value = _raw_ech_value(wire, start, end)
             if value is not None and _is_usable_ech(value):
                 return "present"
-        if unwalkable or not failure_is_in_an_https_record:
-            return "inconclusive"
-        return "absent"
-    except _Unreadable:
+        return "absent" if rejected else "inconclusive"
+    except dns.exception.DNSException:  # includes FormError from the framing walks
         return "inconclusive"
 
 
-def _skip_name(wire: bytes, pos: int) -> int:
-    """Offset just past the (possibly compressed) domain name at `pos`."""
-    while True:
-        if pos >= len(wire):
-            raise _Unreadable("name runs past the message")
-        label = wire[pos]
-        if label == 0:
-            return pos + 1
-        if label & 0xC0 == 0xC0:
-            if pos + 2 > len(wire):
-                raise _Unreadable("compression pointer runs past the message")
-            return pos + 2
-        if label & 0xC0:
-            raise _Unreadable("reserved label type")
-        pos += 1 + label
-
-
 def _answer_https_spans(wire: bytes) -> list[tuple[int, int]]:
-    """(rdata offset, rdata length) of each HTTPS record in the answer section, after
-    checking the framing of every record in every section."""
-    if len(wire) < 12:
-        raise _Unreadable("shorter than a DNS header")
-    questions, answers, authority, additional = struct.unpack_from("!4H", wire, 4)
-    pos = 12
+    """(start, end) of the rdata of each HTTPS record in the answer section. Walks every
+    record in every section, so broken framing anywhere raises FormError."""
+    parser = dns.wire.Parser(wire)
+    _id, _flags, questions, answers, authority, additional = parser.get_struct("!6H")
     for _ in range(questions):
-        pos = _skip_name(wire, pos) + 4
-        if pos > len(wire):
-            raise _Unreadable("question runs past the message")
+        parser.get_name(decompress=True)
+        parser.get_struct("!HH")
     spans = []
     for index in range(answers + authority + additional):
-        pos = _skip_name(wire, pos)
-        if pos + 10 > len(wire):
-            raise _Unreadable("record header runs past the message")
-        rrtype, _rdclass, _ttl, length = struct.unpack_from("!HHIH", wire, pos)
-        pos += 10
-        if pos + length > len(wire):
-            raise _Unreadable("rdata runs past the message")
+        parser.get_name(decompress=True)
+        rrtype, _rdclass, _ttl, length = parser.get_struct("!HHIH")
+        start = parser.current
+        parser.get_bytes(length)
         if index < answers and rrtype == dns.rdatatype.HTTPS:
-            spans.append((pos, length))
-        pos += length
+            spans.append((start, start + length))
     return spans
 
 
-def _raw_ech_value(wire: bytes, offset: int, length: int) -> bytes | None:
-    """The value of SvcParamKey 5 in the HTTPS rdata at wire[offset:offset+length], or
-    None if it has none. Raises _Unreadable if the SvcParams do not frame cleanly."""
-    end = offset + length
-    pos = offset + 2  # SvcPriority
-    pos = _skip_name(wire, pos)  # TargetName
+def _raw_ech_value(wire: bytes, start: int, end: int) -> bytes | None:
+    """The value of SvcParamKey 5 in the HTTPS rdata at wire[start:end], or None if it
+    has none. Raises FormError if the SvcParams do not frame cleanly."""
+    parser = dns.wire.Parser(wire, start)
     value = None
-    while pos < end:
-        if pos + 4 > end:
-            raise _Unreadable("SvcParam header runs past the record")
-        key, size = struct.unpack_from("!HH", wire, pos)
-        pos += 4
-        if pos + size > end:
-            raise _Unreadable("SvcParam value runs past the record")
-        if key == _ECH_PARAM_KEY:
-            value = wire[pos:pos + size]
-        pos += size
-    if pos != end:
-        raise _Unreadable("TargetName runs past the record")
+    with parser.restrict_to(end - start):
+        parser.get_uint16()  # SvcPriority
+        parser.get_name()  # TargetName
+        while parser.remaining() > 0:
+            key, size = parser.get_struct("!HH")
+            param = parser.get_bytes(size)
+            if key == _ECH_PARAM_KEY:
+                value = param
     return value
 
 

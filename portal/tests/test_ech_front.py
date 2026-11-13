@@ -82,6 +82,16 @@ def _raw_reply(*rrs: tuple[int, bytes]):
     return build
 
 
+def _answering(build, *, qname: str = "postern.test.", id_xor: int = 0):
+    """Wrap `build` so the reply is addressed to another question name / query id."""
+
+    def wrapped(query: dns.message.Message) -> bytes:
+        other = dns.message.make_query(qname, dns.rdatatype.HTTPS, id=query.id ^ id_xor)
+        return build(other)
+
+    return wrapped
+
+
 def _wire_of(build) -> bytes:
     return build(dns.message.make_query("postern.test.", dns.rdatatype.HTTPS))
 
@@ -93,18 +103,22 @@ def _assert_dnspython_rejects(build):
 
 
 def _serve_doh(monkeypatch, body_for, *, status: int = 200):
-    """Route check_apex_ech's real HTTP exchange through a mock httpx2 transport.
+    """Route check_apex_ech's real HTTP exchange through a mock httpx2 transport (in place of
+    dnspython's own).
 
     `body_for(query)` returns the DNS reply wire for the parsed query (or raw bytes to
     serve verbatim, or raises to fail the transport). Only the network is replaced: the
     request, the status check and the reply parsing all run for real."""
-    real_client = httpx2.Client
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         body = body_for(dns.message.from_wire(request.content))
-        return httpx2.Response(status, content=body, headers={"content-type": "application/dns-message"})
+        # A stream, like a real transport's: the client closes it after reading, which dnspython's
+        # `response.elapsed` needs.
+        return httpx2.Response(
+            status, stream=httpx2.ByteStream(body), headers={"content-type": "application/dns-message"}
+        )
 
-    monkeypatch.setattr(httpx2, "Client", lambda **kw: real_client(**kw, transport=httpx2.MockTransport(handler)))
+    monkeypatch.setattr(dns.query, "_HTTPTransport", lambda **kw: httpx2.MockTransport(handler))
 
 
 # Classification on real wire bytes ====================================================================================
@@ -220,14 +234,56 @@ def test_inconclusive_when_no_https_record(monkeypatch):
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
 
 
+# Reply must answer our question =======================================================================================
+_ECH_REPLY = _reply_with(_https_rdata({ParamKey.ECH: GenericParam(VALID_ECH)}))
+_REJECTED_ECH_REPLY = _raw_reply((HTTPS_TYPE, _https_rdata_wire(ECH, BAD_IPV6HINT)))
+
+
+@pytest.mark.parametrize(
+    "build", [
+        _answering(_ECH_REPLY, qname="elsewhere.test."),
+        _answering(_ECH_REPLY, id_xor=1),
+        _answering(_REJECTED_ECH_REPLY, qname="elsewhere.test."),
+        _answering(_REJECTED_ECH_REPLY, id_xor=1),
+    ],
+    ids=["parsed-other-name", "parsed-other-id", "rejected-other-name", "rejected-other-id"]
+)
+def test_inconclusive_when_reply_does_not_answer_our_question(monkeypatch, build):
+    # An ech= in a reply to some other query says nothing about this domain.
+    _serve_doh(monkeypatch, build)
+    assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
+
+
+# Transport configuration ==============================================================================================
+def _spy_on_https(monkeypatch):
+    """Capture what check_apex_ech hands dns.query.https; the spy fails the exchange, so no network."""
+    seen = {}
+
+    def spy(query, where, **kwargs):
+        seen.update(kwargs, where=where)
+        raise httpx2.ConnectError("spy")
+
+    monkeypatch.setattr(dns.query, "https", spy)
+    return seen
+
+
+def test_exchange_ignores_the_environment_and_uses_dnspythons_transport(monkeypatch):
+    # An env proxy / SSL_CERT_FILE must not steer the DoH lookup, and the transport must be
+    # the one dnspython builds itself (its resolver/bootstrap handling).
+    seen = _spy_on_https(monkeypatch)
+    assert ech.check_apex_ech("postern.test", DOH_URL, timeout=2.5) == "inconclusive"
+    session = seen["session"]
+    assert session.trust_env is False
+    assert isinstance(session._transport, dns.query._HTTPTransport)
+    assert seen["where"] == DOH_URL
+    assert seen["timeout"] == 2.5
+
+
 # Degradation paths ====================================================================================================
 def test_lost_doh_backend_logs_error_and_is_inconclusive(monkeypatch, caplog):
     # A dropped DoH backend (NoDOH) is a systemic regression, not an ordinary blip:
     # inconclusive, but logged at ERROR so it is visible.
-    def no_backend(*a, **k):
-        raise dns.query.NoDOH("DoH not available")
-
-    monkeypatch.setattr(ech, "_fetch_wire", no_backend)
+    monkeypatch.setattr(dns.query, "have_doh", False)
     caplog.set_level(logging.ERROR, logger="postern.ech")
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
     assert "DoH backend unavailable" in caplog.text
@@ -242,8 +298,8 @@ def test_inconclusive_when_param_parsing_raises(monkeypatch):
         def params(self):
             raise RuntimeError("unexpected rdata shape")
 
-    monkeypatch.setattr(ech, "_fetch_wire", lambda *a, **k: b"")
-    monkeypatch.setattr(ech, "_parse_https_rrs", lambda wire: [Boom()])
+    _serve_doh(monkeypatch, _ECH_REPLY)
+    monkeypatch.setattr(ech, "_https_rrs", lambda message: [Boom()])
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"
 
 
@@ -254,6 +310,6 @@ def test_inconclusive_when_rdata_missing_params_attr(monkeypatch):
     class NoParams:
         pass  # no .params attribute
 
-    monkeypatch.setattr(ech, "_fetch_wire", lambda *a, **k: b"")
-    monkeypatch.setattr(ech, "_parse_https_rrs", lambda wire: [NoParams()])
+    _serve_doh(monkeypatch, _ECH_REPLY)
+    monkeypatch.setattr(ech, "_https_rrs", lambda message: [NoParams()])
     assert ech.check_apex_ech("postern.test", DOH_URL) == "inconclusive"

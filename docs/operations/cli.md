@@ -151,7 +151,7 @@ Check whether the front actually serves Encrypted Client Hello — see [Enabling
 
 ### postern ech verify
 
-Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present — always runs, independent of any connection's ECH mode. Exits 0 when present, 1 when absent, 2 when inconclusive.
+Queries the apex HTTPS record over DoH and confirms an `ech=` SvcParam is present — always runs, independent of any connection's ECH mode. Exits 0 when present, 1 when absent (no usable `ech=`: none, an empty or malformed one, or a malformed HTTPS record, which makes clients discard the whole record set), 2 when inconclusive (no record yet, DoH unreachable, or an unreadable reply).
 
 ### postern ech show
 

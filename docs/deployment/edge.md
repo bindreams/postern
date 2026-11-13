@@ -223,7 +223,8 @@ connections silently fall back to plaintext. This closes the gap between
   *additionally* blocks nginx/mta startup (they `depends_on` it); under the default
   BYO-cert mode there is no such hard block — the signal is the mechanism.
 - **Verify:** `postern ech verify` queries the apex HTTPS record over DoH and
-  confirms an `ech=` SvcParam is present (exit 0 present, 1 absent, 2 inconclusive).
+  confirms an `ech=` SvcParam is present (exit 0 present, 1 absent — missing, empty or
+  malformed, 2 inconclusive).
   `postern ech show` prints the settings, the provisioner state (incl. the last
   Cloudflare error), and the live DoH status.
 - **Plan availability:** ECH is on by default on Free zones and toggleable on

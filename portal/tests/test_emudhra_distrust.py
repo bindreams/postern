@@ -8,14 +8,18 @@ stops trusting them, per that page and measured against its test hosts.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import ssl
+import subprocess
 from pathlib import Path
 
 import certifi
+import pytest
 from packaging.version import Version
 
 from tests._compose import load_compose
+from tests.e2e._helpers import E2E_PORTAL_IMAGE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -39,9 +43,44 @@ DOCKERFILES = (
     "mta/Dockerfile", "provisioner/Dockerfile", "shadowsocks/Dockerfile", "portal/tests/e2e/ssclient.Dockerfile"
 )
 
+# Run inside the portal image: its TLS clients (DoH via httpcore2, urllib, ssl default
+# contexts) trust the image's system CA bundle, not certifi.
+_IMAGE_CA_PROBE = """
+import hashlib, json, ssl
+import httpcore2
+
+def fingerprints(ctx):
+    return sorted(hashlib.sha256(der).hexdigest().upper() for der in ctx.get_ca_certs(binary_form=True))
+
+print(json.dumps({
+    "httpcore2 default context (DoH)": fingerprints(httpcore2.default_ssl_context(_trust_env=False)),
+    "ssl.create_default_context (urllib, TLS probes)": fingerprints(ssl.create_default_context()),
+}))
+"""
+
+
+@pytest.mark.e2e
+def test_portal_image_trust_store_excludes_compromised_chain_roots():
+    """The CA bundle the portal image's own HTTPS clients verify against, measured by
+    running them in the built image (build local/postern-portal-test first)."""
+    result = subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none", "--entrypoint", "python", E2E_PORTAL_IMAGE, "-c",
+            _IMAGE_CA_PROBE
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    for client, fingerprints in json.loads(result.stdout).items():
+        assert fingerprints, f"{client}: loaded no CA certificates; the probe would pass vacuously"
+        trusted = set(fingerprints) & COMPROMISED_CHAIN_ROOTS.keys()
+        assert not trusted, (client, [COMPROMISED_CHAIN_ROOTS[f] for f in trusted])
+
 
 def test_certifi_bundle_excludes_compromised_chain_roots():
-    """httpx (dnspython DoH) and requests verify against certifi, not the system store."""
+    """requests (the Docker SDK) and the dev-group httpx verify against certifi, not the
+    system store. The portal's other HTTPS clients do: see the image test above."""
     pems = re.findall(
         r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----",
         Path(certifi.where()).read_text(), re.S

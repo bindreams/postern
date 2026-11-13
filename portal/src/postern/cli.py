@@ -265,7 +265,7 @@ def connection_add(
                 if status == "absent":
                     typer.echo(
                         f"refusing --ech always: {settings.domain} is not serving ECH (apex HTTPS record has no "
-                        "ech=). A fail-closed connection would never connect. Use --ech auto, or enable ECH at "
+                        "usable ech=). A fail-closed connection would never connect. Use --ech auto, or enable ECH at "
                         "your front first.",
                         err=True,
                     )
@@ -874,8 +874,8 @@ def ech_show() -> None:
 @ech_app.command("verify")
 def ech_verify() -> None:
     """Check the apex HTTPS record serves ech= over DoH. Exit codes: 0 present,
-    1 confirmed absent (front not serving ECH), 2 inconclusive (no record yet /
-    DoH unreachable)."""
+    1 confirmed absent (front not serving ECH: no ech=, or an empty / malformed
+    one), 2 inconclusive (no record yet / DoH unreachable / unreadable reply)."""
     from postern.ech import check_apex_ech
     settings = _settings()
     status = check_apex_ech(settings.domain, settings.ech_doh_url)
@@ -884,15 +884,15 @@ def ech_verify() -> None:
         return
     if status == "absent":
         typer.echo(
-            f"FAIL: {settings.domain} HTTPS record has no ech= param -- the front is not serving "
-            "ECH. Check the Cloudflare zone ECH setting (postern manages it when "
+            f"FAIL: {settings.domain} HTTPS record has no usable ech= param (missing, empty or malformed) "
+            "-- the front is not serving ECH. Check the Cloudflare zone ECH setting (postern manages it when "
             "EDGE_CF_MANAGE_ZONE_ECH=true) and that the apex is orange-clouded.",
             err=True,
         )
         raise typer.Exit(1)
     typer.echo(
-        f"INCONCLUSIVE: no HTTPS record for {settings.domain} resolved over DoH "
-        f"({settings.ech_doh_url}). CF may still be propagating, or DoH is unreachable.",
+        f"INCONCLUSIVE: could not read the HTTPS record for {settings.domain} over DoH ({settings.ech_doh_url}): "
+        "none resolved yet (CF may still be propagating), DoH is unreachable, or its reply could not be read.",
         err=True,
     )
     raise typer.Exit(2)

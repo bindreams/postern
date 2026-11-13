@@ -22,13 +22,20 @@ def test_doh_backend_available():
 def test_has_ech_param_against_real_dnspython_rdata():
     # Exercise _has_ech_param against REAL dnspython HTTPS rdata (not a mock), so the
     # rr.params key type and the ech-value attribute shape are pinned to the library.
-    with_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech="AAAA"')
+    # dnspython >= 2.9 validates the ECHConfigList, so the value must be well-formed
+    # ("AAQAAAAA" = 2-byte length prefix 4, then 4 bytes); "AAAA" is rejected.
+    with_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech="AAQAAAAA"')
     without_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . alpn="h2"')
-    empty_ech = dns.rdata.from_text(dns.rdataclass.IN, dns.rdatatype.HTTPS, '1 . ech=""')
     assert ech._has_ech_param(with_ech) is True
     assert ech._has_ech_param(without_ech) is False
-    # An empty ech="" param is "absent" per the spec -- pin the non-empty boundary.
-    assert ech._has_ech_param(empty_ech) is False
+
+
+def test_has_ech_param_false_for_empty_ech_value():
+    # An empty ech param is "absent" per the spec -- pin the non-empty boundary.
+    # dnspython >= 2.9 refuses to parse `ech=""`, so real rdata cannot express this
+    # any more; a minimal stand-in carries the empty value instead.
+    rr = SimpleNamespace(params={ech._ECH_PARAM_KEY: SimpleNamespace(ech=b"")})
+    assert ech._has_ech_param(rr) is False
 
 
 def test_present_when_ech_param_has_bytes(monkeypatch):

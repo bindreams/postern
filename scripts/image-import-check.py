@@ -2,17 +2,21 @@
 
 Run in the image's final stage as the runtime user, with the same bare `python3` the ENTRYPOINT
 resolves from PATH. A Python minor that apk and the COPY targets disagree on builds fine and only
-fails at container start.
+fails at container start. The root cause is the minor, so that is what this checks:
 
-    image-import-check.py ENTRYPOINT PACKAGE...
+    image-import-check.py PYTHON_MINOR ENTRYPOINT --first-party PACKAGE... --third-party MODULE...
 
-Imports every submodule of each PACKAGE, so a module added later is covered with no list to edit, and
-runs ENTRYPOINT as a non-`__main__` module (its top-level imports). Then imports every module that
-ENTRYPOINT and the walked package files import anywhere, including inside functions. Imports under
-`try/except ImportError`, `if TYPE_CHECKING` and platform/version guards are optional by construction
-and are skipped. Stdlib only: the image has no pip.
+1. The running interpreter is PYTHON_MINOR (the Dockerfile ARG the COPY targets are built from).
+2. Every PACKAGE and each of its submodules imports, and lives under
+   /usr/lib/python<PYTHON_MINOR>/site-packages, where the Dockerfile copied it. A module added later
+   is covered with no list to edit.
+3. Every third-party MODULE (apk- or pip-installed, used by the image's code) imports from the same
+   site-packages.
+4. ENTRYPOINT runs as a non-`__main__` module, which executes its top-level imports.
+
+Stdlib only: the image has no pip.
 """
-import ast
+import argparse
 import importlib
 import pkgutil
 import runpy
@@ -20,122 +24,60 @@ import sys
 from types import ModuleType
 from typing import NoReturn
 
-# Failure and import primitives ========================================================================================
 
-
-def _fail(what: str, exc: BaseException) -> NoReturn:
-    print(f"image-import-check: {what}: {type(exc).__name__}: {exc}", file=sys.stderr)
+def _fail(what: str, exc: BaseException | str) -> NoReturn:
+    detail = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
+    print(f"image-import-check: {what}: {detail}", file=sys.stderr)
     sys.exit(1)
 
 
-def _import(name: str) -> ModuleType:
+def _import(name: str, site_packages: str) -> ModuleType:
+    """Import NAME and require its file to be under SITE_PACKAGES."""
     try:
-        return importlib.import_module(name)
+        module = importlib.import_module(name)
     except BaseException as exc:  # noqa: BLE001 -- SystemExit at import time is a failure too
         _fail(f"import {name}", exc)
-
-
-# Guard detection ======================================================================================================
-
-_IMPORT_ERRORS = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
-_PLATFORM_NAMES = {"sys", "os", "platform"}
-
-
-def _catches_import_error(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return True
-    types = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-    return any(isinstance(t, ast.Name) and t.id in _IMPORT_ERRORS for t in types)
-
-
-def _is_type_checking(test: ast.expr) -> bool:
-    return (isinstance(test, ast.Name)
-            and test.id == "TYPE_CHECKING") or (isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING")
-
-
-def _is_platform_guard(test: ast.expr) -> bool:
-    return any(isinstance(n, ast.Name) and n.id in _PLATFORM_NAMES for n in ast.walk(test))
-
-
-# Required imports of one source file ==================================================================================
-
-
-def _required_imports(tree: ast.AST) -> list[ast.Import | ast.ImportFrom]:
-    found: list[ast.Import | ast.ImportFrom] = []
-
-    def visit(node: ast.AST) -> None:
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            found.append(node)
-        elif isinstance(node, ast.Try):
-            if not any(_catches_import_error(h) for h in node.handlers):
-                for child in node.body:
-                    visit(child)
-            for child in (*node.handlers, *node.orelse, *node.finalbody):
-                visit(child)
-        elif isinstance(node, ast.If) and _is_type_checking(node.test):
-            for child in node.orelse:
-                visit(child)
-        elif isinstance(node, ast.If) and _is_platform_guard(node.test):
-            pass
-        else:
-            for child in ast.iter_child_nodes(node):
-                visit(child)
-
-    visit(tree)
-    return found
-
-
-def _import_required(path: str) -> None:
-    with open(path, encoding="utf-8") as f:
-        tree = ast.parse(f.read(), filename=path)
-    for node in _required_imports(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                _import(alias.name)
-        elif node.level == 0 and node.module:
-            module = _import(node.module)
-            for alias in node.names:
-                if alias.name != "*" and not hasattr(module, alias.name):
-                    _import(f"{node.module}.{alias.name}")
-
-
-# Package walk =========================================================================================================
-
-
-def _source_file(module: ModuleType) -> list[str]:
     origin = module.__file__
-    return [origin] if origin and origin.endswith(".py") else []
+    if origin is None or not origin.startswith(site_packages + "/"):
+        _fail(f"import {name}", f"loaded from {origin}, expected under {site_packages}")
+    return module
 
 
-def _import_package_tree(package: str) -> list[str]:
-    """Import PACKAGE and every submodule; return their source files."""
-    root = _import(package)
-    files = _source_file(root)
+def _import_package_tree(package: str, site_packages: str) -> None:
+    root = _import(package, site_packages)
     path = getattr(root, "__path__", None)
     if path is None:
-        return files
-    for info in pkgutil.walk_packages(path, prefix=f"{package}.", onerror=_import):
-        files += _source_file(_import(info.name))
-    return files
+        return
+
+    def on_error(name: str) -> None:
+        _import(name, site_packages)  # re-raises the import failure through _fail
+
+    for info in pkgutil.walk_packages(path, prefix=f"{package}.", onerror=on_error):
+        _import(info.name, site_packages)
 
 
-# Entry point ==========================================================================================================
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("python_minor")
+    parser.add_argument("entrypoint")
+    parser.add_argument("--first-party", nargs="+", default=[])
+    parser.add_argument("--third-party", nargs="+", default=[])
+    args = parser.parse_args()
 
+    actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if actual != args.python_minor:
+        _fail("python version", f"interpreter is {actual}, image pins {args.python_minor}")
+    site_packages = f"/usr/lib/python{args.python_minor}/site-packages"
 
-def main(argv: list[str]) -> None:
-    if len(argv) < 2:
-        sys.exit(f"usage: {argv[0]} ENTRYPOINT PACKAGE...")
-    entrypoint, packages = argv[1], argv[2:]
-    sources = [entrypoint]
-    for package in packages:
-        sources += _import_package_tree(package)
+    for package in args.first_party:
+        _import_package_tree(package, site_packages)
+    for module in args.third_party:
+        _import(module, site_packages)
     try:
-        runpy.run_path(entrypoint, run_name="entrypoint_import_check")
+        runpy.run_path(args.entrypoint, run_name="entrypoint_import_check")
     except BaseException as exc:  # noqa: BLE001 -- SystemExit from die() at import time is a failure too
-        _fail(f"run {entrypoint}", exc)
-    for source in sources:
-        _import_required(source)
+        _fail(f"run {args.entrypoint}", exc)
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main()

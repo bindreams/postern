@@ -39,7 +39,8 @@ def test_apk_python_is_pinned_to_the_minor(rel):
     code = "\n".join(line for line in _text(rel).splitlines() if not line.lstrip().startswith("#"))
     assert "python3~${PYTHON_MINOR}" in code
     # A whitespace-delimited bare `python3` in an apk add list is the unpinned form.
-    assert not re.search(r"(?<=\s)python3(?=\s)", code)
+    for add in re.findall(r"apk add.*(?:\\\n.*)*", code):
+        assert not re.search(r"(?<=\s)python3(?=\s|$)", add), add
 
 
 @pytest.mark.parametrize("rel", (*IMAGES, "mta/entrypoint.py", "provisioner/entrypoint.py"))

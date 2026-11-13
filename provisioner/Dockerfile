@@ -80,12 +80,16 @@ USER opendkim
 # Build-time import check, run as the runtime user (opendkim, uid 110) with the same bare
 # `python3` the ENTRYPOINT and HEALTHCHECK resolve from PATH: a Python minor that apk and
 # the COPY targets disagree on builds fine and only fails at container start (#266).
-# Imports every submodule of the first-party packages entrypoint.py and the healthcheck
-# use, and everything entrypoint.py and those packages import; see
-# scripts/image-import-check.py. -B keeps bytecode out of the image.
-RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py \
-	["python3", "-B", "/image-import-check.py", "/usr/local/bin/entrypoint.py", \
-	"postern_mta", "postern.cert", "postern.mta", "postern_provisioner"]
+# Asserts the interpreter is PYTHON_MINOR and that the first-party packages and the apk
+# modules they use load from that minor's site-packages; see scripts/image-import-check.py.
+# PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the image.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
+	set -eu
+	export PYTHONDONTWRITEBYTECODE=1
+	python3 /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+		--first-party postern_mta postern.cert postern.mta postern_provisioner \
+		--third-party dns.resolver cryptography
+EOF
 
 ENTRYPOINT ["python3", "/usr/local/bin/entrypoint.py"]
 

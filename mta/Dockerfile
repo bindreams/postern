@@ -61,16 +61,21 @@ COPY --chmod=755 mta/entrypoint.py /usr/local/bin/entrypoint.py
 
 # Build-time import check, run with the same bare `python3` the ENTRYPOINT resolves from
 # PATH: a Python minor that apk and the COPY targets disagree on builds fine and only fails
-# at container start (#266). Imports every submodule of postern_mta, the mta-sts daemon
-# module, and everything entrypoint.py and those packages import; see
-# scripts/image-import-check.py. The container runs as root, and so does the check. -B and
-# PYTHONDONTWRITEBYTECODE stop the checks writing bytecode into the image; bytecode that
-# pip compiled at install time in the build stage is inherent and stays. The daemon is
-# started as a subprocess, so its console script is run too.
-RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py \
-	["python3", "-B", "/image-import-check.py", "/usr/local/bin/entrypoint.py", \
-	"postern_mta", "postfix_mta_sts_resolver.daemon"]
-RUN ["env", "PYTHONDONTWRITEBYTECODE=1", "mta-sts-daemon", "--help"]
+# at container start (#266). Asserts the interpreter is PYTHON_MINOR and that postern_mta
+# and the apk/pip-installed modules entrypoint.py uses load from that minor's site-packages;
+# see scripts/image-import-check.py. The container runs as root, and so does the check.
+# PYTHONDONTWRITEBYTECODE is exported inside this RUN only, so no bytecode lands in the
+# image and the runtime environment is unchanged; bytecode that pip compiled at install time
+# in the build stage is inherent and stays. The daemon is started as a subprocess, so its
+# console script is run too.
+RUN --mount=type=bind,source=scripts/image-import-check.py,target=/image-import-check.py <<-EOF
+	set -eu
+	export PYTHONDONTWRITEBYTECODE=1
+	python3 /image-import-check.py "${PYTHON_MINOR}" /usr/local/bin/entrypoint.py \
+		--first-party postern_mta \
+		--third-party dns.resolver postfix_mta_sts_resolver.daemon
+	mta-sts-daemon --help
+EOF
 
 # Postfix expects /var/spool/postfix and chroot tree to be in place at runtime.
 # The compose file mounts a named volume there so the queue persists.

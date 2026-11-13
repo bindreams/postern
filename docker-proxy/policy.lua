@@ -4,9 +4,9 @@
 -- are the two functions in `io`, both of which return the raw bytes of a dockerd reply (or nil, err):
 --   io.ping()     -> reply to an unversioned GET /_ping (its Api-Version header is the daemon's current API version)
 --   io.probe(id)  -> reply to GET /containers/json?all=1&filters={"id":["<id>"]}
--- Optional, so the glue can keep a table of vouched-for ids: io.owned(id) (true if this id was already vouched for)
--- and io.remember(id) (called after a probe vouches for it). An id leaves the table when evict_id says its container
--- is gone. The version is never cached: it is read on every versioned request. It comes from /_ping, not /version:
+-- Optional, so the glue can keep a table of vouched-for ids (new_owned_cache builds one): io.owned(id) (true if this
+-- id was already vouched for), io.mark() (called before a probe) and io.remember(id, mark) (called after the probe
+-- vouches for it, with the mark taken before it). An id leaves the table when evict_id says its container is gone. The version is never cached: it is read on every versioned request. It comes from /_ping, not /version:
 -- dockerd answers /version by running `runc --version` and `docker-init --version`, /_ping by writing headers.
 -- Default deny: a request is allowed only if it matches one route exactly. See docs/development/architecture.md.
 --
@@ -500,11 +500,16 @@ local function decide(req, cfg, io)
         local kok, known = pcall(io.owned, id)
         if kok and known == true then return true end
       end
+      local mark
+      if io.mark then
+        local mok, m = pcall(io.mark)
+        if mok then mark = m end
+      end
       local pok, raw, err = pcall(io.probe, id)
       local outcome, perr = nil, "probe failed (" .. tostring(pok and err or raw) .. ")"
       if pok and raw then outcome, perr = probe_outcome(raw, id, cfg) end
       if outcome == "owned" then
-        if io.remember then pcall(io.remember, id) end
+        if io.remember then pcall(io.remember, id, mark) end
         return true
       end
       if outcome == "gone" then return false, 404, "No such container: " .. id end
@@ -525,6 +530,24 @@ function M.evict_id(method, path, status)
   local id = path:match("^/v%d+%.%d+/containers/([0-9a-f]+)$")
   if id and #id == 64 then return id end
   return nil
+end
+
+-- The table of ids the daemon vouched for. `evictions` counts every eviction: a probe that began before an eviction
+-- may have seen the container just before its removal, so `remember` drops its id unless the count is still the one
+-- `mark` returned before the probe. An id missed this way is simply probed again by its next request.
+function M.new_owned_cache()
+  local ids, evictions = {}, 0
+  local cache = {}
+  function cache.owned(id) return ids[id] == true end
+  function cache.mark() return evictions end
+  function cache.remember(id, mark)
+    if mark == evictions then ids[id] = true end
+  end
+  function cache.evict(id)
+    ids[id] = nil
+    evictions = evictions + 1
+  end
+  return cache
 end
 
 -- Config from the environment, mirroring reconciler.resolve_instance_id (stripped INSTANCE_ID override, else

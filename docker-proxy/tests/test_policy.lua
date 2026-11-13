@@ -40,7 +40,7 @@ local function fake_io(over)
   return {
     ping = over.ping or function() return PING_REPLY end,
     probe = over.probe or function(id) return owned_reply(id, INSTANCE) end,
-    owned = over.owned, remember = over.remember,
+    owned = over.owned, mark = over.mark, remember = over.remember,
   }
 end
 
@@ -268,22 +268,43 @@ evicted("delete of a name", nil, "DELETE", v("/containers/ss-" .. TOKEN), 204)
 evicted("delete with a trailing path", nil, "DELETE", v(DEL .. "/x"), 204)
 evicted("delete of a network", nil, "DELETE", v("/networks/" .. ID), 204)
 evicted("non-numeric status", nil, "DELETE", v(DEL), nil)
--- A cache the table is wired to: vouch, evict, vouch again needs a new probe.
-local table_ids, probes = {}, 0
-local function wired()
+-- The real cache (policy.new_owned_cache) wired in: vouch, evict, vouch again needs a new probe.
+local cache, probes = P.new_owned_cache(), 0
+local function wired(probe)
   return fake_io{
-    owned = function(id) return table_ids[id] == true end,
-    remember = function(id) table_ids[id] = true end,
-    probe = function(id) probes = probes + 1; return owned_reply(id, INSTANCE) end,
+    owned = cache.owned, mark = cache.mark, remember = cache.remember,
+    probe = probe or function(id) probes = probes + 1; return owned_reply(id, INSTANCE) end,
   }
 end
 check("wired cache: first request probes", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
 check("wired cache: second request does not", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
 eq("wired cache: one probe so far", probes, 1)
 local gone = P.evict_id("DELETE", v(DEL), 204)
-if gone then table_ids[gone] = nil end
+if gone then cache.evict(gone) end
 check("wired cache: after eviction the id is probed again", "allow", req{path = v(DEL .. "/json")}, CFG, wired())
 eq("wired cache: two probes", probes, 2)
+
+-- A probe that began before a DELETE was answered must not re-insert the evicted id, but its own request is still
+-- decided by its probe.
+cache.evict(ID)
+local racing_probes = 0
+local function racing(id)
+  racing_probes = racing_probes + 1
+  cache.evict(ID)
+  return owned_reply(id, INSTANCE)
+end
+check("racing probe: its own request is allowed", "allow", req{path = v(DEL .. "/json")}, CFG, wired(racing))
+check("racing probe: the id was not re-inserted, so it is probed again", "allow", req{path = v(DEL .. "/json")}, CFG,
+  wired(function(id) racing_probes = racing_probes + 1; return owned_reply(id, INSTANCE) end))
+eq("racing probe: two probes", racing_probes, 2)
+check("racing probe: an undisturbed probe is remembered", "allow", req{path = v(DEL .. "/json")}, CFG,
+  wired(function() error("must not be called") end))
+cache.evict(ID)
+check("an eviction of another id also blocks a probe in flight (the counter is global)", "allow",
+  req{path = v(DEL .. "/json")}, CFG, wired(function(id) cache.evict(string.rep("e", 64)); return owned_reply(id, INSTANCE) end))
+eq("global counter: that probe was not remembered", cache.owned(ID), false)
+check("a failing mark does not turn an allow into an error or remember the id", "allow", req{path = v(DEL .. "/json")}, CFG,
+  fake_io{mark = function() error("boom") end, remember = function(id, mark) if mark ~= nil then error("remembered") end end})
 
 check("unversioned ping needs no version read", "allow", req{path = "/_ping"}, CFG,
   fake_io{ping = function() error("must not be called") end})

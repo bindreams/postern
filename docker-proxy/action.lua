@@ -33,16 +33,17 @@ end
 
 -- Ids the daemon vouched for. Container ids are never reused and labels are immutable, so a vouched id stays this
 -- deployment's for as long as the container exists; it leaves the table when a forwarded DELETE for it is answered
--- 2xx or 404 (pn_evict below). A container removed any other way (a `docker rm` on the host, or a probe that
--- completes after a concurrent DELETE was evicted and re-inserts the id) leaves its id behind. Ids are never reused,
--- so each such container costs 64 bytes plus table overhead once: that is the bound on the leak. The API version is
--- not cached: it is read on every versioned request.
-local owned_ids = {}
+-- 2xx or 404 (pn_evict below), and a probe that overlapped any eviction is not remembered (see new_owned_cache). A
+-- container removed any other way (a `docker rm` on the host) leaves its id behind. Ids are never reused, so each
+-- such container costs 64 bytes plus table overhead once: that is the bound on the leak. The API version is not
+-- cached: it is read on every versioned request.
+local owned_ids = policy.new_owned_cache()
 
 local io_daemon = {
   ping = function() return daemon_get("/_ping") end,
-  owned = function(id) return owned_ids[id] == true end,
-  remember = function(id) owned_ids[id] = true end,
+  owned = owned_ids.owned,
+  mark = owned_ids.mark,
+  remember = owned_ids.remember,
   -- docker's id filter is a prefix match; policy.lua only asks with a full 64-hex id.
   probe = function(id) return daemon_get("/containers/json?all=1&filters=%7B%22id%22%3A%5B%22" .. id .. "%22%5D%7D") end,
 }
@@ -97,7 +98,7 @@ end)
 core.register_action("pn_evict", {"http-res"}, function(txn)
   local ok, err = pcall(function()
     local id = policy.evict_id(txn.sf:method(), txn:get_var("txn.pn_path") or "", tonumber(txn.sf:status()))
-    if id then owned_ids[id] = nil end
+    if id then owned_ids.evict(id) end
   end)
   if not ok then core.Alert("postern docker-proxy: evict error: " .. tostring(err)) end
 end)

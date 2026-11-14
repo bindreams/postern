@@ -56,7 +56,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 # Types ================================================================================================================
 Status = Literal["ok", "fail", "skip"]
@@ -216,6 +216,24 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
+def service_environment(service: dict | None) -> dict[str, Any]:
+    """A service's `environment` from `docker compose config` JSON, as a mapping.
+
+    The Compose spec allows both forms and which one comes back depends on the overlay set: the
+    mapping (`{"NAME": value}`) and the list (`["NAME=value", "NAME"]`). A bare list `NAME` is a
+    passthrough from the shell/.env, the same as a null mapping value, so it maps to None; only
+    the first `=` splits, since a value may itself contain one.
+    """
+    env = (service or {}).get("environment") or {}
+    if isinstance(env, dict):
+        return env
+    out: dict[str, Any] = {}
+    for item in env:
+        name, sep, value = str(item).partition("=")
+        out[name] = value if sep else None
+    return out
+
+
 def _portal_env(config: dict) -> dict[str, str | None]:
     """The compose-resolved portal environment, keyed upper-case.
 
@@ -226,7 +244,7 @@ def _portal_env(config: dict) -> dict[str, str | None]:
     delivers upper-case names only. A value is None for a bare passthrough key
     that compose could not resolve (JSON null); every caller treats that as unset.
     """
-    raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
+    raw = service_environment((config.get("services") or {}).get("portal"))
     return {k.upper(): v for k, v in raw.items()}
 
 
@@ -312,7 +330,7 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():
-        for key, value in ((service or {}).get("environment") or {}).items():
+        for key, value in service_environment(service).items():
             if value is None:
                 names.add(key)
             elif isinstance(value, str):

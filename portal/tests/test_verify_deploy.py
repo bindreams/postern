@@ -1108,6 +1108,51 @@ def test_shell_overrides_raises_when_the_baseline_probe_is_not_json(tmp_path):
         vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path)
 
 
+# A service's `environment` may come back from `compose config` in the list form (`NAME=value`, bare `NAME`).
+_LIST_FORM = {
+    "services": {
+        "nginx": {
+            "environment": [
+                "DOMAIN=${DOMAIN:-x}",
+                "EDGE_REALIP_HEADER",
+                "LITERAL=$${NOT_A_REF}",
+                "URL=https://h/?a=${AWS_REGION}",
+            ]
+        }
+    }
+}  # yapf: disable
+
+
+def test_shell_overrides_names_a_variable_in_a_list_form_environment(tmp_path):
+    run = _OverrideRunner({"DOMAIN"})
+    assert vd.shell_overrides(_LIST_FORM, {"DOMAIN": "y"}, run, tmp_path) == ["DOMAIN"]
+
+
+def test_shell_overrides_ignores_a_list_form_name_whose_shell_value_changes_nothing(tmp_path):
+    assert vd.shell_overrides(_LIST_FORM, {"DOMAIN": "x"}, _OverrideRunner(set()), tmp_path) == []
+
+
+def test_shell_overrides_treats_a_bare_list_entry_as_a_passthrough(tmp_path):
+    run = _OverrideRunner({"EDGE_REALIP_HEADER"})
+    assert vd.shell_overrides(_LIST_FORM, {"EDGE_REALIP_HEADER": "y"}, run, tmp_path) == ["EDGE_REALIP_HEADER"]
+
+
+def test_shell_overrides_reads_a_reference_in_a_list_value_that_contains_an_equals_sign(tmp_path):
+    run = _OverrideRunner({"AWS_REGION"})
+    assert vd.shell_overrides(_LIST_FORM, {"AWS_REGION": "y"}, run, tmp_path) == ["AWS_REGION"]
+
+
+def test_shell_overrides_ignores_an_escaped_reference_in_a_list_form_environment(tmp_path):
+    run = _OverrideRunner({"NOT_A_REF"})
+    assert vd.shell_overrides(_LIST_FORM, {"NOT_A_REF": "y"}, run, tmp_path) == []
+
+
+def test_portal_environment_in_list_form_is_read_like_the_mapping_form():
+    config = {"services": {"portal": {"environment": ["SHADOWSOCKS_IMAGE=local/from-list", "INSTANCE_ID"]}}}
+    assert vd.resolve_ss_image(config, "") == "local/from-list"
+    assert vd.resolve_instance_id(config, "proj") == "proj"  # a bare INSTANCE_ID is unset, not an error
+
+
 def test_print_shell_overrides_exits_two_when_the_baseline_probe_fails(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AWS_REGION", "y")
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
@@ -1139,6 +1184,25 @@ def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
     assert probe.returncode == 0, probe.stderr
     names = vd.shell_overrides(json.loads(probe.stdout), os.environ, vd.run_command, project)
     assert names == ["SMTP_PASSWORD"]
+
+
+@pytest.mark.compose_cli
+def test_shell_overrides_through_the_real_compose_runner_on_the_overlay_chain_that_returns_list_form(
+    tmp_path, monkeypatch
+):
+    """The production overlay chain returns nginx's `environment` as a list; the check must still run."""
+    files = ["compose.yaml", "compose.cert.yaml", "compose.gateway.yaml", "compose.edge.yaml"]
+    for name in {field.upper() for field in Settings.model_fields} | {"COMPOSE_PROJECT_NAME"}:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("COMPOSE_FILE", os.pathsep.join(files))
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
+    project = compose_project(tmp_path, files, {"SECRET_KEY": "k", "DOMAIN": "postern.test"})
+    monkeypatch.setenv("DOMAIN", "from-shell.test")  # differs from .env: delivered instead of it
+    probe = vd.run_command(["docker", "compose", "config", "--no-interpolate", "--format", "json"], project)
+    assert probe.returncode == 0, probe.stderr
+    config = json.loads(probe.stdout)
+    assert isinstance(config["services"]["nginx"]["environment"], list)  # the premise: list form occurs here
+    assert "DOMAIN" in vd.shell_overrides(config, os.environ, vd.run_command, project)
 
 
 def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypatch, capsys):

@@ -216,37 +216,52 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
+def _bad_environment_entry(env: object, where: str) -> str | None:
+    """Why `env` is not a valid service `environment` (absent, a mapping of str/None, a list of str), else None."""
+    if env is None:
+        return None
+    if isinstance(env, dict):
+        for key, value in env.items():
+            if value is not None and not isinstance(value, str):
+                return f"{where}.{key} is {type(value).__name__}, not a string or null"
+        return None
+    if isinstance(env, list):
+        for item in env:
+            if not isinstance(item, str):
+                return f"{where} has a non-string entry {item!r:.100}"
+        return None
+    return f"{where} is {type(env).__name__}, not a mapping or list"
+
+
 def validate_compose_config(config: object) -> dict:
     """Check the shape of `docker compose config --format json` once, where it enters; return it.
 
-    `services` is absent or a mapping of service mappings, and each service's `environment` is
-    absent, a mapping of str/None values, or a list of str. Anything else raises CollectError, so
-    a caller that reads the config afterwards (`service_environment`) may assume this shape.
+    Every field this script reads is checked here: the project `name` (absent, null or a string),
+    `services` (absent or a mapping of service mappings) and, per service, `image` (absent, null or a
+    string) and `environment` (absent, a mapping of str/None values, or a list of str). `build` is only
+    tested for presence, so any value is fine. Anything else raises CollectError, so a caller that
+    reads the config afterwards (`service_environment`, `collect`) may assume this shape.
     """
     if not isinstance(config, dict):
         raise CollectError(f"compose config: expected a JSON object, got {type(config).__name__}")
+    name = config.get("name")
+    if name is not None and not isinstance(name, str):
+        raise CollectError(f"compose config: `name` is {type(name).__name__}, not a string")
     services = config.get("services")
     if services is None:
         return config
     if not isinstance(services, dict):
         raise CollectError(f"compose config: `services` is {type(services).__name__}, not a mapping")
-    for name, service in services.items():
+    for service_name, service in services.items():
         if not isinstance(service, dict):
-            raise CollectError(f"compose config: service {name!r} is {type(service).__name__}, not a mapping")
-        env = service.get("environment")
-        where = f"services.{name}.environment"
-        if env is None:
-            continue
-        if isinstance(env, dict):
-            bad = next((k for k, v in env.items() if v is not None and not isinstance(v, str)), None)
-            if bad is not None:
-                raise CollectError(f"compose config: {where}.{bad} is {type(env[bad]).__name__}, not a string or null")
-        elif isinstance(env, list):
-            bad = next((item for item in env if not isinstance(item, str)), None)
-            if bad is not None:
-                raise CollectError(f"compose config: {where} has a non-string entry {bad!r:.100}")
-        else:
-            raise CollectError(f"compose config: {where} is {type(env).__name__}, not a mapping or list")
+            raise CollectError(f"compose config: service {service_name!r} is {type(service).__name__}, not a mapping")
+        where = f"services.{service_name}"
+        image = service.get("image")
+        if image is not None and not isinstance(image, str):
+            raise CollectError(f"compose config: {where}.image is {type(image).__name__}, not a string")
+        problem = _bad_environment_entry(service.get("environment"), f"{where}.environment")
+        if problem:
+            raise CollectError(f"compose config: {problem}")
     return config
 
 
@@ -256,9 +271,9 @@ def service_environment(service: dict | None) -> dict[str, str | None]:
     The Compose spec allows the mapping (`{"NAME": value}`) and the list (`["NAME=value", "NAME"]`)
     and which one `compose config` returns depends on the overlay set. A value is None for a null
     mapping value and for a bare list `NAME` (both: passthrough from the shell/.env); only the first
-    `=` splits a list entry, since a value may itself contain one. Mapping values are stringified,
-    so raw compose YAML (`FOO: 1`) reads the same as `compose config` output. Assumes the shape
-    `validate_compose_config` checks.
+    `=` splits a list entry, since a value may itself contain one. Mapping values are stringified with
+    `str()`, which is the identity on `compose config` output (strings only) and turns an int in raw
+    compose YAML into its decimal text. Assumes the shape `validate_compose_config` checks.
     """
     env = (service or {}).get("environment") or {}
     if isinstance(env, dict):
@@ -354,9 +369,10 @@ def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
 def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
     """Names the deploying shell exports that change what compose delivers to a service.
 
-    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
-    key (a null mapping value or a bare list-form `NAME`) is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
-    literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
+    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough key
+    (a null mapping value or a bare list-form `NAME`) is None and an interpolated one is its
+    `${NAME...}` text; `$${NAME}` is Compose's escaped literal and `COMPOSE_*` names are the
+    shell's by design, so neither counts. Compose lets a
     shell value win over `.env` and the interpolation default, which an operator who exported the
     name for another purpose does not expect. A name is reported when it is exported and the
     resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
@@ -369,7 +385,7 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
         for key, value in service_environment(service).items():
             if value is None:
                 names.add(key)
-            elif isinstance(value, str):
+            else:
                 names.update(_ENV_REFERENCE.findall(value.replace("$$", "")))
     candidates = sorted(name for name in names if name in environ and not name.startswith("COMPOSE_"))
     if not candidates:

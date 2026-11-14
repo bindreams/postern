@@ -14,13 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from postern.settings import Settings
-
 from ._compose import compose_project, load_verify_deploy, run_compose_config, scrubbed_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-deploy.py"
-
 
 vd = load_verify_deploy()
 
@@ -1145,6 +1142,11 @@ _MALFORMED_CONFIGS = {
     "scalar environment": {"services": {"portal": {"image": "i", "environment": "A=1"}}},
     "mapping value is a number": {"services": {"portal": {"image": "i", "environment": {"A": 1}}}},
     "list entry is a number": {"services": {"portal": {"image": "i", "environment": ["A=1", 2]}}},
+    "list entry is null": {"services": {"portal": {"image": "i", "environment": ["A=1", None]}}},
+    "name is a number": {"name": 5, "services": {"portal": {"image": "i"}}},
+    "name is a list": {"name": ["p"], "services": {"portal": {"image": "i"}}},
+    "image is a number": {"services": {"portal": {"image": 5}}},
+    "image is a mapping": {"services": {"portal": {"image": {"name": "i"}}}},
 }  # yapf: disable
 
 
@@ -1187,7 +1189,7 @@ def test_print_shell_overrides_exits_two_when_the_baseline_probe_is_not_json(tmp
 @pytest.mark.compose_cli
 def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
     """A real export that changes what compose delivers is reported; one equal to `.env` is silent."""
-    for name in {field.upper() for field in Settings.model_fields} | {"COMPOSE_FILE", "COMPOSE_PROJECT_NAME"}:
+    for name in scrubbed_names():
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
     project = compose_project(
@@ -1195,10 +1197,8 @@ def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("SMTP_PASSWORD", "from-shell")  # differs from .env: delivered instead of it
     monkeypatch.setenv("DOMAIN", "postern.test")  # equals .env: changes nothing
-    probe = vd.run_command(["docker", "compose", "config", "--no-interpolate", "--format", "json"], project)
-    assert probe.returncode == 0, probe.stderr
-    names = vd.shell_overrides(json.loads(probe.stdout), os.environ, vd.run_command, project)
-    assert names == ["SMTP_PASSWORD"]
+    config = run_compose_config([], project, dict(os.environ), ["--no-interpolate"])
+    assert vd.shell_overrides(config, os.environ, vd.run_command, project) == ["SMTP_PASSWORD"]
 
 
 @pytest.mark.compose_cli

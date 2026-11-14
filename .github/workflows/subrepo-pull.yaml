@@ -27,6 +27,12 @@ jobs:
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
+      # git-subrepo makes commits, and a runner has no committer identity.
+      - name: Set git committer identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
       - name: Detect changed subrepos and pull
         run: |
           # Find which .gitrepo files were changed in this PR

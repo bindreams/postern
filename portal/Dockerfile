@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 
-FROM dhi.io/python:3.14-alpine3.23-dev AS build
+# The Python minor for the image tag. mta/Dockerfile and provisioner/Dockerfile (apk pin and
+# site-packages path) and portal/.python-version carry the same value; Renovate bumps them
+# together and test_python_pin.py enforces it.
+ARG PYTHON_MINOR=3.14
+
+FROM dhi.io/python:${PYTHON_MINOR}-alpine3.23-dev AS build
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /bin/uv
 WORKDIR /app
 COPY portal/pyproject.toml portal/uv.lock ./
@@ -10,7 +15,7 @@ COPY portal/src/ src/
 RUN uv sync --frozen --no-dev --link-mode=copy
 RUN mkdir /data
 
-FROM dhi.io/python:3.14-alpine3.23
+FROM dhi.io/python:${PYTHON_MINOR}-alpine3.23
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"
 LABEL org.opencontainers.image.url="https://github.com/bindreams/postern"

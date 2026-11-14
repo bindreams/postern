@@ -4,6 +4,9 @@
   "automerge": true,
   "minimumReleaseAge": "7 days",
   "semanticCommits": "enabled",
+  "pyenv": {
+    "enabled": false
+  },
   "registryAliases": {
     "dhi.io": "dhi.io"
   },
@@ -34,6 +37,12 @@
       "description": "The docker-proxy's base image is the HAProxy and Lua build that policy.lua runs in. A bump can change Lua or HTTP-parsing semantics the allow-list depends on, so a person runs the policy suites (portal/tests/test_docker_proxy_policy.py and the e2e test_docker_api_policy.py) before it merges.",
       "matchPackageNames": ["ghcr.io/linuxserver/socket-proxy"],
       "automerge": false
+    },
+    {
+      "description": "The Python image tag is built from `ARG PYTHON_MINOR`, which the regex manager at the bottom of customManagers bumps in every Dockerfile and portal/.python-version at once. The dockerfile manager would also resolve the portal's `${PYTHON_MINOR}` FROMs into a second update whose replacement string is not in the file.",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["dhi.io/python"],
+      "enabled": false
     },
     {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
@@ -103,6 +112,21 @@
       "depNameTemplate": "bindreams/hole-galoshes",
       "packageNameTemplate": "bindreams/hole",
       "versioningTemplate": "loose"
+    },
+    {
+      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). portal/tests/test_python_pin.py pins that every site is covered and agrees.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^(portal|mta|provisioner)/Dockerfile$/",
+        "/^portal/\\.python-version$/"
+      ],
+      "matchStrings": [
+        "ARG PYTHON_MINOR=(?<currentValue>\\d+\\.\\d+)\\s",
+        "^(?<currentValue>\\d+\\.\\d+)\\s*$"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "python",
+      "packageNameTemplate": "dhi.io/python"
     }
   ],
   "hostRules": [

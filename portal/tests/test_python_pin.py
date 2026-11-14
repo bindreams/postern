@@ -1,9 +1,11 @@
-"""The mta and provisioner images pin one Python minor, equal to the portal's.
+"""Every Python pin site carries one minor, and one Renovate manager bumps them all.
 
-Each Dockerfile declares `PYTHON_MINOR` once and derives both the apk pin and the
-site-packages COPY target from it, so an unpinned `python3` cannot drift from the
-py3-* packages.
+The sites are `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles and
+`portal/.python-version`. The mta and provisioner derive both the apk pin and the
+site-packages COPY target from the ARG, so an unpinned `python3` cannot drift from the
+py3-* packages; the portal derives its `dhi.io/python` tag from it.
 """
+import json
 import re
 import shlex
 from pathlib import Path
@@ -12,24 +14,78 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGES = ("mta/Dockerfile", "provisioner/Dockerfile")
+PIN_DOCKERFILES = ("portal/Dockerfile", *IMAGES)
+PYTHON_VERSION_FILE = "portal/.python-version"
+PIN_SITES = (*PIN_DOCKERFILES, PYTHON_VERSION_FILE)
 
 
 def _text(rel: str) -> str:
     return (REPO_ROOT / rel).read_text()
 
 
-def _portal_minor() -> str:
-    minors = set(re.findall(r"^FROM dhi\.io/python:(\d+\.\d+)-", _text("portal/Dockerfile"), re.MULTILINE))
-    assert minors, "portal/Dockerfile no longer FROMs dhi.io/python:<minor>-..."
-    assert len(minors) == 1, f"portal/Dockerfile stages disagree on the Python minor: {sorted(minors)}"
-    return minors.pop()
-
-
-@pytest.mark.parametrize("rel", IMAGES)
-def test_python_minor_matches_portal(rel):
+def _pin(rel: str) -> str:
+    """The Python minor a pin site declares."""
+    if rel == PYTHON_VERSION_FILE:
+        return _text(rel).strip()
     m = re.search(r"^ARG PYTHON_MINOR=(\S+)$", _text(rel), re.MULTILINE)
     assert m, f"{rel} must declare `ARG PYTHON_MINOR=<minor>`"
-    assert m.group(1) == _portal_minor()
+    return m.group(1)
+
+
+def test_every_pin_site_declares_the_same_minor():
+    minors = {rel: _pin(rel) for rel in PIN_SITES}
+    assert len(set(minors.values())) == 1, minors
+
+
+def test_portal_python_image_tag_comes_from_the_arg():
+    froms = re.findall(r"^FROM (dhi\.io/python:\S+)", _text("portal/Dockerfile"), re.MULTILINE)
+    assert len(froms) == 2, froms  # build and runtime stage
+    assert all(f.startswith("dhi.io/python:${PYTHON_MINOR}-") for f in froms), froms
+
+
+def _renovate() -> dict:
+    return json.loads(_text(".github/renovate.json"))
+
+
+def _regex_managers_matching(rel: str) -> list[dict]:
+    """Custom regex managers that track the `python` dependency and whose file patterns select `rel`.
+
+    Renovate wraps a file pattern in `/.../`. Other managers also select the Dockerfiles (Lego, for one).
+    """
+    return [
+        m for m in _renovate()["customManagers"] if m["customType"] == "regex" and m.get("depNameTemplate") == "python"
+        and any(re.search(pattern.strip("/"), rel) for pattern in m["managerFilePatterns"])
+    ]
+
+
+def test_one_renovate_manager_bumps_every_pin_site():
+    managers = [_regex_managers_matching(rel) for rel in PIN_SITES]
+    assert all(len(found) == 1 for found in managers), managers
+    assert all(found[0] == managers[0][0] for found in managers), "pin sites are bumped by different managers"
+
+
+@pytest.mark.parametrize("rel", PIN_SITES)
+def test_renovate_manager_reads_the_pin_site(rel):
+    (manager, ) = _regex_managers_matching(rel)
+    # JS named groups `(?<n>` become Python's `(?P<n>`; Renovate compiles with the `g` flag only.
+    found = [
+        m.group("currentValue") for pattern in manager["matchStrings"]
+        for m in re.finditer(pattern.replace("(?<", "(?P<"), _text(rel))
+    ]
+    assert found == [_pin(rel)], found
+
+
+def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
+    """It would resolve the portal's `${PYTHON_MINOR}` tag into a second, unreplaceable update."""
+    assert any(
+        rule.get("matchManagers") == ["dockerfile"] and rule.get("matchPackageNames") == ["dhi.io/python"]
+        and rule.get("enabled") is False for rule in _renovate()["packageRules"]
+    )
+
+
+def test_renovate_pyenv_manager_is_off():
+    """It would bump `.python-version` on its own, in a PR the Dockerfiles do not follow."""
+    assert _renovate().get("pyenv") == {"enabled": False}
 
 
 def _apk_add_python_tokens(code: str) -> list[str]:
@@ -86,7 +142,7 @@ def test_site_packages_copies_use_the_pinned_minor(rel):
     assert _copy_destinations(rel) == expected
 
 
-@pytest.mark.parametrize("rel", IMAGES)
+@pytest.mark.parametrize("rel", PIN_DOCKERFILES)
 def test_every_stage_using_the_minor_redeclares_the_arg(rel):
     """A global ARG is not visible inside a stage until the stage redeclares it."""
     stage_lines: list[str] = []

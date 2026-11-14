@@ -5,7 +5,6 @@ imported -- the same reach-out-of-portal pattern as tests/test_nginx_render.py.
 No test here touches Docker or the network: `collect()` takes an injected
 runner and `evaluate()` is pure.
 """
-import importlib.util
 import io
 import json
 import os
@@ -17,28 +16,13 @@ import pytest
 
 from postern.settings import Settings
 
-from ._compose import compose_project
+from ._compose import compose_project, load_verify_deploy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-deploy.py"
 
 
-def _load():
-    spec = importlib.util.spec_from_file_location("verify_deploy", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Registering before exec is required, not cosmetic: the script uses
-    # `from __future__ import annotations`, so every dataclass field annotation
-    # is a string, and dataclasses resolves them via
-    # sys.modules[cls.__module__].__dict__. Without this line every dataclass
-    # in the script raises AttributeError: 'NoneType' has no attribute
-    # '__dict__' at import, and the whole test file errors during collection.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-vd = _load()
+vd = load_verify_deploy()
 
 
 # Revision oracle ------------------------------------------------------------------------------------------------------

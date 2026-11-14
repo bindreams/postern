@@ -10,13 +10,16 @@ first needs it -- not before.
 from __future__ import annotations
 
 import functools
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
@@ -177,27 +180,33 @@ def production_mta_submit_subnet() -> str:
 
 
 # Service environment and the real Compose CLI =========================================================================
+@functools.cache
+def load_verify_deploy() -> ModuleType:
+    """`scripts/verify-deploy.py`, loaded once by path (it is host-side, stdlib-only, and not importable as a module).
+
+    Registered in `sys.modules` before it executes: the script uses `from __future__ import annotations`, so
+    dataclasses resolve every field annotation through `sys.modules[cls.__module__]`, and without the registration
+    every dataclass in it raises AttributeError at import. Memoized so every caller shares one module (one
+    `CollectError` class, one `Completed`).
+    """
+    spec = importlib.util.spec_from_file_location("verify_deploy", REPO_ROOT / "scripts" / "verify-deploy.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def service_environment(path: Path, service: str) -> dict[str, str | None]:
     """A service's `environment` as a dict, accepting both Compose forms.
 
-    The mapping form is what this repo uses; the `- KEY=VALUE` list form is
-    equally valid Compose and would otherwise crash every glob-derived guard in
-    this module with an AttributeError the moment a new file used it. A bare
-    `- KEY` entry (no `=`) is legal Compose too -- it passes the host's own
-    environment value through -- and maps to None rather than raising, since
-    "value comes from the host" is not "malformed file".
+    Parsing is `verify-deploy.py`'s `service_environment`, the one implementation: the mapping form is what
+    this repo uses; the `- KEY=VALUE` list form is equally valid Compose; a bare `- KEY` entry (or a null mapping
+    value) maps to None, since "value comes from the host" is not "malformed file". Values are strings or None.
     """
     env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
-    if env is None:
-        return {}
-    if isinstance(env, dict):
-        return {str(k): (None if v is None else str(v)) for k, v in env.items()}
-    assert isinstance(env, list), f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
-    out: dict[str, str | None] = {}
-    for item in env:
-        key, sep, value = str(item).partition("=")
-        out[key] = value if sep else None
-    return out
+    assert env is None or isinstance(env, (dict, list)),         f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
+    return load_verify_deploy().service_environment({"environment": env})
 
 
 def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:

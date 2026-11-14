@@ -16,7 +16,7 @@ import pytest
 
 from postern.settings import Settings
 
-from ._compose import compose_project, load_verify_deploy
+from ._compose import compose_project, load_verify_deploy, run_compose_config, scrubbed_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-deploy.py"
@@ -1207,15 +1207,13 @@ def test_shell_overrides_through_the_real_compose_runner_on_the_overlay_chain_th
 ):
     """The production overlay chain returns nginx's `environment` as a list; the check must still run."""
     files = ["compose.yaml", "compose.cert.yaml", "compose.gateway.yaml", "compose.edge.yaml"]
-    for name in {field.upper() for field in Settings.model_fields} | {"COMPOSE_PROJECT_NAME"}:
+    for name in scrubbed_names():
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("COMPOSE_FILE", os.pathsep.join(files))
     monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
     project = compose_project(tmp_path, files, {"SECRET_KEY": "k", "DOMAIN": "postern.test"})
     monkeypatch.setenv("DOMAIN", "from-shell.test")  # differs from .env: delivered instead of it
-    probe = vd.run_command(["docker", "compose", "config", "--no-interpolate", "--format", "json"], project)
-    assert probe.returncode == 0, probe.stderr
-    config = json.loads(probe.stdout)
+    config = run_compose_config([], project, dict(os.environ), ["--no-interpolate"])
     assert isinstance(config["services"]["nginx"]["environment"], list)  # the premise: list form occurs here
     assert "DOMAIN" in vd.shell_overrides(config, os.environ, vd.run_command, project)
 

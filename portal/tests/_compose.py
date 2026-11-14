@@ -209,12 +209,14 @@ def service_environment(path: Path, service: str) -> dict[str, str | None]:
     return load_verify_deploy().service_environment({"environment": env})
 
 
-def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
+def run_compose_config(
+    compose_args: list[str], cwd: Path, env: dict[str, str], config_args: Iterable[str] = ()
+) -> dict:
     """Shell out to the real Compose CLI's `config --format json` and return
-    the parsed result.
+    the parsed result. `config_args` are flags of `config` itself (`--no-interpolate`).
     """
     proc = subprocess.run(
-        ["docker", "compose", *compose_args, "config", "--format", "json"],
+        ["docker", "compose", *compose_args, "config", *config_args, "--format", "json"],
         cwd=cwd,
         env=env,
         capture_output=True,
@@ -229,6 +231,11 @@ def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) 
 # Names no Compose-CLI test may inherit from the developer's own shell: every portal setting, plus the
 # variables Compose itself reads. A test that cares about another name passes it as `scrub`.
 _ALWAYS_SCRUBBED = frozenset({"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"})
+
+
+def scrubbed_names(scrub: Iterable[str] = ()) -> set[str]:
+    """Every name a Compose-CLI test must not inherit: all `Settings` fields, `_ALWAYS_SCRUBBED` and `scrub`."""
+    return {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
 
 
 def compose_project(tmp_path: Path, files: Iterable[str], dotenv: Mapping[str, str]) -> Path:
@@ -255,7 +262,7 @@ def resolve_compose(
     The environment is the caller's own minus every `Settings` field, `_ALWAYS_SCRUBBED` and `scrub`,
     so a value exported in the developer's shell cannot leak into what is asserted.
     """
-    scrubbed = {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
+    scrubbed = scrubbed_names(scrub)
     env = {k: v for k, v in os.environ.items() if k not in scrubbed}
     env.update(shell or {})
     return run_compose_config([arg for name in files for arg in ("-f", name)], project, env)

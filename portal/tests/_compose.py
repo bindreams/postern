@@ -10,13 +10,16 @@ first needs it -- not before.
 from __future__ import annotations
 
 import functools
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
@@ -177,40 +180,61 @@ def production_mta_submit_subnet() -> str:
 
 
 # Service environment and the real Compose CLI =========================================================================
-def service_environment(path: Path, service: str) -> dict[str, str | None]:
-    """A service's `environment` as a dict, accepting both Compose forms.
+@functools.cache
+def load_verify_deploy() -> ModuleType:
+    """`scripts/verify-deploy.py`, loaded once by path (it is host-side, stdlib-only, and not importable as a module).
 
-    The mapping form is what this repo uses; the `- KEY=VALUE` list form is
-    equally valid Compose and would otherwise crash every glob-derived guard in
-    this module with an AttributeError the moment a new file used it. A bare
-    `- KEY` entry (no `=`) is legal Compose too -- it passes the host's own
-    environment value through -- and maps to None rather than raising, since
-    "value comes from the host" is not "malformed file".
+    Registered in `sys.modules` before it executes: the script uses `from __future__ import annotations`, so
+    dataclasses resolve every field annotation through `sys.modules[cls.__module__]`, and without the registration
+    every dataclass in it raises AttributeError at import. Memoized so every caller shares one module.
     """
+    spec = importlib.util.spec_from_file_location("verify_deploy", REPO_ROOT / "scripts" / "verify-deploy.py")
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _compose_scalar(value: object) -> object:
+    """A raw-YAML bool or number as the string Compose delivers; anything else unchanged."""
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return value
+
+
+def service_environment(path: Path, service: str) -> dict[str, str | None]:
+    """A service's `environment` as a dict, via `verify-deploy.py`'s `service_environment`. Raises AssertionError
+    naming the file and service when the shape is malformed. Raw-YAML mapping scalars are first turned into the
+    text Compose delivers (`true`/`false`, a number's text), since `compose config` only ever returns strings.
+    """
+    vd = load_verify_deploy()
     env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
-    if env is None:
-        return {}
     if isinstance(env, dict):
-        return {str(k): (None if v is None else str(v)) for k, v in env.items()}
-    assert isinstance(env, list), f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
-    out: dict[str, str | None] = {}
-    for item in env:
-        key, sep, value = str(item).partition("=")
-        out[key] = value if sep else None
-    return out
+        env = {key: _compose_scalar(value) for key, value in env.items()}
+    try:
+        vd.validate_compose_config({"services": {service: {"environment": env}}})
+    except vd.CollectError as exc:
+        raise AssertionError(f"{path}: service {service!r}: {exc}") from exc
+    return vd.service_environment({"environment": env})
 
 
-def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) -> dict:
+def run_compose_config(
+    compose_args: list[str], cwd: Path, env: dict[str, str], config_args: Iterable[str] = ()
+) -> dict:
     """Shell out to the real Compose CLI's `config --format json` and return
-    the parsed result.
+    the parsed result. `config_args` are flags of `config` itself (`--no-interpolate`).
     """
     proc = subprocess.run(
-        ["docker", "compose", *compose_args, "config", "--format", "json"],
+        ["docker", "compose", *compose_args, "config", *config_args, "--format", "json"],
         cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
-        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named; keep below pyproject's `timeout = 30`.
+        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named;
+        # keep below pyproject's `timeout = 30`.
         timeout=20,
     )
     assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"
@@ -220,6 +244,11 @@ def run_compose_config(compose_args: list[str], cwd: Path, env: dict[str, str]) 
 # Names no Compose-CLI test may inherit from the developer's own shell: every portal setting, plus the
 # variables Compose itself reads. A test that cares about another name passes it as `scrub`.
 _ALWAYS_SCRUBBED = frozenset({"COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "GIT_REVISION"})
+
+
+def scrubbed_names(scrub: Iterable[str] = ()) -> set[str]:
+    """Every name a Compose-CLI test must not inherit: all `Settings` fields, `_ALWAYS_SCRUBBED` and `scrub`."""
+    return {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
 
 
 def compose_project(tmp_path: Path, files: Iterable[str], dotenv: Mapping[str, str]) -> Path:
@@ -246,7 +275,7 @@ def resolve_compose(
     The environment is the caller's own minus every `Settings` field, `_ALWAYS_SCRUBBED` and `scrub`,
     so a value exported in the developer's shell cannot leak into what is asserted.
     """
-    scrubbed = {field.upper() for field in Settings.model_fields} | _ALWAYS_SCRUBBED | set(scrub)
+    scrubbed = scrubbed_names(scrub)
     env = {k: v for k, v in os.environ.items() if k not in scrubbed}
     env.update(shell or {})
     return run_compose_config([arg for name in files for arg in ("-f", name)], project, env)

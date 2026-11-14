@@ -216,6 +216,67 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
+def _bad_environment_entry(env: object, where: str) -> str | None:
+    """Why `env` is not a valid service `environment`, else None."""
+    if env is None:
+        return None
+    if isinstance(env, dict):
+        for key, value in env.items():
+            if value is not None and not isinstance(value, str):
+                return f"{where}.{key} is {type(value).__name__}, not a string or null"
+        return None
+    if isinstance(env, list):
+        for item in env:
+            if not isinstance(item, str):
+                return f"{where} has a non-string entry {item!r:.100}"
+        return None
+    return f"{where} is {type(env).__name__}, not a mapping or list"
+
+
+def validate_compose_config(config: object) -> dict:
+    """Validate the shape of `docker compose config --format json` once, where it enters, and return it.
+
+    Raises CollectError on any field this script reads (`name`, `services`, per-service `image` and
+    `environment`) that has the wrong type, so later readers may assume the shape.
+    """
+    if not isinstance(config, dict):
+        raise CollectError(f"compose config: expected a JSON object, got {type(config).__name__}")
+    name = config.get("name")
+    if name is not None and not isinstance(name, str):
+        raise CollectError(f"compose config: `name` is {type(name).__name__}, not a string")
+    services = config.get("services")
+    if services is None:
+        return config
+    if not isinstance(services, dict):
+        raise CollectError(f"compose config: `services` is {type(services).__name__}, not a mapping")
+    for service_name, service in services.items():
+        if not isinstance(service, dict):
+            raise CollectError(f"compose config: service {service_name!r} is {type(service).__name__}, not a mapping")
+        where = f"services.{service_name}"
+        image = service.get("image")
+        if image is not None and not isinstance(image, str):
+            raise CollectError(f"compose config: {where}.image is {type(image).__name__}, not a string")
+        problem = _bad_environment_entry(service.get("environment"), f"{where}.environment")
+        if problem:
+            raise CollectError(f"compose config: {problem}")
+    return config
+
+
+def service_environment(service: dict | None) -> dict[str, str | None]:
+    """A service's `environment` as `{name: value}`, whichever Compose form it is in (which one `compose config`
+    returns depends on the overlay set). A value is None for a null mapping value or a bare list `NAME`
+    (passthrough). Only the first `=` splits a list entry. Assumes the shape `validate_compose_config` checks.
+    """
+    env = (service or {}).get("environment") or {}
+    if isinstance(env, dict):
+        return dict(env)
+    out: dict[str, str | None] = {}
+    for item in env:
+        name, sep, value = item.partition("=")
+        out[name] = value if sep else None
+    return out
+
+
 def _portal_env(config: dict) -> dict[str, str | None]:
     """The compose-resolved portal environment, keyed upper-case.
 
@@ -224,9 +285,9 @@ def _portal_env(config: dict) -> dict[str, str | None]:
     differently-spelled name -- silently, in the passing direction, which is the
     one failure mode this script exists to eliminate. compose.yaml itself
     delivers upper-case names only. A value is None for a bare passthrough key
-    that compose could not resolve (JSON null); every caller treats that as unset.
+    that compose could not resolve (JSON null, or a bare list-form `NAME`); every caller treats that as unset.
     """
-    raw = (config.get("services", {}).get("portal", {}) or {}).get("environment") or {}
+    raw = service_environment((config.get("services") or {}).get("portal"))
     return {k.upper(): v for k, v in raw.items()}
 
 
@@ -300,22 +361,22 @@ def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
 def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
     """Names the deploying shell exports that change what compose delivers to a service.
 
-    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
-    key is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
-    literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
-    shell value win over `.env` and the interpolation default, which an operator who exported the
-    name for another purpose does not expect. A name is reported when it is exported and the
-    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
-    only: the caller prints them, and a value could be a secret. A variant that fails to resolve or
-    parse (a `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline
-    raises CollectError.
+    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough key (a null
+    mapping value or a bare list-form `NAME`) is None and an interpolated one is its `${NAME...}` text;
+    `$${NAME}` is Compose's escaped literal and `COMPOSE_*` names are the shell's by design, so neither
+    counts. Compose lets a shell value win over `.env` and the interpolation default, which an operator who
+    exported the name for another purpose does not expect. A name is reported when it is exported and the
+    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names only: the
+    caller prints them, and a value could be a secret. A variant that fails to resolve or parse (a
+    `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline raises
+    CollectError.
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():
-        for key, value in ((service or {}).get("environment") or {}).items():
+        for key, value in service_environment(service).items():
             if value is None:
                 names.add(key)
-            elif isinstance(value, str):
+            else:
                 names.update(_ENV_REFERENCE.findall(value.replace("$$", "")))
     candidates = sorted(name for name in names if name in environ and not name.startswith("COMPOSE_"))
     if not candidates:
@@ -613,6 +674,7 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
         config = json.loads(config_result.stdout)
     except ValueError as exc:
         raise CollectError(f"docker compose config emitted unparseable JSON: {exc}") from exc
+    validate_compose_config(config)
 
     # Refuse to verify nothing. A wrong --project-dir, or a COMPOSE_PROFILES
     # that gates every service off, would otherwise exit 0 having checked
@@ -1139,13 +1201,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.print_shell_overrides:
+        # sys.stdin is None with fd 0 closed (see read_expected_tunnels).
+        if sys.stdin is None:
+            print(
+                "verify-deploy: --print-shell-overrides needs compose config JSON on stdin: stdin is closed",
+                file=sys.stderr,
+            )
+            return 2
         try:
             config = json.loads(sys.stdin.read())
         except (OSError, ValueError) as exc:
             print(f"verify-deploy: --print-shell-overrides needs compose config JSON on stdin: {exc}", file=sys.stderr)
             return 2
         try:
-            names = shell_overrides(config, os.environ, run_command, args.project_dir)
+            names = shell_overrides(validate_compose_config(config), os.environ, run_command, args.project_dir)
         except CollectError as exc:
             print(f"verify-deploy: {exc}", file=sys.stderr)
             return 2

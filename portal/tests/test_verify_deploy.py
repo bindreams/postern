@@ -5,7 +5,6 @@ imported -- the same reach-out-of-portal pattern as tests/test_nginx_render.py.
 No test here touches Docker or the network: `collect()` takes an injected
 runner and `evaluate()` is pure.
 """
-import importlib.util
 import io
 import json
 import os
@@ -15,30 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from postern.settings import Settings
-
-from ._compose import compose_project
+from ._compose import compose_project, load_verify_deploy, run_compose_config, scrubbed_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "verify-deploy.py"
 
-
-def _load():
-    spec = importlib.util.spec_from_file_location("verify_deploy", SCRIPT)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    # Registering before exec is required, not cosmetic: the script uses
-    # `from __future__ import annotations`, so every dataclass field annotation
-    # is a string, and dataclasses resolves them via
-    # sys.modules[cls.__module__].__dict__. Without this line every dataclass
-    # in the script raises AttributeError: 'NoneType' has no attribute
-    # '__dict__' at import, and the whole test file errors during collection.
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-vd = _load()
+vd = load_verify_deploy()
 
 
 # Revision oracle ------------------------------------------------------------------------------------------------------
@@ -997,7 +978,7 @@ _UNINTERPOLATED = {
         "provisioner": {
             "environment": {
                 "AWS_REGION": None,
-                "CONTAINERS": 1,
+                "CONTAINERS": "1",
                 "COMPOSE_PROFILES": "${COMPOSE_PROFILES:-}",
             }
         },
@@ -1108,6 +1089,87 @@ def test_shell_overrides_raises_when_the_baseline_probe_is_not_json(tmp_path):
         vd.shell_overrides(_UNINTERPOLATED, {"AWS_REGION": "y"}, run, tmp_path)
 
 
+# A service's `environment` may come back from `compose config` in the list form (`NAME=value`, bare `NAME`).
+_LIST_FORM = {
+    "services": {
+        "nginx": {
+            "environment": [
+                "DOMAIN=${DOMAIN:-x}",
+                "EDGE_REALIP_HEADER",
+                "LITERAL=$${NOT_A_REF}",
+                "URL=https://h/?a=${AWS_REGION}",
+            ]
+        }
+    }
+}  # yapf: disable
+
+
+def test_shell_overrides_names_a_variable_in_a_list_form_environment(tmp_path):
+    run = _OverrideRunner({"DOMAIN"})
+    assert vd.shell_overrides(_LIST_FORM, {"DOMAIN": "y"}, run, tmp_path) == ["DOMAIN"]
+
+
+def test_shell_overrides_ignores_a_list_form_name_whose_shell_value_changes_nothing(tmp_path):
+    assert vd.shell_overrides(_LIST_FORM, {"DOMAIN": "x"}, _OverrideRunner(set()), tmp_path) == []
+
+
+def test_shell_overrides_treats_a_bare_list_entry_as_a_passthrough(tmp_path):
+    run = _OverrideRunner({"EDGE_REALIP_HEADER"})
+    assert vd.shell_overrides(_LIST_FORM, {"EDGE_REALIP_HEADER": "y"}, run, tmp_path) == ["EDGE_REALIP_HEADER"]
+
+
+def test_shell_overrides_reads_a_reference_in_a_list_value_that_contains_an_equals_sign(tmp_path):
+    run = _OverrideRunner({"AWS_REGION"})
+    assert vd.shell_overrides(_LIST_FORM, {"AWS_REGION": "y"}, run, tmp_path) == ["AWS_REGION"]
+
+
+def test_shell_overrides_ignores_an_escaped_reference_in_a_list_form_environment(tmp_path):
+    run = _OverrideRunner({"NOT_A_REF"})
+    assert vd.shell_overrides(_LIST_FORM, {"NOT_A_REF": "y"}, run, tmp_path) == []
+
+
+def test_portal_environment_in_list_form_is_read_like_the_mapping_form():
+    config = {"services": {"portal": {"environment": ["SHADOWSOCKS_IMAGE=local/from-list", "INSTANCE_ID"]}}}
+    assert vd.resolve_ss_image(config, "") == "local/from-list"
+    assert vd.resolve_instance_id(config, "proj") == "proj"  # a bare INSTANCE_ID is unset, not an error
+
+
+_MALFORMED_CONFIGS = {
+    "top-level list": [],
+    "services is a list": {"services": ["portal"]},
+    "service is a string": {"services": {"portal": "x"}},
+    "service is null": {"services": {"portal": None}},
+    "scalar environment": {"services": {"portal": {"image": "i", "environment": "A=1"}}},
+    "mapping value is a number": {"services": {"portal": {"image": "i", "environment": {"A": 1}}}},
+    "list entry is a number": {"services": {"portal": {"image": "i", "environment": ["A=1", 2]}}},
+    "list entry is null": {"services": {"portal": {"image": "i", "environment": ["A=1", None]}}},
+    "name is a number": {"name": 5, "services": {"portal": {"image": "i"}}},
+    "name is a list": {"name": ["p"], "services": {"portal": {"image": "i"}}},
+    "image is a number": {"services": {"portal": {"image": 5}}},
+    "image is a mapping": {"services": {"portal": {"image": {"name": "i"}}}},
+}  # yapf: disable
+
+
+@pytest.mark.parametrize("config", _MALFORMED_CONFIGS.values(), ids=_MALFORMED_CONFIGS.keys())
+def test_print_shell_overrides_exits_two_with_a_message_on_a_config_of_an_unexpected_shape(
+    config, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("A", "y")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(config)))
+    monkeypatch.setattr(vd, "run_command", _OverrideRunner({"A"}))
+    assert vd.main(["--print-shell-overrides", "--project-dir", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("verify-deploy: compose config: ") and "Traceback" not in err
+
+
+@pytest.mark.parametrize("config", _MALFORMED_CONFIGS.values(), ids=_MALFORMED_CONFIGS.keys())
+def test_collect_raises_collect_error_on_a_config_of_an_unexpected_shape(config, tmp_path):
+    named = {"name": "p", **config} if isinstance(config, dict) else config  # past collect's own name check
+    run = _OverrideRunner(set(), stdout=json.dumps(named))
+    with pytest.raises(vd.CollectError, match=r"compose config: "):  # the shape check, not a later failure
+        vd.collect(run, tmp_path, "", tunnels=False)
+
+
 def test_print_shell_overrides_exits_two_when_the_baseline_probe_fails(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AWS_REGION", "y")
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(_UNINTERPOLATED)))
@@ -1127,7 +1189,7 @@ def test_print_shell_overrides_exits_two_when_the_baseline_probe_is_not_json(tmp
 @pytest.mark.compose_cli
 def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
     """A real export that changes what compose delivers is reported; one equal to `.env` is silent."""
-    for name in {field.upper() for field in Settings.model_fields} | {"COMPOSE_FILE", "COMPOSE_PROJECT_NAME"}:
+    for name in scrubbed_names():
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
     project = compose_project(
@@ -1135,10 +1197,25 @@ def test_shell_overrides_through_the_real_compose_runner(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("SMTP_PASSWORD", "from-shell")  # differs from .env: delivered instead of it
     monkeypatch.setenv("DOMAIN", "postern.test")  # equals .env: changes nothing
-    probe = vd.run_command(["docker", "compose", "config", "--no-interpolate", "--format", "json"], project)
-    assert probe.returncode == 0, probe.stderr
-    names = vd.shell_overrides(json.loads(probe.stdout), os.environ, vd.run_command, project)
-    assert names == ["SMTP_PASSWORD"]
+    config = run_compose_config([], project, dict(os.environ), ["--no-interpolate"])
+    assert vd.shell_overrides(config, os.environ, vd.run_command, project) == ["SMTP_PASSWORD"]
+
+
+@pytest.mark.compose_cli
+def test_shell_overrides_through_the_real_compose_runner_on_the_overlay_chain_that_returns_list_form(
+    tmp_path, monkeypatch
+):
+    """The production overlay chain returns nginx's `environment` as a list; the check must still run."""
+    files = ["compose.yaml", "compose.cert.yaml", "compose.gateway.yaml", "compose.edge.yaml"]
+    for name in scrubbed_names():
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("COMPOSE_FILE", os.pathsep.join(files))
+    monkeypatch.setenv("COMPOSE_PROFILES", "with-mta,with-cert-renewal,with-edge")
+    project = compose_project(tmp_path, files, {"SECRET_KEY": "k", "DOMAIN": "postern.test"})
+    monkeypatch.setenv("DOMAIN", "from-shell.test")  # differs from .env: delivered instead of it
+    config = run_compose_config([], project, dict(os.environ), ["--no-interpolate"])
+    assert isinstance(config["services"]["nginx"]["environment"], list)  # the premise: list form occurs here
+    assert "DOMAIN" in vd.shell_overrides(config, os.environ, vd.run_command, project)
 
 
 def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypatch, capsys):
@@ -1152,6 +1229,14 @@ def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypa
     out = capsys.readouterr()
     assert out.out.split() == ["SMTP_HOST"]
     assert "secret-looking-value" not in out.out + out.err
+
+
+def test_print_shell_overrides_exits_two_with_a_message_when_stdin_is_closed(monkeypatch, capsys):
+    """`<&-` leaves sys.stdin None, not a stream whose .read() raises."""
+    monkeypatch.setattr("sys.stdin", None)
+    assert vd.main(["--print-shell-overrides"]) == 2
+    err = capsys.readouterr().err
+    assert "stdin is closed" in err and "Traceback" not in err
 
 
 def test_print_shell_overrides_rejects_unparseable_input(monkeypatch, capsys):

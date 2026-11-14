@@ -997,7 +997,7 @@ _UNINTERPOLATED = {
         "provisioner": {
             "environment": {
                 "AWS_REGION": None,
-                "CONTAINERS": 1,
+                "CONTAINERS": "1",
                 "COMPOSE_PROFILES": "${COMPOSE_PROFILES:-}",
             }
         },
@@ -1151,6 +1151,37 @@ def test_portal_environment_in_list_form_is_read_like_the_mapping_form():
     config = {"services": {"portal": {"environment": ["SHADOWSOCKS_IMAGE=local/from-list", "INSTANCE_ID"]}}}
     assert vd.resolve_ss_image(config, "") == "local/from-list"
     assert vd.resolve_instance_id(config, "proj") == "proj"  # a bare INSTANCE_ID is unset, not an error
+
+
+_MALFORMED_CONFIGS = {
+    "top-level list": [],
+    "services is a list": {"services": ["portal"]},
+    "service is a string": {"services": {"portal": "x"}},
+    "service is null": {"services": {"portal": None}},
+    "scalar environment": {"services": {"portal": {"image": "i", "environment": "A=1"}}},
+    "mapping value is a number": {"services": {"portal": {"image": "i", "environment": {"A": 1}}}},
+    "list entry is a number": {"services": {"portal": {"image": "i", "environment": ["A=1", 2]}}},
+}  # yapf: disable
+
+
+@pytest.mark.parametrize("config", _MALFORMED_CONFIGS.values(), ids=_MALFORMED_CONFIGS.keys())
+def test_print_shell_overrides_exits_two_with_a_message_on_a_config_of_an_unexpected_shape(
+    config, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("A", "y")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(config)))
+    monkeypatch.setattr(vd, "run_command", _OverrideRunner({"A"}))
+    assert vd.main(["--print-shell-overrides", "--project-dir", str(tmp_path)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("verify-deploy: compose config: ") and "Traceback" not in err
+
+
+@pytest.mark.parametrize("config", _MALFORMED_CONFIGS.values(), ids=_MALFORMED_CONFIGS.keys())
+def test_collect_raises_collect_error_on_a_config_of_an_unexpected_shape(config, tmp_path):
+    named = {"name": "p", **config} if isinstance(config, dict) else config  # past collect's own name check
+    run = _OverrideRunner(set(), stdout=json.dumps(named))
+    with pytest.raises(vd.CollectError, match=r"compose config: "):  # the shape check, not a later failure
+        vd.collect(run, tmp_path, "", tunnels=False)
 
 
 def test_print_shell_overrides_exits_two_when_the_baseline_probe_fails(tmp_path, monkeypatch, capsys):

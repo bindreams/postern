@@ -56,7 +56,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Literal, NamedTuple
 
 # Types ================================================================================================================
 Status = Literal["ok", "fail", "skip"]
@@ -216,20 +216,56 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
     return Completed(proc.returncode, proc.stdout, proc.stderr)
 
 
-def service_environment(service: dict | None) -> dict[str, Any]:
-    """A service's `environment` from `docker compose config` JSON, as a mapping.
+def validate_compose_config(config: object) -> dict:
+    """Check the shape of `docker compose config --format json` once, where it enters; return it.
 
-    The Compose spec allows both forms and which one comes back depends on the overlay set: the
-    mapping (`{"NAME": value}`) and the list (`["NAME=value", "NAME"]`). A bare list `NAME` is a
-    passthrough from the shell/.env, the same as a null mapping value, so it maps to None; only
-    the first `=` splits, since a value may itself contain one.
+    `services` is absent or a mapping of service mappings, and each service's `environment` is
+    absent, a mapping of str/None values, or a list of str. Anything else raises CollectError, so
+    a caller that reads the config afterwards (`service_environment`) may assume this shape.
+    """
+    if not isinstance(config, dict):
+        raise CollectError(f"compose config: expected a JSON object, got {type(config).__name__}")
+    services = config.get("services")
+    if services is None:
+        return config
+    if not isinstance(services, dict):
+        raise CollectError(f"compose config: `services` is {type(services).__name__}, not a mapping")
+    for name, service in services.items():
+        if not isinstance(service, dict):
+            raise CollectError(f"compose config: service {name!r} is {type(service).__name__}, not a mapping")
+        env = service.get("environment")
+        where = f"services.{name}.environment"
+        if env is None:
+            continue
+        if isinstance(env, dict):
+            bad = next((k for k, v in env.items() if v is not None and not isinstance(v, str)), None)
+            if bad is not None:
+                raise CollectError(f"compose config: {where}.{bad} is {type(env[bad]).__name__}, not a string or null")
+        elif isinstance(env, list):
+            bad = next((item for item in env if not isinstance(item, str)), None)
+            if bad is not None:
+                raise CollectError(f"compose config: {where} has a non-string entry {bad!r:.100}")
+        else:
+            raise CollectError(f"compose config: {where} is {type(env).__name__}, not a mapping or list")
+    return config
+
+
+def service_environment(service: dict | None) -> dict[str, str | None]:
+    """A service's `environment` as `{name: value}`, whichever of the two Compose forms it is in.
+
+    The Compose spec allows the mapping (`{"NAME": value}`) and the list (`["NAME=value", "NAME"]`)
+    and which one `compose config` returns depends on the overlay set. A value is None for a null
+    mapping value and for a bare list `NAME` (both: passthrough from the shell/.env); only the first
+    `=` splits a list entry, since a value may itself contain one. Mapping values are stringified,
+    so raw compose YAML (`FOO: 1`) reads the same as `compose config` output. Assumes the shape
+    `validate_compose_config` checks.
     """
     env = (service or {}).get("environment") or {}
     if isinstance(env, dict):
-        return env
-    out: dict[str, Any] = {}
+        return {str(k): None if v is None else str(v) for k, v in env.items()}
+    out: dict[str, str | None] = {}
     for item in env:
-        name, sep, value = str(item).partition("=")
+        name, sep, value = item.partition("=")
         out[name] = value if sep else None
     return out
 
@@ -242,7 +278,7 @@ def _portal_env(config: dict) -> dict[str, str | None]:
     differently-spelled name -- silently, in the passing direction, which is the
     one failure mode this script exists to eliminate. compose.yaml itself
     delivers upper-case names only. A value is None for a bare passthrough key
-    that compose could not resolve (JSON null); every caller treats that as unset.
+    that compose could not resolve (JSON null, or a bare list-form `NAME`); every caller treats that as unset.
     """
     raw = service_environment((config.get("services") or {}).get("portal"))
     return {k.upper(): v for k, v in raw.items()}
@@ -319,7 +355,7 @@ def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, proje
     """Names the deploying shell exports that change what compose delivers to a service.
 
     `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough
-    key is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
+    key (a null mapping value or a bare list-form `NAME`) is None and an interpolated one is its `${NAME...}` text; `$${NAME}` is Compose's escaped
     literal and `COMPOSE_*` names are the shell's by design, so neither counts. Compose lets a
     shell value win over `.env` and the interpolation default, which an operator who exported the
     name for another purpose does not expect. A name is reported when it is exported and the
@@ -631,6 +667,7 @@ def collect(run: Runner, project_dir: Path, ss_image_flag: str = "", *, tunnels:
         config = json.loads(config_result.stdout)
     except ValueError as exc:
         raise CollectError(f"docker compose config emitted unparseable JSON: {exc}") from exc
+    validate_compose_config(config)
 
     # Refuse to verify nothing. A wrong --project-dir, or a COMPOSE_PROFILES
     # that gates every service off, would otherwise exit 0 having checked
@@ -1163,7 +1200,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"verify-deploy: --print-shell-overrides needs compose config JSON on stdin: {exc}", file=sys.stderr)
             return 2
         try:
-            names = shell_overrides(config, os.environ, run_command, args.project_dir)
+            names = shell_overrides(validate_compose_config(config), os.environ, run_command, args.project_dir)
         except CollectError as exc:
             print(f"verify-deploy: {exc}", file=sys.stderr)
             return 2

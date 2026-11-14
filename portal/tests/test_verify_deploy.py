@@ -1231,6 +1231,14 @@ def test_print_shell_overrides_prints_names_only_never_values(tmp_path, monkeypa
     assert "secret-looking-value" not in out.out + out.err
 
 
+def test_print_shell_overrides_exits_two_with_a_message_when_stdin_is_closed(monkeypatch, capsys):
+    """`<&-` leaves sys.stdin None, not a stream whose .read() raises."""
+    monkeypatch.setattr("sys.stdin", None)
+    assert vd.main(["--print-shell-overrides"]) == 2
+    err = capsys.readouterr().err
+    assert "stdin is closed" in err and "Traceback" not in err
+
+
 def test_print_shell_overrides_rejects_unparseable_input(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
     assert vd.main(["--print-shell-overrides"]) == 2

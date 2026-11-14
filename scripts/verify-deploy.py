@@ -1210,6 +1210,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.print_shell_overrides:
+        # sys.stdin is None with fd 0 closed (see read_expected_tunnels).
+        if sys.stdin is None:
+            print(
+                "verify-deploy: --print-shell-overrides needs compose config JSON on stdin: stdin is closed",
+                file=sys.stderr,
+            )
+            return 2
         try:
             config = json.loads(sys.stdin.read())
         except (OSError, ValueError) as exc:

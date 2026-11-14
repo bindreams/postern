@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
-from ._compose import ComposeLoader, load_compose
+from ._compose import ComposeLoader, load_compose, service_environment
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -54,3 +55,21 @@ def test_load_compose_reads_legacy_bool_spellings_as_booleans():
         "i": False,
         "j": False,
     }
+
+
+def _write_compose(tmp_path: Path, environment_lines: str) -> Path:
+    path = tmp_path / "x.compose.yaml"
+    path.write_text(f"services:\n  web:\n    environment:\n{environment_lines}", encoding="utf-8")
+    return path
+
+
+def test_service_environment_reads_a_list_form_file(tmp_path):
+    path = _write_compose(tmp_path, "      - A=1\n      - B\n")
+    assert service_environment(path, "web") == {"A": "1", "B": None}
+
+
+@pytest.mark.parametrize("entry", ["null", "2"], ids=["null", "number"])
+def test_service_environment_names_the_file_and_service_of_a_malformed_list_entry(tmp_path, entry):
+    path = _write_compose(tmp_path, f"      - A=1\n      - {entry}\n")
+    with pytest.raises(AssertionError, match=r"x\.compose\.yaml.*'web'.*non-string entry"):
+        service_environment(path, "web")

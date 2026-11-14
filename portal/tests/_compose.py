@@ -204,9 +204,13 @@ def service_environment(path: Path, service: str) -> dict[str, str | None]:
     this repo uses; the `- KEY=VALUE` list form is equally valid Compose; a bare `- KEY` entry (or a null mapping
     value) maps to None, since "value comes from the host" is not "malformed file". Values are strings or None.
     """
+    vd = load_verify_deploy()
     env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
-    assert env is None or isinstance(env, (dict, list)),         f"{repo_relative(path)}: service {service!r} environment is {type(env).__name__}"
-    return load_verify_deploy().service_environment({"environment": env})
+    try:
+        vd.validate_compose_config({"services": {service: {"environment": env}}})
+    except vd.CollectError as exc:
+        raise AssertionError(f"{path}: service {service!r}: {exc}") from exc
+    return vd.service_environment({"environment": env})
 
 
 def run_compose_config(
@@ -221,7 +225,8 @@ def run_compose_config(
         env=env,
         capture_output=True,
         text=True,
-        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named; keep below pyproject's `timeout = 30`.
+        # A hung child (Docker-context probe, credential helper) must fail with this subprocess named;
+        # keep below pyproject's `timeout = 30`.
         timeout=20,
     )
     assert proc.returncode == 0, f"`docker compose config` failed:\n{proc.stderr}"

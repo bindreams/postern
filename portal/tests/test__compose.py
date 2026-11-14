@@ -1,12 +1,13 @@
 """Unit tests for the shared !reset-tolerant compose YAML loader."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 import yaml
 
-from ._compose import ComposeLoader, load_compose, service_environment
+from ._compose import ComposeLoader, load_compose, run_compose_config, service_environment
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -72,4 +73,45 @@ def test_service_environment_reads_a_list_form_file(tmp_path):
 def test_service_environment_names_the_file_and_service_of_a_malformed_list_entry(tmp_path, entry):
     path = _write_compose(tmp_path, f"      - A=1\n      - {entry}\n")
     with pytest.raises(AssertionError, match=r"x\.compose\.yaml.*'web'.*non-string entry"):
+        service_environment(path, "web")
+
+
+def test_service_environment_equals_what_compose_config_returns_for_mapping_scalars(tmp_path):
+    """Compose accepts a number or bool as a mapping value and delivers its text."""
+    path = tmp_path / "x.compose.yaml"
+    path.write_text(
+        "services:\n  web:\n    image: x\n    environment:\n      A: 1\n      B: true\n      C: 1.5\n      D: false\n"
+        "      E: text\n",
+        encoding="utf-8",
+    )
+    resolved = run_compose_config(["-f", path.name], tmp_path, dict(os.environ))
+    assert service_environment(path, "web") == resolved["services"]["web"]["environment"]
+    assert service_environment(path, "web") == {"A": "1", "B": "true", "C": "1.5", "D": "false", "E": "text"}
+
+
+@pytest.mark.parametrize(
+    ("environment_lines", "expected"),
+    [
+        ("      A: null\n      B: x\n", {"A": None, "B": "x"}),
+        ("      A:\n", {"A": None}),
+        ("      []\n", {}),
+        ("      - K=\n      - L\n", {"K": "", "L": None}),
+        ("      - K=a=b\n", {"K": "a=b"}),
+    ],
+    ids=["null-value", "empty-value", "empty-list", "empty-vs-bare", "first-equals-splits"],
+)
+def test_service_environment_reads_the_shapes_compose_allows(tmp_path, environment_lines, expected):
+    assert service_environment(_write_compose(tmp_path, environment_lines), "web") == expected
+
+
+def test_service_environment_of_a_service_without_environment_is_empty(tmp_path):
+    path = tmp_path / "x.compose.yaml"
+    path.write_text("services:\n  web:\n    image: x\n", encoding="utf-8")
+    assert service_environment(path, "web") == {}
+
+
+def test_service_environment_rejects_a_scalar_string_environment(tmp_path):
+    path = tmp_path / "x.compose.yaml"
+    path.write_text("services:\n  web:\n    environment: just-a-string\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match=r"x\.compose\.yaml.*'web'.*not a mapping or list"):
         service_environment(path, "web")

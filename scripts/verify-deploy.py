@@ -217,7 +217,7 @@ def run_command(argv: Sequence[str], cwd: Path | None = None) -> Completed:
 
 
 def _bad_environment_entry(env: object, where: str) -> str | None:
-    """Why `env` is not a valid service `environment` (absent, a mapping of str/None, a list of str), else None."""
+    """Why `env` is not a valid service `environment`, else None."""
     if env is None:
         return None
     if isinstance(env, dict):
@@ -234,13 +234,10 @@ def _bad_environment_entry(env: object, where: str) -> str | None:
 
 
 def validate_compose_config(config: object) -> dict:
-    """Check the shape of `docker compose config --format json` once, where it enters; return it.
+    """Validate the shape of `docker compose config --format json` once, where it enters, and return it.
 
-    Every field this script reads is checked here: the project `name` (absent, null or a string),
-    `services` (absent or a mapping of service mappings) and, per service, `image` (absent, null or a
-    string) and `environment` (absent, a mapping of str/None values, or a list of str). `build` is only
-    tested for presence, so any value is fine. Anything else raises CollectError, so a caller that
-    reads the config afterwards (`service_environment`, `collect`) may assume this shape.
+    Raises CollectError on any field this script reads (`name`, `services`, per-service `image` and
+    `environment`) that has the wrong type, so later readers may assume the shape.
     """
     if not isinstance(config, dict):
         raise CollectError(f"compose config: expected a JSON object, got {type(config).__name__}")
@@ -266,18 +263,13 @@ def validate_compose_config(config: object) -> dict:
 
 
 def service_environment(service: dict | None) -> dict[str, str | None]:
-    """A service's `environment` as `{name: value}`, whichever of the two Compose forms it is in.
-
-    The Compose spec allows the mapping (`{"NAME": value}`) and the list (`["NAME=value", "NAME"]`)
-    and which one `compose config` returns depends on the overlay set. A value is None for a null
-    mapping value and for a bare list `NAME` (both: passthrough from the shell/.env); only the first
-    `=` splits a list entry, since a value may itself contain one. Mapping values are stringified with
-    `str()`, which is the identity on `compose config` output (strings only) and turns an int in raw
-    compose YAML into its decimal text. Assumes the shape `validate_compose_config` checks.
+    """A service's `environment` as `{name: value}`, whichever Compose form it is in (which one `compose config`
+    returns depends on the overlay set). A value is None for a null mapping value or a bare list `NAME`
+    (passthrough). Only the first `=` splits a list entry. Assumes the shape `validate_compose_config` checks.
     """
     env = (service or {}).get("environment") or {}
     if isinstance(env, dict):
-        return {str(k): None if v is None else str(v) for k, v in env.items()}
+        return dict(env)
     out: dict[str, str | None] = {}
     for item in env:
         name, sep, value = item.partition("=")
@@ -369,16 +361,15 @@ def _compose_resolved(run: Runner, project_dir: Path, unset: str = "") -> dict:
 def shell_overrides(config: dict, environ: Mapping[str, str], run: Runner, project_dir: Path) -> list[str]:
     """Names the deploying shell exports that change what compose delivers to a service.
 
-    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough key
-    (a null mapping value or a bare list-form `NAME`) is None and an interpolated one is its
-    `${NAME...}` text; `$${NAME}` is Compose's escaped literal and `COMPOSE_*` names are the
-    shell's by design, so neither counts. Compose lets a
-    shell value win over `.env` and the interpolation default, which an operator who exported the
-    name for another purpose does not expect. A name is reported when it is exported and the
-    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names
-    only: the caller prints them, and a value could be a secret. A variant that fails to resolve or
-    parse (a `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline
-    raises CollectError.
+    `config` is `docker compose config --no-interpolate --format json`, so a bare passthrough key (a null
+    mapping value or a bare list-form `NAME`) is None and an interpolated one is its `${NAME...}` text;
+    `$${NAME}` is Compose's escaped literal and `COMPOSE_*` names are the shell's by design, so neither
+    counts. Compose lets a shell value win over `.env` and the interpolation default, which an operator who
+    exported the name for another purpose does not expect. A name is reported when it is exported and the
+    resolved config changes with it removed from the shell, whether or not `.env` sets it. Names only: the
+    caller prints them, and a value could be a secret. A variant that fails to resolve or parse (a
+    `${NAME:?}` that only the shell satisfies) counts as differing; only a failing baseline raises
+    CollectError.
     """
     names: set[str] = set()
     for service in (config.get("services") or {}).values():

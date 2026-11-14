@@ -186,8 +186,7 @@ def load_verify_deploy() -> ModuleType:
 
     Registered in `sys.modules` before it executes: the script uses `from __future__ import annotations`, so
     dataclasses resolve every field annotation through `sys.modules[cls.__module__]`, and without the registration
-    every dataclass in it raises AttributeError at import. Memoized so every caller shares one module (one
-    `CollectError` class, one `Completed`).
+    every dataclass in it raises AttributeError at import. Memoized so every caller shares one module.
     """
     spec = importlib.util.spec_from_file_location("verify_deploy", REPO_ROOT / "scripts" / "verify-deploy.py")
     assert spec and spec.loader
@@ -197,15 +196,24 @@ def load_verify_deploy() -> ModuleType:
     return module
 
 
-def service_environment(path: Path, service: str) -> dict[str, str | None]:
-    """A service's `environment` as a dict, accepting both Compose forms.
+def _compose_scalar(value: object) -> object:
+    """A raw-YAML bool or number as the string Compose delivers; anything else unchanged."""
+    if isinstance(value, bool):  # before int: bool is an int subclass
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return value
 
-    Parsing is `verify-deploy.py`'s `service_environment`, the one implementation: the mapping form is what
-    this repo uses; the `- KEY=VALUE` list form is equally valid Compose; a bare `- KEY` entry (or a null mapping
-    value) maps to None, since "value comes from the host" is not "malformed file". Values are strings or None.
+
+def service_environment(path: Path, service: str) -> dict[str, str | None]:
+    """A service's `environment` as a dict, via `verify-deploy.py`'s `service_environment`. Raises AssertionError
+    naming the file and service when the shape is malformed. Raw-YAML mapping scalars are first turned into the
+    text Compose delivers (`true`/`false`, a number's text), since `compose config` only ever returns strings.
     """
     vd = load_verify_deploy()
     env = ((load_compose(path).get("services") or {}).get(service) or {}).get("environment")
+    if isinstance(env, dict):
+        env = {key: _compose_scalar(value) for key, value in env.items()}
     try:
         vd.validate_compose_config({"services": {service: {"environment": env}}})
     except vd.CollectError as exc:

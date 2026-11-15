@@ -900,6 +900,28 @@ def test_a_failed_cleanup_of_rejected_lego_output_is_logged_not_raised(
     assert "read-only file system" in caplog.text
 
 
+def test_cleanup_of_rejected_lego_output_removes_the_resource_file_first_and_stops_at_the_first_failure(
+    prod_settings, lego_mock, now, cert_dir, tmp_path, monkeypatch
+):
+    """lego holding a resource file with no certificate beside it cannot run, so the resource file goes first."""
+    _lego_writes(lego_mock, lambda out: BAD_LEGO_OUTPUT["mismatched-key"][0](out, tmp_path / "bad"))
+    real_unlink = Path.unlink
+    calls: list[str] = []
+
+    def fail_the_second(self, *args, **kwargs):
+        calls.append(self.name)
+        if len(calls) == 2:
+            raise OSError("read-only file system")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_the_second)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    domain = prod_settings.domain
+    assert calls == [f"{domain}.json", f"{domain}.crt"]
+    remaining = sorted(p.name for p in _lego_certificates(cert_dir).glob(f"{domain}*"))
+    assert remaining == [f"{domain}.crt", f"{domain}.issuer.crt", f"{domain}.key"]
+
+
 # Whether a lego run is forced =========================================================================================
 def _forced(lego_mock: MagicMock) -> bool:
     lego_mock.issue_or_renew.assert_called_once()

@@ -156,7 +156,7 @@ def _child(code: str) -> list[str]:
     return [sys.executable, "-c", code]
 
 
-def test_run_lego_streams_both_streams_to_stdout_as_they_arrive(capfd):
+def test_run_lego_relays_both_streams_to_stdout(capfd):
     cert._run_lego(_child("import sys; print('out'); print('err', file=sys.stderr)"), {})
     captured = capfd.readouterr()
     assert "out" in captured.out and "err" in captured.out

@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
 # Raise every crate in ./Cargo.lock below its floor, then fail unless none is left below.
 #
-# A floor is the first release of a crate that fixes a RustSec advisory (cargo audit,
-# 2026-11-15); rustls-webpki, webpki-roots and webpki-root-certs also stop trusting the
-# compromised eMudhra chain (#254). The vendored lock is upstream's, so shadowsocks/Dockerfile
-# and portal/tests/e2e/ssclient.Dockerfile run this in their cargo build stage, from the source
-# root, before `cargo build`. A crate whose lock entry already meets its floor is not touched,
-# so a subrepo pull that catches up needs no edit here; an entry here for a crate the lock
-# dropped fails portal/tests/test_ssserver_crate_floors.py, not the build.
+# A floor is the first release of a crate that fixes a RustSec advisory; rustls-webpki,
+# webpki-roots and webpki-root-certs also stop trusting the compromised eMudhra chain.
+# Run from the source root before `cargo build`. A crate already at its floor is left alone.
 #
 # Order matters: `cargo update --precise` on a crate can move or hold back the crates it depends
 # on, so a dependency is raised before its dependent (zstd-sys and zstd-safe before zstd).
 # Entries are `crate floor`; only the lock entries in the floor's semver series are compared
-# (same major, or for 0.x the same major.minor), ignoring build metadata (`+zstd.1.5.7`).
+# (same major, or for 0.x the same major.minor), ignoring build metadata (`+zstd.1.5.7`). A
+# pre-release of the floor (`1.53.3-rc.1`) precedes it and is raised. Entries in another series
+# are skipped with a notice on stderr. A floored crate with no lock entry fails the run.
 set -euo pipefail
 shopt -s inherit_errexit
 
@@ -46,27 +44,40 @@ locked_versions() {
 }
 
 # Prints the locked versions of crate $1 that are in the series of floor $2 and below it.
+# Notices for skipped entries go to stderr unless $report_skips is false.
 stale_versions() {
-	local crate=$1 floor=$2 locked core lowest
-	local -a locked_all floor_parts core_parts
+	local crate=$1 floor=$2 locked_all locked core numeric lowest
+	local -a floor_parts numeric_parts
 	IFS=. read -ra floor_parts <<<"$floor"
-	mapfile -t locked_all < <(locked_versions "$crate")
-	for locked in "${locked_all[@]}"; do
+	locked_all=$(locked_versions "$crate")
+	if [[ -z $locked_all ]]; then
+		echo "crate-floors: $crate has no entry in Cargo.lock, but a floor of $floor" >&2
+		return 1
+	fi
+	while IFS= read -r locked; do
 		core=${locked%%+*}
-		IFS=. read -ra core_parts <<<"$core"
-		if [[ ${core_parts[0]} != "${floor_parts[0]}" ]]; then
+		numeric=${core%%-*}
+		IFS=. read -ra numeric_parts <<<"$numeric"
+		if [[ ${numeric_parts[0]} != "${floor_parts[0]}" ]] ||
+			[[ ${floor_parts[0]} == 0 && ${numeric_parts[1]} != "${floor_parts[1]}" ]]; then
+			if $report_skips; then
+				echo "crate-floors: skipping $crate $locked: outside the series of its floor $floor" >&2
+			fi
 			continue
 		fi
-		if [[ ${floor_parts[0]} == 0 && ${core_parts[1]} != "${floor_parts[1]}" ]]; then
-			continue
-		fi
-		lowest=$(printf '%s\n%s\n' "$core" "$floor" | sort -V | sed -n 1p)
-		if [[ $core != "$floor" && $lowest == "$core" ]]; then
+		lowest=$(printf '%s\n%s\n' "$numeric" "$floor" | sort -V | sed -n 1p)
+		if [[ $numeric != "$floor" && $lowest == "$numeric" ]] || [[ $numeric == "$floor" && $core != "$numeric" ]]; then
 			printf '%s\n' "$locked"
 		fi
-	done
+	done <<<"$locked_all"
 }
 
+if [[ ! -f Cargo.lock ]]; then
+	echo "crate-floors: no Cargo.lock in $PWD" >&2
+	exit 1
+fi
+
+report_skips=true
 for entry in "${floors[@]}"; do
 	read -r crate floor <<<"$entry"
 	stale=$(stale_versions "$crate" "$floor")
@@ -75,6 +86,7 @@ for entry in "${floors[@]}"; do
 	done
 done
 
+report_skips=false
 failed=0
 for entry in "${floors[@]}"; do
 	read -r crate floor <<<"$entry"

@@ -77,6 +77,9 @@ class CertState:
     last_issued_iso: str | None = None
     # ACME directory -> time of the last Lego attempt under it, set BEFORE calling Lego (defends rate limits).
     last_issued_by_directory: dict[str, str] = field(default_factory=dict)
+    # ACME directory of the most recent Lego attempt, recorded even when the attempt's guard time is not (a discarded
+    # account clears it): failures and the FAILED hold-off are counted per directory by this, not by the guard times.
+    last_attempt_directory: str = ""
     last_attempt_iso: str | None = None
     last_failed_state: str | None = None  # so FAILED knows what to retry
     consecutive_failures: int = 0
@@ -131,8 +134,8 @@ def read_state(certdir: Path | None = None) -> CertState:
     fields fall back to their dataclass defaults. A schema version higher than
     we know logs a warning so the operator can upgrade the portal.
 
-    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner
-    writes it back (see `_migrate_legacy`).
+    State written before `last_issued_by_directory` or `last_attempt_directory` existed is migrated on every read until
+    the provisioner writes it back (see `_migrate_legacy`, `_migrate_attempt_directory`).
     """
     path = state_path(certdir)
     if not path.exists():
@@ -158,6 +161,8 @@ def read_state(certdir: Path | None = None) -> CertState:
         state = CertState(**known)
         if "last_issued_by_directory" not in known:
             state = _migrate_legacy(state)
+        if "last_attempt_directory" not in known:
+            state = _migrate_attempt_directory(state)
         return state
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("cert: state.json unreadable (%s); treating as NO_CERT", e)
@@ -170,6 +175,14 @@ def _migrate_legacy(state: CertState) -> CertState:
     if not (state.last_issued_iso and state.acme_directory):
         return state
     return replace(state, last_issued_by_directory={state.acme_directory: state.last_issued_iso})
+
+
+def _migrate_attempt_directory(state: CertState) -> CertState:
+    """Seed `last_attempt_directory` from the directory with the latest guard time, which until it was recorded
+    separately was what named it."""
+    by_directory = state.last_issued_by_directory
+    latest = max(by_directory, key=lambda d: datetime.fromisoformat(by_directory[d]), default="")
+    return replace(state, last_attempt_directory=latest)
 
 
 def write_state(state: CertState, *, certdir: Path | None = None) -> None:

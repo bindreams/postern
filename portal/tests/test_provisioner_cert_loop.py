@@ -447,6 +447,7 @@ def _staging_issued(now: dt.datetime, **overrides) -> cert_state.CertState:
     fields = dict(
         state="ISSUING",
         last_issued_by_directory={STAGING: issued},
+        last_attempt_directory=STAGING,
         acme_directory=STAGING,
         acme_account_email="ops@postern.test",
     )
@@ -520,6 +521,28 @@ def test_failures_under_the_old_directory_do_not_count_toward_the_new_one(prod_s
     assert next_state.consecutive_failures == 1
 
 
+def test_an_attempt_records_the_directory_it_ran_under(prod_settings, lego_mock, now):
+    assert _advance(_staging_issued(now), prod_settings, lego_mock, now).last_attempt_directory == PROD
+
+
+def test_a_discarded_account_keeps_the_guard_clear_but_records_the_directory_attempted(
+    prod_settings, lego_mock, now
+):
+    _fail_lego(lego_mock)
+    failed = _advance(_staging_issued(now), prod_settings, lego_mock, now)
+    assert failed.last_issued_by_directory == _staging_issued(now).last_issued_by_directory
+    assert failed.last_attempt_directory == PROD
+
+
+def test_a_directory_switch_whose_every_run_discards_the_account_still_reaches_failed(prod_settings, lego_mock, now):
+    """Failures count toward FAILED from the first attempt under the new directory, not from each tick afresh."""
+    _fail_lego(lego_mock)
+    state = _staging_issued(now)
+    for _ in range(cert_driver.MAX_CONSECUTIVE_FAILURES):
+        state = _advance(state, prod_settings, lego_mock, now)
+    assert state.state == "FAILED"
+
+
 def test_failed_state_does_not_hold_off_directory_switch(prod_settings, lego_mock, now, cert_dir):
     _install_live_cert(cert_dir, prod_settings)
     state = _staging_issued(
@@ -561,6 +584,7 @@ def test_failed_state_holds_off_after_an_attempt_under_the_new_directory(prod_se
         last_failed_state="RENEWING",
         consecutive_failures=6,
         last_issued_by_directory={STAGING: old, PROD: recent},
+        last_attempt_directory=PROD,
         last_attempt_iso=recent,
     )
     assert _advance(state, prod_settings, lego_mock, now).state == "FAILED"
@@ -1227,6 +1251,7 @@ def _step_ca_switch(prod_settings: CertSettings, now: dt.datetime) -> cert_state
         acme_directory=STEP_CA_OLD,
         acme_account_email="ops@postern.test",
         last_issued_by_directory={STEP_CA_OLD: issued},
+        last_attempt_directory=STEP_CA_OLD,
     )
 
 
@@ -1248,10 +1273,12 @@ def test_retry_after_a_failed_switch_attempt_keeps_the_account_the_attempt_regis
         last_issued_by_directory={
             **state.last_issued_by_directory, STEP_CA_NEW: (now - dt.timedelta(days=2)).isoformat()
         },
+        last_attempt_directory=STEP_CA_NEW,
     )
     account = _register_account(cert_dir, STEP_CA_NEW, "ops@postern.test")
+    present = _record_account_presence_at_run(lego_mock, account)
     _advance(state, prod_settings, lego_mock, now)
-    assert (account / "account.json").exists()
+    assert present == [True]
 
 
 def test_reissue_without_a_switch_leaves_the_account_alone(settings, lego_mock, now, cert_dir):

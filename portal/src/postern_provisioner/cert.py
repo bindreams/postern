@@ -234,7 +234,7 @@ def advance_cert_state(
         # reuse an account registered with the other URL: either change discards every account.
         email_changed = bool(state.acme_account_email) and state.acme_account_email != settings.cert_acme_email
         # Failures counted under another directory say nothing about this one.
-        under_new_directory = _latest_attempt_directory(state) not in ("", settings.cert_acme_directory)
+        under_new_directory = state.last_attempt_directory not in ("", settings.cert_acme_directory)
         if email_changed or under_new_directory:
             changed = [
                 n for n, hit in (("ACME account email", email_changed), ("ACME directory", under_new_directory)) if hit
@@ -247,6 +247,7 @@ def advance_cert_state(
         attempt_state = replace(
             state,
             last_attempt_iso=now.isoformat(),
+            last_attempt_directory=settings.cert_acme_directory,
             last_issued_by_directory={**state.last_issued_by_directory, settings.cert_acme_directory: now.isoformat()},
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
@@ -377,12 +378,6 @@ def _issued_at(state: cert_state.CertState, directory: str) -> dt.datetime | Non
     return dt.datetime.fromisoformat(iso) if iso else None
 
 
-def _latest_attempt_directory(state: cert_state.CertState) -> str:
-    """Directory of the most recent Lego attempt ('' if none)."""
-    by_directory = state.last_issued_by_directory
-    return max(by_directory, key=lambda d: dt.datetime.fromisoformat(by_directory[d]), default="")
-
-
 def _account_host(directory: str) -> str:
     """The `<host>` of lego's `<path>/accounts/<host>/<email>`: Go's `url.Host` (the authority without userinfo, port and
     IPv6 brackets as written) with `:` replaced by `_`."""
@@ -507,7 +502,7 @@ def _advance_failed(
     """After the hold-off, retry the prior state. When the failures were under another directory than the configured
     one, the hold-off protects nothing: re-evaluate from INSTALLED (drift, SAN and expiry checks decide), or, with no
     cert installed to re-evaluate, issue."""
-    attempted = _latest_attempt_directory(state)
+    attempted = state.last_attempt_directory
     if attempted not in ("", settings.cert_acme_directory):
         logger.info("cert: FAILED under another ACME directory; skipping hold-off")
         installed = _read_live_cert(cert_dir, settings.domain) is not None

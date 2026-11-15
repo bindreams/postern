@@ -800,6 +800,7 @@ def _replace_with_pki(output: LegoOutput, scratch: Path, *, key: bool = True, ce
     generate_test_pki(scratch, **pki)
     if cert:
         output.fullchain.write_bytes((scratch / "fullchain.pem").read_bytes())
+        output.chain.write_bytes((scratch / "chain.pem").read_bytes())
     if key:
         output.privkey.write_bytes((scratch / "privkey.pem").read_bytes())
 
@@ -809,6 +810,13 @@ def _days_from_now(days: float) -> dt.datetime:
 
 
 # Each flaw with the problem the log must name.
+def _generate_other_pki(output: LegoOutput, scratch: Path) -> None:
+    """Replace the issuer certificate with that of a different CA."""
+    from tests.e2e._certs import generate_test_pki
+    generate_test_pki(scratch / "other")
+    output.chain.write_bytes((scratch / "other" / "chain.pem").read_bytes())
+
+
 BAD_LEGO_OUTPUT = {
     # A crash between lego's writes of the .crt and the .key leaves a new certificate with the old key.
     "mismatched-key": (lambda out, tmp: _replace_with_pki(out, tmp, cert=False), "is not the key of"),
@@ -824,6 +832,10 @@ BAD_LEGO_OUTPUT = {
     ),
     "unparseable-cert": (lambda out, tmp: out.fullchain.write_text("not a certificate"), "cannot read"),
     "unparseable-key": (lambda out, tmp: out.privkey.write_text("not a key"), "cannot read"),
+    # The issuer certificate is another CA's (same name, other key), unparseable, or missing.
+    "wrong-issuer": (_generate_other_pki, "did not issue"),
+    "unparseable-issuer": (lambda out, tmp: out.chain.write_text("not a certificate"), "cannot read"),
+    "missing-issuer": (lambda out, tmp: out.chain.unlink(), "cannot read"),
 }
 
 

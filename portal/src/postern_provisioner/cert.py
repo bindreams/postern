@@ -442,10 +442,13 @@ def _reject_lego_output(
     try:
         leaf = cert_inspect.read_cert(output.fullchain)
         key_matches = cert_inspect.key_matches_cert(output.fullchain, output.privkey)
+        issued_by_chain = cert_inspect.issued_directly_by(output.fullchain, output.chain)
     except (OSError, ValueError) as e:
-        return _Rejection(f"cannot read the certificate and key: {e}", True, True)
+        return _Rejection(f"cannot read the certificate, key and issuer certificate: {e}", True, True)
     if not key_matches:
         return _Rejection(f"the private key is not the key of {output.fullchain.name}", True, True)
+    if not issued_by_chain:
+        return _Rejection(f"the issuer certificate {output.chain.name} did not issue {output.fullchain.name}", True, True)
     if not leaf.sans_match(expected):
         return _Rejection(f"its names {sorted(leaf.sans)} are not {sorted(expected)}", True, True)
     if at < leaf.not_before:

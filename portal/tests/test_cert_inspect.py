@@ -73,3 +73,52 @@ def test_key_matches_cert_raises_value_error_on_an_unreadable_key(tmp_path: Path
     (tmp_path / "privkey.pem").write_text("not a key")
     with pytest.raises(ValueError):
         cert_inspect.key_matches_cert(tmp_path / "fullchain.pem", tmp_path / "privkey.pem")
+
+
+def _other_name_ca(path: Path) -> None:
+    """A self-signed CA whose subject is not the leaf's issuer."""
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Some Other CA")])
+    now = dt.datetime.now(tz=dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(now - dt.timedelta(days=1)).not_valid_after(now + dt.timedelta(days=1)).add_extension(
+            x509.BasicConstraints(ca=True, path_length=None), critical=True
+        ).sign(key, hashes.SHA256())
+    )
+    path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+
+
+def test_issued_directly_by_accepts_the_issuing_ca(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    assert cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "chain.pem")
+
+
+def test_issued_directly_by_rejects_a_ca_with_the_right_name_and_another_key(tmp_path: Path):
+    generate_test_pki(tmp_path / "a")
+    generate_test_pki(tmp_path / "b")
+    assert not cert_inspect.issued_directly_by(tmp_path / "a" / "fullchain.pem", tmp_path / "b" / "chain.pem")
+
+
+def test_issued_directly_by_rejects_a_ca_with_another_name(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    _other_name_ca(tmp_path / "other.pem")
+    assert not cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "other.pem")
+
+
+def test_issued_directly_by_raises_value_error_on_an_unparseable_issuer(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    (tmp_path / "chain.pem").write_text("not a certificate")
+    with pytest.raises(ValueError):
+        cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "chain.pem")
+
+
+def test_issued_directly_by_raises_os_error_on_a_missing_issuer(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    with pytest.raises(OSError):
+        cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "nowhere.pem")

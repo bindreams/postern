@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cryptography import x509
-from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 
@@ -75,3 +75,17 @@ def key_matches_cert(cert_path: Path, key_path: Path) -> bool:
         raise ValueError(f"unusable key or certificate: {e}") from e
     spki = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     return cert.public_key().public_bytes(*spki) == key.public_key().public_bytes(*spki)
+
+
+def issued_directly_by(cert_path: Path, issuer_path: Path) -> bool:
+    """Whether the leaf (first PEM block) of `cert_path` was issued directly by the certificate in `issuer_path`: its
+    issuer is that certificate's subject and its signature verifies under that certificate's key.
+
+    Raises ValueError when either file does not parse, OSError when one cannot be read."""
+    leaf = x509.load_pem_x509_certificate(cert_path.read_bytes())
+    issuer = x509.load_pem_x509_certificate(issuer_path.read_bytes())
+    try:
+        leaf.verify_directly_issued_by(issuer)
+    except (ValueError, TypeError, InvalidSignature):
+        return False
+    return True

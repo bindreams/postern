@@ -1,8 +1,6 @@
 # syntax=docker/dockerfile:1
 
-# The Python minor for the image tag. mta/Dockerfile and provisioner/Dockerfile (apk pin and
-# site-packages path) and portal/.python-version carry the same value; Renovate bumps them
-# together and test_python_pin.py enforces it.
+# Keep equal to mta/Dockerfile, provisioner/Dockerfile and portal/.python-version; Renovate bumps them together, test_python_pin.py enforces it.
 ARG PYTHON_MINOR=3.14
 
 FROM dhi.io/python:${PYTHON_MINOR}-alpine3.23-dev AS build

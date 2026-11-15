@@ -3,8 +3,7 @@
 # One Python minor for apk and for the site-packages path the first-party code is copied
 # to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
 # either fails to solve or installs a minor the py3-* packages were not built for.
-# Keep equal to the portal's Python (portal/Dockerfile, portal/.python-version); Renovate bumps
-# them together and test_python_pin.py enforces it.
+# Keep equal to portal/Dockerfile, provisioner/Dockerfile and portal/.python-version; Renovate bumps them together, test_python_pin.py enforces it.
 ARG PYTHON_MINOR=3.14
 
 FROM dhi.io/alpine-base:3.23-dev AS build

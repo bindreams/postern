@@ -8,6 +8,7 @@ py3-* packages; the portal derives its `dhi.io/python` tag from it.
 import json
 import re
 import shlex
+from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -37,10 +38,16 @@ def test_every_pin_site_declares_the_same_minor():
     assert len(set(minors.values())) == 1, minors
 
 
+def _python_froms() -> list[tuple[str, str]]:
+    """(image, stage name or "") of every `FROM dhi.io/python:...` in the portal Dockerfile; FROM flags allowed."""
+    pattern = r"^FROM (?:--\S+\s+)*(dhi\.io/python:\S+)(?:\s+AS\s+(\S+))?\s*$"
+    return re.findall(pattern, _text("portal/Dockerfile"), re.MULTILINE)
+
+
 def test_portal_python_image_tag_comes_from_the_arg():
-    froms = re.findall(r"^FROM (?:--\S+\s+)*(dhi\.io/python:\S+)", _text("portal/Dockerfile"), re.MULTILINE)
+    froms = _python_froms()
     assert len(froms) == 2, froms  # build and runtime stage
-    assert all(f.startswith("dhi.io/python:${PYTHON_MINOR}-") for f in froms), froms
+    assert all(image.startswith("dhi.io/python:${PYTHON_MINOR}-") for image, _ in froms), froms
 
 
 def _renovate() -> dict:
@@ -58,6 +65,16 @@ def _regex_managers_matching(rel: str) -> list[dict]:
     ]
 
 
+def _js_regex(pattern: str) -> re.Pattern[str]:
+    """A Renovate (JS) regex as a Python one: named groups `(?<n>` become `(?P<n>`; lookbehinds `(?<=`/`(?<!` stay."""
+    return re.compile(re.sub(r"\(\?<(?=[A-Za-z_])", "(?P<", pattern))
+
+
+def _manager_for(rel: str) -> dict:
+    (manager, ) = _regex_managers_matching(rel)
+    return manager
+
+
 def test_one_renovate_manager_bumps_every_pin_site():
     managers = [_regex_managers_matching(rel) for rel in PIN_SITES]
     assert all(len(found) == 1 for found in managers), managers
@@ -66,11 +83,9 @@ def test_one_renovate_manager_bumps_every_pin_site():
 
 @pytest.mark.parametrize("rel", PIN_SITES)
 def test_renovate_manager_reads_the_pin_site(rel):
-    (manager, ) = _regex_managers_matching(rel)
-    # JS named groups `(?<n>` become Python's `(?P<n>`; Renovate compiles with the `g` flag only.
     found = [
-        m.group("currentValue") for pattern in manager["matchStrings"]
-        for m in re.finditer(pattern.replace("(?<", "(?P<"), _text(rel))
+        m.group("currentValue") for pattern in _manager_for(rel)["matchStrings"]
+        for m in _js_regex(pattern).finditer(_text(rel))
     ]
     assert found == [_pin(rel)], found
 
@@ -83,34 +98,42 @@ def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
     )
 
 
-def _python_manager() -> dict:
-    (manager, ) = _regex_managers_matching("portal/Dockerfile")
-    return manager
-
-
-def _js_regex(pattern: str) -> re.Pattern[str]:
-    """A Renovate (JS) regex as a Python one: named groups `(?<n>` become `(?P<n>`."""
-    return re.compile(pattern.replace("(?<", "(?P<"))
-
-
 def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls():
-    """A bare `3.16` tag (Debian) can exist before `3.16-alpine3.23-dev`; offering it opens a bump whose FROM is missing."""
-    (build_tag, ) = re.findall(
-        r"^FROM dhi\.io/python:\$\{PYTHON_MINOR\}(-\S+-dev) AS build$", _text("portal/Dockerfile"), re.MULTILINE
-    )
-    extract = _js_regex(_python_manager()["extractVersionTemplate"])
-    tag_to_version = lambda tag: (m.group("version") if (m := extract.search(tag)) else None)
-    assert tag_to_version(f"3.16{build_tag}") == "3.16"
-    for tag in ("3.16", "3.16.1", f"3.16.1{build_tag}", "3.16-alpine3.23", "3.16-debian13-dev", "3.16-alpine3.99-dev"):
+    """The bare `3.16` tag (Debian) can appear before `3.16-alpine3.23-dev`; the build stage's tag is the one offered."""
+    (build_tag, ) = [image for image, stage in _python_froms() if stage == "build"]
+    suffix = build_tag.removeprefix("dhi.io/python:${PYTHON_MINOR}")
+    extract = _js_regex(_manager_for("portal/Dockerfile")["extractVersionTemplate"])
+
+    def tag_to_version(tag: str) -> str | None:
+        m = extract.search(tag)
+        return m.group("version") if m else None
+
+    assert tag_to_version(f"3.16{suffix}") == "3.16"
+    for tag in ("3.16", "3.16.1", f"3.16.1{suffix}", "3.16-alpine3.23", "3.16-debian13-dev", "3.16-alpine3.99-dev"):
         assert tag_to_version(tag) is None, tag
+
+
+def _final_automerge(rel: str) -> bool:
+    """`automerge` for the python dependency at `rel` after every packageRule, in order: a later match wins."""
+    dep = {
+        "matchManagers": "custom.regex",
+        "matchDepNames": "python",
+        "matchPackageNames": "dhi.io/python",
+    }
+    config = _renovate()
+    automerge = config["automerge"]
+    for rule in config["packageRules"]:
+        matched = all(dep[key] in rule[key] for key in dep if key in rule)
+        if "matchFileNames" in rule:
+            matched = matched and any(fnmatch(rel, glob) for glob in rule["matchFileNames"])
+        if matched and "automerge" in rule:
+            automerge = rule["automerge"]
+    return automerge
 
 
 def test_renovate_python_bump_is_not_automerged():
     """The lockfile and the apk set trail a new minor, so a person looks at every bump."""
-    assert any(
-        rule.get("matchManagers") == ["custom.regex"] and rule.get("matchDepNames") == ["python"]
-        and rule.get("automerge") is False for rule in _renovate()["packageRules"]
-    )
+    assert [_final_automerge(rel) for rel in PIN_SITES] == [False] * len(PIN_SITES)
 
 
 def test_renovate_pyenv_manager_is_off():

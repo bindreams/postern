@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 
 
@@ -60,3 +62,16 @@ def read_cert(path: Path) -> CertInfo:
         issuer=issuer,
         serial=cert.serial_number,
     )
+
+
+def key_matches_cert(cert_path: Path, key_path: Path) -> bool:
+    """Whether the PEM private key at `key_path` is the key of the leaf (first PEM block) of `cert_path`.
+
+    Raises ValueError when either file does not parse."""
+    try:
+        cert = x509.load_pem_x509_certificate(cert_path.read_bytes())
+        key = serialization.load_pem_private_key(key_path.read_bytes(), password=None)
+    except (TypeError, UnsupportedAlgorithm) as e:
+        raise ValueError(f"unusable key or certificate: {e}") from e
+    spki = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    return cert.public_key().public_bytes(*spki) == key.public_key().public_bytes(*spki)

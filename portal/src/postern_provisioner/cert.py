@@ -238,6 +238,12 @@ def advance_cert_state(
             _discard_unrecoverable_lego_account(settings)
             return _failed_or_increment(attempt_state, settings, now)
 
+        problem = _lego_output_problem(output, expected, settings, now)
+        if problem:
+            logger.error("cert: lego's output is not installable: %s", problem)
+            _discard_lego_certificate(settings.domain)
+            return _failed_or_increment(attempt_state, settings, now)
+
         return replace(
             attempt_state,
             state="ISSUED_PENDING_INSTALL",
@@ -371,6 +377,47 @@ def _account_needs_discard(account_json: Path) -> bool:
     registration = account.get("registration") if isinstance(account, dict) else None
     status = registration.get("status") if isinstance(registration, dict) else None
     return not (isinstance(status, str) and status)
+
+
+def _lego_output_problem(
+    output: LegoOutput, expected: set[str], settings: CertSettings, now: dt.datetime
+) -> str | None:
+    """Why the certificate lego left on disk must not be installed, or None.
+
+    Lego exits 0 for a run that wrote nothing, and its non-atomic save (.crt, .issuer.crt, .key, then the resource file)
+    can leave a new certificate beside the old key, so success says nothing about the files. A certificate that is
+    already due is what lego hands back when it declined to renew."""
+    try:
+        leaf = cert_inspect.read_cert(output.fullchain)
+        key_matches = cert_inspect.key_matches_cert(output.fullchain, output.privkey)
+    except (OSError, ValueError) as e:
+        return f"cannot read the certificate and key: {e}"
+    if not key_matches:
+        return f"the private key is not the key of {output.fullchain.name}"
+    if not leaf.sans_match(expected):
+        return f"its names {sorted(leaf.sans)} are not {sorted(expected)}"
+    if not leaf.not_before <= now <= leaf.not_after:
+        return f"it is not valid now (valid {leaf.not_before.isoformat()} to {leaf.not_after.isoformat()})"
+    days_left = leaf.days_until_expiry(now=now)
+    if days_left < settings.cert_renewal_days_before_expiry:
+        return f"it expires in {days_left:.1f} days, which is due: lego declined to renew"
+    return None
+
+
+def _discard_lego_certificate(domain: str) -> None:
+    """Delete lego's stored certificate for `domain` (a failure is logged, not raised).
+
+    `lego run` renews only while the resource file (`<domain>.json`) exists, and otherwise obtains a new certificate
+    whatever the renewal flags say (cmd/cmd_run.go in lego v5.6.0). Removing it first makes the next run a fresh
+    issuance even when it is not forced, so the files just rejected cannot be handed back again. The resource file goes
+    first and a failure stops the cleanup: lego holding a resource file with no certificate beside it cannot run."""
+    for suffix in (".json", ".crt", ".issuer.crt", ".key"):
+        path = LEGO_PATH / "certificates" / f"{domain}{suffix}"
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.error("cert: could not remove %s: %s", path, e)
+            return
 
 
 def _rate_limit_guard_clear(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> bool:

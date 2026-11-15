@@ -62,17 +62,27 @@ LEAF_KEY_USAGE = x509.KeyUsage(
 )
 
 
-def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
+def generate_test_pki(
+    out_dir: Path,
+    *,
+    hostname: str = "postern.test",
+    leaf_not_before: datetime | None = None,
+    leaf_not_after: datetime | None = None,
+) -> None:
     """Write a fresh self-signed CA + leaf into out_dir.
 
-    Always overwrites; does not honor any pre-existing files in out_dir.
+    Always overwrites; does not honor any pre-existing files in out_dir. `leaf_not_before`/`leaf_not_after` override the
+    leaf's validity window (the CA's is widened to cover it), for tests of expired or short-lived certificates.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     not_before = datetime.now(tz=timezone.utc) - CLOCK_SKEW_MARGIN
-    leaf_not_after = not_before + CLOCK_SKEW_MARGIN + LEAF_VALIDITY
     ca_not_after = not_before + CLOCK_SKEW_MARGIN + CA_VALIDITY
+    leaf_not_before = leaf_not_before or not_before
+    leaf_not_after = leaf_not_after or not_before + CLOCK_SKEW_MARGIN + LEAF_VALIDITY
+    not_before = min(not_before, leaf_not_before)
+    ca_not_after = max(ca_not_after, leaf_not_after)
 
     # Root CA ==========================================================================================================
     ca_key = ec.generate_private_key(ec.SECP256R1())
@@ -102,7 +112,7 @@ def generate_test_pki(out_dir: Path, *, hostname: str = "postern.test") -> None:
     leaf_builder = leaf_builder.issuer_name(ca_subject)
     leaf_builder = leaf_builder.public_key(leaf_key.public_key())
     leaf_builder = leaf_builder.serial_number(x509.random_serial_number())
-    leaf_builder = leaf_builder.not_valid_before(not_before)
+    leaf_builder = leaf_builder.not_valid_before(leaf_not_before)
     leaf_builder = leaf_builder.not_valid_after(leaf_not_after)
     leaf_builder = leaf_builder.add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
     leaf_builder = leaf_builder.add_extension(LEAF_KEY_USAGE, critical=True)

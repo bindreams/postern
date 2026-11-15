@@ -55,3 +55,21 @@ def test_days_until_expiry_is_positive_for_valid_cert(fullchain_path: Path):
     info = cert_inspect.read_cert(fullchain_path)
     days = info.days_until_expiry()
     assert 0 < days <= 30
+
+
+def test_key_matches_cert_accepts_the_certs_own_key(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    assert cert_inspect.key_matches_cert(tmp_path / "fullchain.pem", tmp_path / "privkey.pem")
+
+
+def test_key_matches_cert_rejects_another_certs_key(tmp_path: Path):
+    generate_test_pki(tmp_path / "a")
+    generate_test_pki(tmp_path / "b")
+    assert not cert_inspect.key_matches_cert(tmp_path / "a" / "fullchain.pem", tmp_path / "b" / "privkey.pem")
+
+
+def test_key_matches_cert_raises_value_error_on_an_unreadable_key(tmp_path: Path):
+    generate_test_pki(tmp_path)
+    (tmp_path / "privkey.pem").write_text("not a key")
+    with pytest.raises(ValueError):
+        cert_inspect.key_matches_cert(tmp_path / "fullchain.pem", tmp_path / "privkey.pem")

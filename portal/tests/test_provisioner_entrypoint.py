@@ -41,8 +41,9 @@ def test_build_ticks_wires_ssl_tick_to_target(entrypoint, monkeypatch):
     en = compute_enablement(
         dns_provider="cloudflare", cert_renewal=False, edge_profile="cloudflare", mta_deployed=False
     )
-    ticks = entrypoint._build_ticks("postern.test", "s", "full", counters, en)
+    ticks = entrypoint._build_ticks("postern.test", "s", "full", counters, en, None)
     assert "ssl" in ticks
+    assert "cert" not in ticks  # no cert settings, so no cert tick
     ticks["ssl"]()
     assert captured["settings"].domain == "postern.test"
     assert captured["settings"].target == "full"  # the configured target flows through
@@ -119,3 +120,57 @@ def test_resolve_ssl_target_or_die_returns_valid(entrypoint, monkeypatch):
     en = _en(entrypoint, manage_ssl_mode=True)
     monkeypatch.setenv("EDGE_CF_SSL_MODE", "full")
     assert entrypoint._resolve_ssl_target_or_die(en) == "full"
+
+
+# Cert settings ========================================================================================================
+def _cert_en(*, cert_renewal: bool):
+    from postern_provisioner.enablement import compute_enablement
+    return compute_enablement(
+        dns_provider="cloudflare", cert_renewal=cert_renewal, edge_profile="none", mta_deployed=False
+    )
+
+
+@pytest.mark.parametrize("days", ["0", "-3", "thirty"])
+def test_cert_settings_or_die_exits_on_an_invalid_renewal_threshold(entrypoint, monkeypatch, days):
+    """A bad CERT_RENEWAL_DAYS_BEFORE_EXPIRY stops the process at startup, not as an error on every tick."""
+    monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", days)
+    with pytest.raises(SystemExit):
+        entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=True))
+
+
+@pytest.mark.parametrize("days", ["thirty", "1.5", ""])
+def test_cert_settings_or_die_names_the_variable_and_the_value_of_a_non_integer_threshold(
+    entrypoint, monkeypatch, caplog, days
+):
+    monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", days)
+    with pytest.raises(SystemExit):
+        entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=True))
+    assert "CERT_RENEWAL_DAYS_BEFORE_EXPIRY" in caplog.text
+    assert repr(days) in caplog.text
+
+
+def test_cert_settings_or_die_returns_the_settings_when_cert_renewal_is_on(entrypoint, monkeypatch):
+    monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", "14")
+    settings = entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=True))
+    assert settings.domain == "postern.test"
+    assert settings.cert_renewal_days_before_expiry == 14
+
+
+def test_cert_settings_or_die_ignores_the_threshold_when_cert_renewal_is_off(entrypoint, monkeypatch):
+    monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", "0")
+    assert entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=False)) is None
+
+
+def test_build_ticks_runs_the_cert_tick_on_the_settings_built_at_startup(entrypoint, monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(entrypoint.cert_state, "read_state", lambda: "state")
+    monkeypatch.setattr(entrypoint.cert_driver, "LegoRunner", lambda: "lego")
+    monkeypatch.setattr(
+        entrypoint.cert_driver, "advance_cert_state", lambda state, **k: seen.append(k["settings"]) or state
+    )
+    settings = object()
+    counters = {"cert": 1}
+    ticks = entrypoint._build_ticks("postern.test", "s", "strict", counters, _cert_en(cert_renewal=True), settings)
+    ticks["cert"]()
+    assert seen == [settings]
+    assert counters["cert"] == 0

@@ -9,11 +9,11 @@ State machine:
 
     NO_CERT --(adopt: existing on-disk cert with valid SANs)--> INSTALLED
     NO_CERT --(no on-disk cert; or SAN mismatch)--> ISSUING
-    ISSUING --(lego success; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
+    ISSUING --(lego success and valid output; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
     ISSUED_PENDING_INSTALL --(symlink-flip success)--> INSTALLED
     INSTALLED --(directory drift / SAN mismatch / .renew-cert; guard clear)--> ISSUING
     INSTALLED --(expiry)--> RENEWING
-    RENEWING --(success)--> ISSUED_PENDING_INSTALL
+    RENEWING --(success and valid output)--> ISSUED_PENDING_INSTALL
     *  --(consecutive_failures >= 6)--> FAILED
     FAILED --(60-min hold-off)--> prior pre-FAILED state retried
 
@@ -28,11 +28,19 @@ deferral from ISSUING/RENEWING returns to INSTALLED only when a cert is installe
 
 `acme_directory` moves only when an install completes, so a failed switch stays visible as drift and is retried.
 
-ISSUING runs `lego run` (always issues); RENEWING runs `lego renew --days N`
-(a no-op on a cert that is not yet due, and fatal without both an account
-registered for the directory and a certificate under Lego's own path), so only
-the expiry path takes it, and only while both exist and the directory has not
-drifted -- otherwise it falls back to `run`.
+ISSUING and RENEWING both run `lego run`; they differ only in what moved the state machine there (expiry
+for RENEWING). ISSUING, and RENEWING after an ACME directory or email change or with no attempt on record under
+the configured directory, pass `--renew-force`; any other RENEWING passes Postern's own `--renew-days`, so lego
+declines only a certificate of its own that is newer than the live one, which an earlier run issued before its tick
+crashed.
+
+Whatever lego issues is validated before ISSUED_PENDING_INSTALL (`postern_provisioner.cert._reject_lego_output`): key
+pair, issuer certificate, exact SAN set, and valid when lego returns. A rejected set is a failure, never installed, and
+lego's stored copy is deleted so the next run issues anew; an unforced run whose leaf serial is unchanged wrote nothing
+(no order, so no rejection arms the 24-hour guard), and its certificate is installed only if it is not due. A renewal
+threshold not shorter than the certificate's lifetime is logged as an error and the certificate is installed. A failed
+run discards lego state lego cannot load, and leaves the 24-hour guard clear when lego could not load it when the run
+began. `last_attempt_directory` records the directory of the latest attempt whatever happened to its guard time.
 """
 
 from __future__ import annotations
@@ -55,6 +63,13 @@ SCHEMA_VERSION = 1
 State = Literal["NO_CERT", "ISSUING", "ISSUED_PENDING_INSTALL", "INSTALLED", "RENEWING", "FAILED"]
 
 
+def check_renewal_days(days: int) -> None:
+    """Reject a CERT_RENEWAL_DAYS_BEFORE_EXPIRY that lego misreads: it takes 0 as a third of the certificate's lifetime
+    and a negative number as always renew. Shared by the portal's settings and the provisioner's."""
+    if days < 1:
+        raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
+
+
 # Schema ===============================================================================================================
 @dataclass
 class CertState:
@@ -64,8 +79,12 @@ class CertState:
     sans: list[str] = field(default_factory=list)
     # Legacy; read only by the migration in `read_state`.
     last_issued_iso: str | None = None
-    # ACME directory -> time of the last Lego attempt under it, set BEFORE calling Lego (defends rate limits).
+    # ACME directory -> time of the last Lego attempt under it, set in the tick's state before Lego runs and persisted
+    # after (a crash during a run loses it); the 24h guard reads it.
     last_issued_by_directory: dict[str, str] = field(default_factory=dict)
+    # ACME directory of the most recent Lego attempt, recorded even when the attempt's guard time is not (a discarded
+    # account clears it): failures and the FAILED hold-off are counted per directory by this, not by the guard times.
+    last_attempt_directory: str = ""
     last_attempt_iso: str | None = None
     last_failed_state: str | None = None  # so FAILED knows what to retry
     consecutive_failures: int = 0
@@ -120,8 +139,8 @@ def read_state(certdir: Path | None = None) -> CertState:
     fields fall back to their dataclass defaults. A schema version higher than
     we know logs a warning so the operator can upgrade the portal.
 
-    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner
-    writes it back (see `_migrate_legacy`).
+    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner writes it
+    back (see `_migrate_legacy`).
     """
     path = state_path(certdir)
     if not path.exists():

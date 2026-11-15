@@ -90,10 +90,10 @@
       "customType": "regex",
       "managerFilePatterns": ["/^provisioner/Dockerfile$/"],
       "matchStrings": [
-        "go install -trimpath -ldflags=\"-s -w\" github\\.com/go-acme/lego/v4/cmd/lego@(?<currentValue>v\\S+)"
+        "go install -trimpath -ldflags=\"-s -w\" github\\.com/go-acme/lego/v5@(?<currentValue>v\\S+)"
       ],
       "datasourceTemplate": "go",
-      "depNameTemplate": "github.com/go-acme/lego/v4"
+      "depNameTemplate": "github.com/go-acme/lego/v5"
     },
     {
       "description": "ex-ray from bindreams/hole, installed under the wire-compatible `v2ray-plugin` name. Tags follow `releases/ex-ray/v<X.Y.Z>`. depNameTemplate carries a track-unique logical name so the matchDepNames packageRule (above) can apply extractVersion to filter to this track only and strip the prefix. packageNameTemplate is the real GitHub repo Renovate queries.",

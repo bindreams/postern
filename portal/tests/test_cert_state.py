@@ -167,6 +167,28 @@ def test_state_written_by_current_code_is_not_migrated(tmp_path: Path):
     assert cert_state.read_state(certdir=tmp_path) == original
 
 
+def test_state_without_the_latest_attempt_directory_reads_it_as_unset(tmp_path: Path):
+    """The field is not seeded from the per-directory times: a state written before it existed just has none."""
+    _write_legacy(
+        tmp_path,
+        state="INSTALLED",
+        acme_directory=STAGING,
+        last_issued_by_directory={STAGING: "2026-11-01T00:00:00+00:00", PROD: "2026-11-02T00:00:00+00:00"},
+    )
+    assert cert_state.read_state(certdir=tmp_path).last_attempt_directory == ""
+
+
+def test_a_recorded_latest_attempt_directory_is_not_overridden_by_the_per_directory_times(tmp_path: Path):
+    """A discarded account clears an attempt's guard time but not the fact that the directory was attempted."""
+    original = cert_state.CertState(
+        state="ISSUING",
+        last_issued_by_directory={STAGING: "2026-11-01T00:00:00+00:00"},
+        last_attempt_directory=PROD,
+    )
+    cert_state.write_state(original, certdir=tmp_path)
+    assert cert_state.read_state(certdir=tmp_path).last_attempt_directory == PROD
+
+
 def test_pending_cert_paths_round_trips(tmp_path: Path):
     original = cert_state.CertState(
         state="ISSUED_PENDING_INSTALL",

@@ -4,7 +4,7 @@
 ARG PYTHON_MINOR=3.14
 
 FROM dhi.io/python:${PYTHON_MINOR}-alpine3.23-dev AS build
-COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /bin/uv
 WORKDIR /app
 COPY portal/pyproject.toml portal/uv.lock ./
 COPY portal/src/ src/

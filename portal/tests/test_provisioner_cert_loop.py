@@ -263,7 +263,7 @@ def test_installed_renews_on_explicit_trigger(settings, lego_mock, now, cert_dir
         now=now,
         cert_dir=cert_driver.CERT_DIR,
     )
-    # ISSUING (`lego run`): `lego renew --days N` is a no-op on a cert that is not yet due.
+    # ISSUING, which forces the run: `lego run` without `--renew-force` writes nothing for a cert that is not yet due.
     assert next_state.state == "ISSUING"
 
 

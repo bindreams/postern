@@ -272,7 +272,7 @@ def test_image_ships_no_pip(mta_e2e_stack, image):
 def _lego(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         [
-            "docker", "run", "--rm", "--network", "none", "--workdir", "/tmp", "--entrypoint", "lego",
+            "docker", "run", "--rm", "--init", "--network", "none", "--workdir", "/tmp", "--entrypoint", "lego",
             E2E_PROVISIONER_IMAGE, *args
         ],
         capture_output=True,
@@ -280,24 +280,50 @@ def _lego(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch):
-    """A lego release that renames or drops a flag fails here, not at the next renewal."""
+def _option_specs(help_text: str) -> dict[str, str]:
+    """`lego run --help` option lines: flag name -> its declaration (`--renew-days int`, `--accept-tos, -a`)."""
+    specs = {}
+    for line in help_text.splitlines():
+        if re.match(r"^\s+--[\w.-]+", line):
+            spec = re.split(r"\s{2,}", line.strip())[0]
+            specs[spec.split()[0].rstrip(",")] = spec
+    return specs
+
+
+@pytest.mark.parametrize("force", [True, False], ids=["forced", "unforced"])
+def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch, force):
+    """A lego release that renames or drops a flag, or turns a boolean into a valued one, fails here, not at the next
+    renewal."""
     argv: list[str] = []
     settings = provisioner_cert.CertSettings(
         domain="postern.test", dns_provider="cloudflare", cert_acme_email="a@b.test"
     )
     with monkeypatch.context() as patch:
         patch.setattr(provisioner_cert.subprocess, "run", lambda cmd, env, check: argv.extend(cmd))
-        provisioner_cert.LegoRunner(env={}).issue_or_renew(settings=settings)
+        provisioner_cert.LegoRunner(env={}).issue_or_renew(settings=settings, force=force)
 
     result = _lego("run", "--help")
     assert result.returncode == 0, result.stderr
     # Option lines only: usage prose names other flags ("Requires eab.kid..."), and a removed flag named in a
     # neighbour's description must not pass.
-    documented = set(re.findall(r"^\s+(--[\w.-]+)", result.stdout, flags=re.MULTILINE))
+    documented = _option_specs(result.stdout)
     passed = {a for a in argv if a.startswith("--")}
     assert passed, argv
-    assert passed <= documented, f"lego run does not document: {sorted(passed - documented)}"
+    assert passed <= documented.keys(), f"lego run does not document: {sorted(passed - documented.keys())}"
+
+    # Arity: help shows a value placeholder (`string`, `int`) only for flags that take one. Postern's own argv says
+    # which it means: a flag followed by a non-flag is valued.
+    for i, arg in enumerate(argv):
+        if not arg.startswith("--"):
+            continue
+        valued_here = i + 1 < len(argv) and not argv[i + 1].startswith("--")
+        valued_in_help = re.match(r"--[\w.-]+\s+\w", documented[arg]) is not None
+        passes = "with" if valued_here else "without"
+        assert valued_here == valued_in_help, f"{arg}: Postern passes it {passes} a value; lego documents {documented[arg]!r}"
+
+    key_types = re.search(r"--key-type .*?Supported: ([\w, ]+)\.", result.stdout)
+    assert key_types, result.stdout
+    assert argv[argv.index("--key-type") + 1].upper() in {k.strip() for k in key_types.group(1).split(",")}
 
 
 class _EveryKey(dict):

@@ -79,8 +79,9 @@ class LegoRunner:
 
         lego v5 has no `renew`; `run` on an existing, not-yet-due certificate exits 0 and writes nothing. With `force`
         it passes `--renew-force`. Without, it passes Postern's own `--renew-days`: the caller found the live
-        certificate due, so lego declines only a certificate of its own that is newer than the live one (one an earlier
-        run issued before its tick crashed), and that one is installed. `--force-cert-domains` keeps the SAN set
+        certificate due and knows that lego's own copy came from an attempt under this directory, so lego declines only
+        a certificate newer than the live one (one an earlier run issued before its tick crashed), and that one is
+        installed after `advance_cert_state` has validated it. `--force-cert-domains` keeps the SAN set
         exactly `--domains` (lego otherwise merges the old certificate's names in). ARI is off (`--ari-disable`) and
         so is the pre-renewal sleep (`--no-random-sleep`), so the due date is Postern's.
         """
@@ -111,9 +112,10 @@ class LegoRunner:
         ]
         if force:
             cmd.append("--renew-force")
+            logger.info("lego: invoking run --renew-force")
         else:
             cmd += ["--renew-days", str(settings.cert_renewal_days_before_expiry)]
-        logger.info("lego: invoking run (%s)", "--renew-force" if force else "--renew-days")
+            logger.info("lego: invoking run --renew-days %s", settings.cert_renewal_days_before_expiry)
         subprocess.run(cmd, env=run_env, check=True)
 
         cert_dir = LEGO_PATH / "certificates"
@@ -228,9 +230,13 @@ def advance_cert_state(
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
-        # RENEWING is due by Postern's own threshold, so only a run that changed the account or directory (lego's
-        # certificate may then be from the old one) is forced; see `LegoRunner.issue_or_renew`.
-        force = state.state == "ISSUING" or email_changed or under_new_directory
+        # RENEWING is due by Postern's own threshold, so it is forced only when nothing proves that lego's certificate is
+        # its own: the account or directory changed, or no attempt is on record under this directory (an adopted cert,
+        # a lost state.json); see `LegoRunner.issue_or_renew`.
+        force = (
+            state.state == "ISSUING" or email_changed or under_new_directory
+            or settings.cert_acme_directory not in state.last_issued_by_directory
+        )
         try:
             output = lego.issue_or_renew(settings=settings, force=force)
         except subprocess.CalledProcessError as e:

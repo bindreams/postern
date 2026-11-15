@@ -838,10 +838,25 @@ def test_issuing_forces_the_run(prod_settings, lego_mock, now):
     assert _forced(lego_mock) is True
 
 
+def _renewing_after_an_attempt(settings: CertSettings, now: dt.datetime) -> cert_state.CertState:
+    """RENEWING with a Lego attempt on record under the configured directory, which proves lego's certificate is its own."""
+    return dataclasses.replace(
+        _issuing(settings, "RENEWING"),
+        last_issued_by_directory={settings.cert_acme_directory: (now - dt.timedelta(days=60)).isoformat()},
+    )
+
+
 def test_renewing_with_nothing_changed_lets_lego_apply_postern_threshold(prod_settings, lego_mock, now):
     """A tick is RENEWING because the live cert is due; lego no-ops only on a cert a crashed tick left newer."""
-    _advance(_issuing(prod_settings, "RENEWING"), prod_settings, lego_mock, now)
+    _advance(_renewing_after_an_attempt(prod_settings, now), prod_settings, lego_mock, now)
     assert _forced(lego_mock) is False
+
+
+def test_renewing_with_no_attempt_on_record_for_the_directory_forces_the_run(prod_settings, lego_mock, now):
+    """An adopted cert, or a state.json that was lost or unreadable, leaves nothing to say that the certificate lego
+    holds is from this directory (it may be a staging one that is not due)."""
+    _advance(_issuing(prod_settings, "RENEWING"), prod_settings, lego_mock, now)
+    assert _forced(lego_mock) is True
 
 
 def test_renewing_under_a_changed_directory_forces_the_run(prod_settings, lego_mock, now):

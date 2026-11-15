@@ -151,6 +151,16 @@ def test_runner_uses_the_v5_run_command(monkeypatch):
     assert "--accept-tos" in argv
 
 
+def test_runner_logs_the_timing_flag_it_passes(monkeypatch, caplog):
+    caplog.set_level("INFO", logger=cert.logger.name)
+    _runner_argv(monkeypatch, force=True)
+    assert "invoking run --renew-force" in caplog.text
+    caplog.clear()
+    _runner_argv(monkeypatch, force=False, renew_days=21)
+    assert "invoking run --renew-days 21" in caplog.text
+    assert "--renew-force" not in caplog.text
+
+
 def test_forced_run_passes_renew_force_and_no_renew_days(monkeypatch):
     """Without --renew-force an existing, not-yet-due cert makes `lego run` exit 0 and write nothing."""
     argv = _runner_argv(monkeypatch, force=True)

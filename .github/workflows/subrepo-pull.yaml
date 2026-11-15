@@ -13,10 +13,13 @@ jobs:
     # Only run on Renovate PRs that touched .gitrepo files
     if: startsWith(github.head_ref, 'renovate/')
     runs-on: ubuntu-latest
+    concurrency:
+      group: subrepo-pull-${{ github.head_ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           # Needs a token that can push back to the PR branch
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -27,7 +30,7 @@ jobs:
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
-      # git-subrepo makes commits, and a runner has no committer identity.
+      # git-subrepo commits; a runner has no identity.
       - name: Set git committer identity
         run: |
           git config user.name "github-actions[bot]"
@@ -36,9 +39,12 @@ jobs:
       - name: Detect changed subrepos and pull
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
         run: |
-          # Both the changed-file list and the reset below read the merge base, so they see
-          # the same .gitrepo: a base that moved on after the branch was cut counts for neither.
+          # git-subrepo refuses a detached HEAD; the branch starts at the commit the checkout pinned.
+          git switch -c "$HEAD_REF"
+
+          # Diff and reset both use the merge base, so a base that moved on after the branch was cut counts for neither.
           merge_base=$(git merge-base "$BASE_SHA" HEAD)
           changed=$(git diff --name-only "$merge_base" HEAD -- 'external/*/.gitrepo')
 
@@ -59,5 +65,8 @@ jobs:
             echo "::endgroup::"
           done
 
+      # Fails, rather than overwrites, if the branch moved since the checkout.
       - name: Push updated source to PR branch
-        run: git push
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: git push origin "HEAD:refs/heads/${HEAD_REF}"

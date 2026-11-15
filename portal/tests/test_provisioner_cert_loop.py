@@ -826,6 +826,31 @@ def test_a_valid_lego_output_is_accepted(prod_settings, lego_mock, now, state_na
     assert set(next_state.pending_cert_paths) == {"fullchain", "privkey", "chain"}
 
 
+def test_a_leaf_that_became_valid_after_the_tick_began_is_accepted(prod_settings, lego_mock, tmp_path):
+    """A CA that does not backdate (Pebble) sets notBefore to the issuance time, which is after the tick's `now`."""
+    tick = _days_from_now(-0.01)
+    _lego_writes(
+        lego_mock, lambda out: _replace_with_pki(
+            out, tmp_path / "late", leaf_not_before=_days_from_now(-0.005), leaf_not_after=_days_from_now(90)
+        )
+    )
+    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, tick)
+    assert next_state.state == "ISSUED_PENDING_INSTALL"
+    assert next_state.last_attempt_iso == tick.isoformat()
+
+
+def test_a_leaf_that_is_not_yet_valid_when_lego_returns_is_rejected(prod_settings, lego_mock, now, tmp_path, caplog):
+    _lego_writes(
+        lego_mock, lambda out: _replace_with_pki(
+            out, tmp_path / "future", leaf_not_before=_days_from_now(0.05), leaf_not_after=_days_from_now(90)
+        )
+    )
+    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert next_state.state == "ISSUING"
+    assert next_state.pending_cert_paths == {}
+    assert "not valid" in caplog.text
+
+
 def test_a_failed_cleanup_of_rejected_lego_output_is_logged_not_raised(
     prod_settings, lego_mock, now, tmp_path, monkeypatch, caplog
 ):

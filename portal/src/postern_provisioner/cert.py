@@ -269,7 +269,8 @@ def advance_cert_state(
                 failed_state = replace(attempt_state, last_issued_by_directory=state.last_issued_by_directory)
             return _failed_or_increment(failed_state, settings, now)
 
-        problem = _lego_output_problem(output, expected, settings, now)
+        # The tick's `now` is when it began: a CA that does not backdate sets notBefore to the issuance time, after it.
+        problem = _lego_output_problem(output, expected, settings, dt.datetime.now(tz=dt.timezone.utc))
         if problem:
             logger.error("cert: lego's output is not installable: %s", problem)
             _discard_lego_certificate(settings.domain)

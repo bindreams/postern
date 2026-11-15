@@ -54,10 +54,16 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on the alpine-base tag the mta and provisioner Dockerfiles use. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that the mta and provisioner images build on the new minor: they take Python libraries from Alpine. Never close a Python PR by hand: Renovate then ignores that version for good. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "automerge": false
+    },
+    {
+      "description": "Python held below 3.15 until Alpine ships py3.15 builds of the libraries the mta and provisioner images install (see #336). Delete this rule to lift the hold.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["python"],
+      "allowedVersions": "<3.15"
     },
     {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",

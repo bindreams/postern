@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Download stages verify TLS against this bundle; the base image's trusts the
-# compromised eMudhra chain (#254).
+# compromised eMudhra chain.
 FROM dhi.io/alpine-base:3.23-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 
@@ -45,6 +45,9 @@ EOF
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
+# Crate floors (shadowsocks/crate-floors.sh).
+COPY --chmod=755 shadowsocks/crate-floors.sh /usr/local/bin/crate-floors.sh
+RUN crate-floors.sh
 RUN cargo build --release --bin sslocal
 
 # Runtime: debian-base:trixie-dev (glibc 2.41) -- non-dev trixie lacks apt,

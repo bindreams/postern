@@ -13,10 +13,13 @@ jobs:
     # Only run on Renovate PRs that touched .gitrepo files
     if: startsWith(github.head_ref, 'renovate/')
     runs-on: ubuntu-latest
+    concurrency:
+      group: subrepo-pull-${{ github.head_ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           # Needs a token that can push back to the PR branch
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -27,10 +30,23 @@ jobs:
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
-      - name: Detect changed subrepos and pull
+      # git-subrepo commits; a runner has no identity.
+      - name: Set git committer identity
         run: |
-          # Find which .gitrepo files were changed in this PR
-          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- 'external/*/.gitrepo')
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect changed subrepos and pull
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          # git-subrepo refuses a detached HEAD; the branch starts at the commit the checkout pinned.
+          git switch -c "$HEAD_REF"
+
+          # Diff and reset both use the merge base, so a base that moved on after the branch was cut counts for neither.
+          merge_base=$(git merge-base "$BASE_SHA" HEAD)
+          changed=$(git diff --name-only "$merge_base" HEAD -- 'external/*/.gitrepo')
 
           for gitrepo_file in $changed; do
             subrepo_dir=$(dirname "$gitrepo_file")
@@ -39,15 +55,18 @@ jobs:
 
             echo "::group::Pulling $subrepo_dir at $target_branch"
 
-            # Reset .gitrepo to base so git-subrepo can do a clean pull
-            git checkout "${{ github.event.pull_request.base.sha }}" -- "$gitrepo_file"
-            git commit -m "Reset $gitrepo_file for subrepo pull"
+            # Reset .gitrepo to the merge base so git-subrepo can do a clean pull
+            git checkout "$merge_base" -- "$gitrepo_file"
+            git commit -m "chore(external): reset $gitrepo_file for subrepo pull"
 
             # Pull the new version
-            git subrepo pull "$subrepo_dir" -b "$target_branch"
+            git subrepo pull "$subrepo_dir" -b "$target_branch" -u -m "chore(external): pull $subrepo_dir at $target_branch"
 
             echo "::endgroup::"
           done
 
+      # Fails, rather than overwrites, if the branch moved since the checkout.
       - name: Push updated source to PR branch
-        run: git push
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: git push origin "HEAD:refs/heads/${HEAD_REF}"

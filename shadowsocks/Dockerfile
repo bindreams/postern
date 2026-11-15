@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Download stages verify TLS against this bundle; the base image's trusts the
-# compromised eMudhra chain (#254).
+# compromised eMudhra chain.
 FROM dhi.io/alpine-base:3.23-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 
@@ -69,13 +69,9 @@ RUN wget -q -O /LICENSE.md \
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
-# hickory's DNS-over-HTTPS/TLS client: these are the first releases distrusting the
-# compromised eMudhra chain (#254). Drop once the vendored Cargo.lock reaches them.
-RUN <<-EOF
-	set -eu
-	cargo update -p rustls-webpki@0.103.8 --precise 0.103.16
-	cargo update -p webpki-roots@1.0.7 --precise 1.0.10
-EOF
+# Raise crates below their RustSec floors in upstream's Cargo.lock; see crate-floors.sh.
+COPY --chmod=755 shadowsocks/crate-floors.sh /usr/local/bin/crate-floors.sh
+RUN crate-floors.sh
 RUN cargo build --release --bin ssserver
 
 # Runtime is dhi.io/debian-base:trixie (glibc 2.41) -- NOT alpine-base. The

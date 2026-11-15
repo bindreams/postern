@@ -100,6 +100,12 @@ impl<S> ProxyServerStream<S> {
     pub fn into_inner(self) -> S {
         self.stream.into_inner()
     }
+
+    /// Get authenticated user key after handshake (AEAD2022 multi-user mode).
+    /// Returns `None` in single-user mode or before the handshake completes.
+    pub fn user_key(&self) -> Option<&[u8]> {
+        self.stream.user_key()
+    }
 }
 
 impl<S> ProxyServerStream<S>
@@ -160,9 +166,10 @@ where
         // Wakeup writer task because we have already received the salt
         #[cfg(feature = "aead-cipher-2022")]
         if let ProxyServerStreamWriteState::PrepareHeader(waker) = this.writer_state
-            && let Some(waker) = waker.take() {
-                waker.wake();
-            }
+            && let Some(waker) = waker.take()
+        {
+            waker.wake();
+        }
 
         Ok(()).into()
     }
@@ -190,9 +197,10 @@ where
                     } else {
                         // Reader didn't receive the salt from client yet.
                         if let Some(waker) = waker.take()
-                            && !waker.will_wake(cx.waker()) {
-                                waker.wake();
-                            }
+                            && !waker.will_wake(cx.waker())
+                        {
+                            waker.wake();
+                        }
                         *waker = Some(cx.waker().clone());
                         return Poll::Pending;
                     }

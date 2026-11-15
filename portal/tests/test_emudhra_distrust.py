@@ -3,7 +3,8 @@
 Eight eMudhra intermediates (April 2025) have publicly recoverable private keys:
 <https://emudhra.we-have-a-problem.com/>. Old trust stores reach them through the
 `emSign ECC Root CA - G3` cross-sign. Each floor below is the first release that
-stops trusting them, per that page and measured against its test hosts.
+stops trusting them, per that page and measured against its test hosts. The Rust
+crates' floors are in test_ssserver_crate_floors.py.
 """
 from __future__ import annotations
 
@@ -185,31 +186,3 @@ def test_compose_builds_pull_base_images():
     built = {name: svc["build"] for name, svc in services.items() if "build" in svc}
     assert built
     assert {name: build.get("pull") for name, build in built.items()} == {name: True for name in built}
-
-
-# The ssserver build's TLS client (hickory DNS-over-HTTPS/TLS). webpki-roots 0.26.x
-# is a shim re-exporting the 1.x roots, so only same-major versions are checked.
-RUST_CRATE_FLOORS = {"rustls-webpki": Version("0.103.16"), "webpki-roots": Version("1.0.10")}
-
-
-def _locked_versions(lockfile: Path, crate: str) -> list[Version]:
-    return [Version(v) for v in re.findall(rf'^name = "{crate}"\nversion = "([^"]+)"', lockfile.read_text(), re.M)]
-
-
-def test_ssserver_build_overrides_stale_rust_crates():
-    """While the vendored Cargo.lock lags a floor, the build stage must raise that
-    crate with `cargo update --precise` before building. Once a subrepo pull meets
-    the floor, the override must go, or it would pin the crate back down."""
-    lockfile = REPO_ROOT / "external/shadowsocks-rust/Cargo.lock"
-    _base, body = _stages((REPO_ROOT / "shadowsocks/Dockerfile").read_text())["build-shadowsocks"]
-    build_at = body.index("cargo build")
-    for crate, floor in RUST_CRATE_FLOORS.items():
-        stale = [v for v in _locked_versions(lockfile, crate) if v.major == floor.major and v < floor]
-        override = re.search(rf"cargo update -p {crate}(@\S+)? --precise (\S+)", body)
-        if stale:
-            assert override is not None, f"{crate} {stale} is below {floor}"
-            assert override.start() < build_at
-            assert Version(override[2]) >= floor
-            assert override[1] == f"@{stale[0]}", "qualify the crate: a second locked version makes the spec ambiguous"
-        else:
-            assert override is None, f"Cargo.lock now meets {crate} {floor}; drop the override"

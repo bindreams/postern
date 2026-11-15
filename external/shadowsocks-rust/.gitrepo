@@ -5,8 +5,8 @@
 ;
 [subrepo]
 	remote = https://github.com/shadowsocks/shadowsocks-rust.git
-	branch = v1.24.0
-	commit = 7ee1aa9223ed8f4d34734aac919036c8ad4502c2
-	parent = 550b1952aaa94e02954adf35977e6662b91fa319
+	branch = v1.25.0
+	commit = ab388c7466d21f979430e33cc9ef10e22fb05955
+	parent = 17e665b2dbf9b2e821455d2d3aacf7b77f219a72
 	method = merge
 	cmdver = 0.4.9

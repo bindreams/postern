@@ -106,11 +106,13 @@ def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls()
 
 # Renovate packageRules ------------------------------------------------------------------------------------------------
 # Rules are evaluated in order and a later match wins. The evaluator decides a rule only through
-# matchers it models exactly: exact-name entries of the keys below. A rule that sets the checked
-# key through anything else (glob, `/regex/`, `!negation`, another match* key) fails the test
-# instead of being guessed at.
+# matchers it models exactly: exact-name entries of the keys below, and `<literal>/**` (every name
+# under a prefix) for matchPackageNames. A rule that sets the checked key through anything else
+# (another glob, `/regex/`, `!negation`, another match* key) fails the test instead of being
+# guessed at.
 MODELLED_MATCHERS = {
     "matchManagers": "manager",
+    "matchDatasources": "datasource",
     "matchDepNames": "dep_name",
     "matchPackageNames": "package_name",
     "matchFileNames": "file",
@@ -123,6 +125,8 @@ def _entry_matches(key: str, entry: str, dep: dict[str, str]) -> bool | None:
     value = dep[MODELLED_MATCHERS[key]]
     if not re.search(PATTERN_CHARS, entry) and not (entry.startswith("/") and entry.endswith("/")):
         return entry == value
+    if key == "matchPackageNames" and entry.endswith("/**") and not re.search(PATTERN_CHARS, entry[:-3]):
+        return value.startswith(entry[:-2])
     # A file glob can only match a path that starts with its literal prefix.
     prefix = re.split(PATTERN_CHARS, entry)[0]
     if key == "matchFileNames" and prefix and not value.startswith(prefix):
@@ -168,7 +172,9 @@ def _final_setting(key: str, dep: dict[str, str]):
 
 
 def _python_dep(manager: str, rel: str) -> dict[str, str]:
-    return {"manager": manager, "dep_name": "python", "package_name": "dhi.io/python", "file": rel}
+    return {
+        "manager": manager, "datasource": "docker", "dep_name": "python", "package_name": "dhi.io/python", "file": rel
+    }
 
 
 @pytest.mark.parametrize("rel", PIN_SITES)
@@ -183,10 +189,43 @@ def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
     assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
 
 
+# dhi.io images --------------------------------------------------------------------------------------------------------
+DHI_IO_SOURCES = (
+    "mta/Dockerfile", "nginx/Dockerfile", "portal/Dockerfile", "provisioner/Dockerfile", "shadowsocks/Dockerfile"
+)
+
+
+def _dhi_io_packages() -> list[str]:
+    """Every `dhi.io/<name>` the production Dockerfiles pull (Renovate ignores `**/tests/**`)."""
+    names = {name for rel in DHI_IO_SOURCES for name in re.findall(r"\bdhi\.io/([\w.-]+)", _text(rel))}
+    assert {"nginx", "python"} <= names, names
+    return sorted(names)
+
+
+@pytest.mark.parametrize("name", _dhi_io_packages())
+def test_renovate_raises_dhi_io_updates_without_a_release_timestamp(name):
+    """dhi.io serves no release timestamps, so the global 7-day cooldown would hold every one of them pending forever."""
+    for manager in ("dockerfile", "docker-compose"):
+        dep = {
+            "manager": manager, "datasource": "docker", "dep_name": f"dhi.io/{name}", "package_name": f"dhi.io/{name}",
+            "file": "x"
+        }
+        assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional", manager
+
+
+def test_renovate_keeps_the_release_age_cooldown_for_other_registries():
+    dep = {
+        "manager": "dockerfile", "datasource": "docker", "dep_name": "ghcr.io/linuxserver/socket-proxy",
+        "package_name": "ghcr.io/linuxserver/socket-proxy", "file": "compose.yaml"
+    }
+    assert _final_setting("minimumReleaseAgeBehaviour", dep) is None
+    assert _renovate()["minimumReleaseAge"] == "7 days"
+
+
 def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
     """It would resolve the portal's `${PYTHON_MINOR}` tag into a second, unreplaceable update."""
     dep = {
-        "manager": "dockerfile", "dep_name": "dhi.io/python", "package_name": "dhi.io/python",
+        "manager": "dockerfile", "datasource": "docker", "dep_name": "dhi.io/python", "package_name": "dhi.io/python",
         "file": "portal/Dockerfile"
     }
     assert _final_setting("enabled", dep) is False

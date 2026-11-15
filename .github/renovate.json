@@ -39,17 +39,22 @@
       "automerge": false
     },
     {
+      "description": "dhi.io serves no release timestamps (the docker datasource reads them only from Docker Hub), so under the global `minimumReleaseAge` the default `timestamp-required` holds every dhi.io update pending forever. The cooldown protects nothing here: every dhi.io ref is a floating tag without a digest, so CI and `docker build --pull` already take whatever DHI pushed under the tag, unaged. `timestamp-optional` lets the update PR open (and, where the global `automerge` applies, merge on green CI). See issue #330.",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["dhi.io/**"],
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
       "description": "The Python image tag is built from `ARG PYTHON_MINOR`, which the custom regex manager for depName `python` bumps in every Dockerfile and portal/.python-version at once. The dockerfile manager would also resolve the portal's `${PYTHON_MINOR}` FROMs into a second update whose replacement string is not in the file.",
       "matchManagers": ["dockerfile"],
       "matchPackageNames": ["dhi.io/python"],
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`. `timestamp-optional` because the docker datasource reads release timestamps only from Docker Hub, so every dhi.io tag has none and the default `timestamp-required` would hold the bump pending forever; safe here because the bump is never automerged.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
-      "automerge": false,
-      "minimumReleaseAgeBehaviour": "timestamp-optional"
+      "automerge": false
     },
     {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
@@ -121,7 +126,7 @@
       "versioningTemplate": "loose"
     },
     {
-      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). The e2e udp-echo image in portal/tests/e2e/e2e.compose.yaml is a helper, deliberately not on this pin. extractVersionTemplate offers only minors already published as the `-alpine3.23-dev` tag the portal's build stage pulls, not the bare Debian-default tag that can appear first. Assumes DHI publishes the `-alpine3.23` runtime tag alongside every `-alpine3.23-dev` one; one regex cannot check both, and a minor with only the `-dev` tag opens a PR whose runtime FROM fails to pull, which a person sees because the bump is never automerged.",
+      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). The e2e udp-echo image in portal/tests/e2e/e2e.compose.yaml is a helper, deliberately not on this pin, and no manager raises it: `config:recommended` ignores `**/tests/**`, and the docker-compose manager's default file pattern would not match `*.compose.yaml` anyway. extractVersionTemplate offers only minors already published as the `-alpine3.23-dev` tag the portal's build stage pulls, not the bare Debian-default tag that can appear first. Assumes DHI publishes the `-alpine3.23` runtime tag alongside every `-alpine3.23-dev` one; one regex cannot check both, and a minor with only the `-dev` tag opens a PR whose runtime FROM fails to pull, which a person sees because the bump is never automerged.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^(portal|mta|provisioner)/Dockerfile$/",

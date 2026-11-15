@@ -280,14 +280,28 @@ def _lego(*args: str) -> subprocess.CompletedProcess:
     )
 
 
-def _option_specs(help_text: str) -> dict[str, str]:
-    """`lego run --help` option lines: flag name -> its declaration (`--renew-days int`, `--accept-tos, -a`)."""
-    specs = {}
+# urfave/cli indents each option declaration by exactly three spaces; the wrapped lines of its description sit deeper,
+# and the group headings ("Flags related to hooks:") start with a letter.
+_OPTION_DECLARATION = re.compile(r"^ {3}(--[\w.-]+)")
+
+
+def _option_blocks(help_text: str) -> dict[str, tuple[str, str]]:
+    """`lego run --help` options: flag name -> (its declaration column, its whole text incl. wrapped description).
+
+    The declaration column is e.g. `--renew-days int` or `--accept-tos, -a`."""
+    blocks: dict[str, tuple[str, str]] = {}
+    current = None
     for line in help_text.splitlines():
-        if re.match(r"^\s+--[\w.-]+", line):
-            spec = re.split(r"\s{2,}", line.strip())[0]
-            specs[spec.split()[0].rstrip(",")] = spec
-    return specs
+        declared = _OPTION_DECLARATION.match(line)
+        if declared:
+            current = declared.group(1)
+            blocks[current] = (re.split(r"\s{2,}", line.strip())[0], line.strip())
+        elif current and line.startswith("    ") and line.strip():
+            spec, text = blocks[current]
+            blocks[current] = (spec, f"{text} {line.strip()}")
+        else:
+            current = None
+    return blocks
 
 
 @pytest.mark.parametrize("force", [True, False], ids=["forced", "unforced"])
@@ -306,7 +320,7 @@ def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch, force):
     assert result.returncode == 0, result.stderr
     # Option lines only: usage prose names other flags ("Requires eab.kid..."), and a removed flag named in a
     # neighbour's description must not pass.
-    documented = _option_specs(result.stdout)
+    documented = _option_blocks(result.stdout)
     passed = {a for a in argv if a.startswith("--")}
     assert passed, argv
     assert passed <= documented.keys(), f"lego run does not document: {sorted(passed - documented.keys())}"
@@ -317,12 +331,13 @@ def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch, force):
         if not arg.startswith("--"):
             continue
         valued_here = i + 1 < len(argv) and not argv[i + 1].startswith("--")
-        valued_in_help = re.match(r"--[\w.-]+\s+\w", documented[arg]) is not None
+        spec = documented[arg][0]
+        valued_in_help = re.match(r"--[\w.-]+\s+\w", spec) is not None
         passes = "with" if valued_here else "without"
-        assert valued_here == valued_in_help, f"{arg}: Postern passes it {passes} a value; lego documents {documented[arg]!r}"
+        assert valued_here == valued_in_help, f"{arg}: Postern passes it {passes} a value; lego documents {spec!r}"
 
-    key_types = re.search(r"--key-type .*?Supported: ([\w, ]+)\.", result.stdout)
-    assert key_types, result.stdout
+    key_types = re.search(r"Supported: ([\w, ]+)\.", documented["--key-type"][1])
+    assert key_types, documented["--key-type"]
     assert argv[argv.index("--key-type") + 1].upper() in {k.strip() for k in key_types.group(1).split(",")}
 
 

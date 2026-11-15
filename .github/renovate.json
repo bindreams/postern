@@ -4,7 +4,7 @@
   "automerge": true,
   "minimumReleaseAge": "7 days",
   "semanticCommits": "enabled",
-  "gitIgnoredAuthors": ["nathan-blahaj[bot]@users.noreply.github.com"],
+  "gitIgnoredAuthors": ["317541977+nathan-blahaj[bot]@users.noreply.github.com"],
   "pyenv": {
     "enabled": false
   },
@@ -15,6 +15,12 @@
     "enabled": false
   },
   "packageRules": [
+    {
+      "description": "A .gitrepo bump is complete only once subrepo-pull.yaml has pushed the pulled source, and that job is not a required check: GitHub's own automerge could merge the bump alone. Renovate merges it itself, once every check on the branch head is green.",
+      "matchManagers": ["custom.regex"],
+      "matchFileNames": ["external/**/.gitrepo"],
+      "platformAutomerge": false
+    },
     {
       "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability alerts bypass package rules, so the cargo manager is disabled above (no first-party Cargo manifest exists outside external/). Crate floors come from shadowsocks/crate-floors.sh at build time.",
       "matchFileNames": ["external/**"],
@@ -43,7 +49,7 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that the mta and provisioner images build on the new minor: they take Python libraries from Alpine. Never close a Python PR by hand: Renovate then ignores that version for good. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that the mta and provisioner images build on the new minor: they take Python libraries from Alpine. Never close a Python PR by hand: Renovate then ignores that version for good.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "automerge": false

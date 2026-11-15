@@ -10,42 +10,48 @@ permissions:
 
 jobs:
   subrepo-pull:
-    # Renovate PRs that touched .gitrepo files; not the push this job makes itself.
-    if: startsWith(github.head_ref, 'renovate/') && github.actor != 'nathan-blahaj[bot]'
+    # Only run on Renovate PRs that touched .gitrepo files
+    if: startsWith(github.head_ref, 'renovate/')
     runs-on: ubuntu-latest
+    # Queued, not cancelled: the run this job's own push triggers must not cancel the run that pushed.
     concurrency:
       group: subrepo-pull-${{ github.head_ref }}
-      cancel-in-progress: true
+      cancel-in-progress: false
+    env:
+      # The nathan-blahaj app's bot user; the id prefix lets GitHub attribute the commits to it.
+      BOT_NAME: nathan-blahaj[bot]
+      BOT_EMAIL: 317541977+nathan-blahaj[bot]@users.noreply.github.com
     steps:
-      # A GITHUB_TOKEN push does not trigger workflows, so the PR's checks would never run on the pulled source and
-      # Renovate could not automerge it. The nathan-blahaj app's token does.
-      - name: Mint nathan-blahaj token
-        id: nathan
-        uses: actions/create-github-app-token@v3
-        with:
-          app-id: ${{ secrets.NATHAN_APP_ID }}
-          private-key: ${{ secrets.NATHAN_APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          token: ${{ steps.nathan.outputs.token }}
+          persist-credentials: false
+
+      # This job's push triggers it again; that run finds its own commit on top and stops.
+      - name: Skip the run this job's own push triggered
+        id: own
+        run: |
+          if [ "$(git log -1 --format=%ae)" = "$BOT_EMAIL" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
 
       - name: Install git-subrepo
+        if: steps.own.outputs.skip != 'true'
         run: |
-          git clone --depth 1 https://github.com/ingydotnet/git-subrepo /tmp/git-subrepo
+          git clone --quiet https://github.com/ingydotnet/git-subrepo /tmp/git-subrepo
+          git -C /tmp/git-subrepo checkout --quiet ea108868fe0998c912c411830bfc50dc259cc635  # 0.4.9
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
       # git-subrepo commits; a runner has no identity. Renovate's gitIgnoredAuthors lists this email, so it keeps
       # rebasing and automerging the branch.
       - name: Set git committer identity
+        if: steps.own.outputs.skip != 'true'
         run: |
-          git config user.name "nathan-blahaj[bot]"
-          git config user.email "nathan-blahaj[bot]@users.noreply.github.com"
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
 
       - name: Detect changed subrepos and pull
+        if: steps.own.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_REF: ${{ github.head_ref }}
@@ -74,8 +80,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      # A GITHUB_TOKEN push does not trigger workflows, so the PR's checks would never run on the pulled source and
+      # Renovate could not automerge it. The app's token does. Minted only for the push, after git-subrepo has run.
+      - name: Mint nathan-blahaj token
+        if: steps.own.outputs.skip != 'true'
+        id: nathan
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.NATHAN_APP_ID }}
+          private-key: ${{ secrets.NATHAN_APP_PRIVATE_KEY }}
+
       # Fails, rather than overwrites, if the branch moved since the checkout.
       - name: Push updated source to PR branch
+        if: steps.own.outputs.skip != 'true'
         env:
           HEAD_REF: ${{ github.head_ref }}
-        run: git push origin "HEAD:refs/heads/${HEAD_REF}"
+          TOKEN: ${{ steps.nathan.outputs.token }}
+        run: git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_REF}"

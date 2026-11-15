@@ -14,7 +14,6 @@ filesystem or subprocess.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import logging
 import os
 import shutil
@@ -27,7 +26,7 @@ from urllib.parse import urlparse
 from postern.cert import inspect as cert_inspect
 from postern.cert import state as cert_state
 
-from . import install, lego_env
+from . import install, lego_env, lego_store
 
 logger = logging.getLogger(__name__)
 
@@ -264,9 +263,9 @@ def advance_cert_state(
         except subprocess.CalledProcessError as e:
             logger.error("cert: lego failed: %s", e)
             failed_state = attempt_state
-            if _discard_unrecoverable_lego_account(settings, e.output or ""):
-                # An account the CA never knew cannot have placed an order: leave the 24h guard unarmed (and the
-                # attempt unrecorded), so the next tick registers afresh at once.
+            if _discard_unusable_lego_state(settings, e.output or ""):
+                # State lego could not load, or an account the CA never knew, placed no order: leave the 24h guard
+                # unarmed, so the next tick starts afresh at once.
                 failed_state = replace(attempt_state, last_issued_by_directory=state.last_issued_by_directory)
             return _failed_or_increment(failed_state, settings, now)
 
@@ -372,44 +371,35 @@ def _latest_attempt_directory(state: cert_state.CertState) -> str:
 
 
 def _account_host(directory: str) -> str:
-    """Lego keeps accounts at `<path>/accounts/<url.Host, ':' -> '_'>/<email>/account.json`; Go's `url.Host` is the
-    authority without userinfo, with the port and IPv6 brackets as written (lego v5.6.0, cmd/internal/storage/storage_accounts.go)."""
+    """The `<host>` of lego's `<path>/accounts/<host>/<email>`: Go's `url.Host` (the authority without userinfo, port and
+    IPv6 brackets as written) with `:` replaced by `_`."""
     return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
-def _discard_unrecoverable_lego_account(settings: CertSettings, lego_output: str) -> bool:
-    """After a failed run, remove the lego account directory when the failure shows no run can use it (a removal
-    failure is logged, not raised). True when it is such an account, removed or not.
+def _discard_unusable_lego_state(settings: CertSettings, lego_output: str) -> bool:
+    """After a failed run, remove the lego account directory and the stored certificate that no later run can use (a
+    removal failure is logged, not raised). True when either was one, removed or not.
 
-    That is when the CA answered `accountDoesNotExist` (lego v5 looks an account up by its key and does not register
-    anew; only a fresh directory registers) or when `account.json` cannot be decoded. Any other failure keeps the
-    account: lego may still recover it."""
+    An account is unusable when the CA answered `accountDoesNotExist` (lego v5 looks an account up by its key and does
+    not register anew; only a fresh directory registers) or when lego cannot load it; a certificate, when lego cannot
+    load it (`lego_store`). Any other failure keeps both: lego may still recover them."""
     account_dir = LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
-    if ACCOUNT_DOES_NOT_EXIST not in lego_output and not _account_file_unreadable(account_dir / "account.json"):
-        return False
-    try:
-        logger.info("cert: removing lego account %s: no run can use it", account_dir)
-        shutil.rmtree(account_dir)
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.error("cert: could not remove lego account %s: %s", account_dir, e)
-    return True
-
-
-def _account_file_unreadable(account_json: Path) -> bool:
-    """Whether lego cannot decode its account file; False when there is none.
-
-    Mirrors lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a file that does not
-    decode into the account struct is an error (lego writes it non-atomically, so a crash can truncate it), whereas a
-    null or absent registration only makes lego ask the CA."""
-    try:
-        account = json.loads(account_json.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return False
-    except ValueError:
-        return True
-    return not isinstance(account, dict) or not isinstance(account.get("registration"), (dict, type(None)))
+    unusable_account = (
+        ACCOUNT_DOES_NOT_EXIST in lego_output or lego_store.account_unloadable(account_dir, settings.cert_acme_email)
+    )
+    if unusable_account:
+        try:
+            logger.info("cert: removing lego account %s: no run can use it", account_dir)
+            shutil.rmtree(account_dir)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            logger.error("cert: could not remove lego account %s: %s", account_dir, e)
+    unusable_certificate = lego_store.certificate_unloadable(LEGO_PATH / "certificates", settings.domain)
+    if unusable_certificate:
+        logger.info("cert: removing lego's stored certificate for %s: no run can use it", settings.domain)
+        _discard_lego_certificate(settings.domain)
+    return unusable_account or unusable_certificate
 
 
 def _lego_output_problem(

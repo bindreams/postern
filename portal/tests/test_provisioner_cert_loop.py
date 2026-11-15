@@ -56,6 +56,18 @@ def cert_dir(tmp_path: Path) -> Path:
 REGISTERED_ACCOUNT = json.dumps({"registration": {"status": "valid", "accountURL": "https://ca.test/acct/1"}})
 
 
+def _generate_account_key() -> bytes:
+    """A PEM key as lego writes it: one lego can load."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    return ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption()
+    )
+
+
+ACCOUNT_KEY = _generate_account_key()
+
+
 def _register_account(cert_dir: Path, directory: str, email: str) -> Path:
     """What lego leaves behind: accounts/<host>/<email>/account.json."""
     from urllib.parse import urlparse
@@ -111,7 +123,9 @@ def lego_mock(cert_dir: Path, settings: CertSettings) -> MagicMock:
         fc = pki_dir / f"{settings.domain}.crt"
         pk = pki_dir / f"{settings.domain}.key"
         ch = pki_dir / f"{settings.domain}.issuer.crt"
-        (pki_dir / f"{settings.domain}.json").write_text("{}")  # lego's resource file, written last
+        # lego's resource file, written last
+        (pki_dir /
+         f"{settings.domain}.json").write_text(json.dumps({"id": settings.domain, "domains": [settings.domain]}))
         fc.write_bytes((scratch / "fullchain.pem").read_bytes())
         pk.write_bytes((scratch / "privkey.pem").read_bytes())
         ch.write_bytes((scratch / "chain.pem").read_bytes())
@@ -881,7 +895,7 @@ def _unregistered_account(cert_dir: Path, host: str, email: str = "ops@postern.t
     account = cert_dir / "lego" / "accounts" / host / email
     account.mkdir(parents=True)
     (account / "account.json").write_text(body if body is not None else json.dumps({"registration": None}))
-    (account / f"{email}.key").write_text("key")
+    (account / f"{email}.key").write_bytes(ACCOUNT_KEY)
     return account
 
 
@@ -951,6 +965,27 @@ def test_unreadable_lego_account_file_is_discarded_after_any_failed_run(prod_set
     assert not account.exists()
 
 
+def test_unloadable_lego_account_key_discards_the_account_after_any_failed_run(prod_settings, lego_mock, now, cert_dir):
+    """A truncated `<email>.key` beside a readable `account.json` makes lego fail before it reaches the CA."""
+    account = _register_account(cert_dir, PROD, "ops@postern.test")
+    (account / "ops@postern.test.key").write_text("-----BEGIN RSA PRIVATE KEY-----" + chr(10) + "AAAA")
+    _fail_lego(lego_mock, RATE_LIMITED)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert not account.exists()
+
+
+def test_an_account_file_that_cannot_be_read_is_discarded_and_the_failure_recorded(
+    prod_settings, lego_mock, now, cert_dir
+):
+    """Any OSError, not only a missing file: the attempt is recorded and nothing escapes the tick."""
+    account = cert_dir / "lego" / "accounts" / "acme-v02.api.letsencrypt.org" / "ops@postern.test"
+    (account / "account.json").mkdir(parents=True)
+    _fail_lego(lego_mock, RATE_LIMITED)
+    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert next_state.consecutive_failures == 1
+    assert not account.exists()
+
+
 def test_a_run_that_discards_the_account_does_not_arm_the_24h_guard(prod_settings, lego_mock, now, cert_dir):
     """An account the CA never had cannot have placed an order, so the next tick retries at once."""
     _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
@@ -975,11 +1010,11 @@ def test_a_failed_run_that_keeps_the_account_arms_the_24h_guard(prod_settings, l
 def test_registered_lego_account_is_kept_after_a_failed_run(prod_settings, lego_mock, now, cert_dir):
     """A failure at the CA (rate limit, DNS-01) says nothing about an account that is registered."""
     account = _register_account(cert_dir, PROD, "ops@postern.test")
-    (account / "ops@postern.test.key").write_text("key")
+    (account / "ops@postern.test.key").write_bytes(ACCOUNT_KEY)
     present = _record_account_presence_at_run(lego_mock, account, fail=True)
     _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
     assert present == [True]
-    assert (account / "ops@postern.test.key").read_text() == "key"
+    assert (account / "ops@postern.test.key").read_bytes() == ACCOUNT_KEY
 
 
 def test_unregistered_lego_account_is_kept_after_a_successful_run(prod_settings, lego_mock, now, cert_dir):
@@ -1033,33 +1068,6 @@ def test_cleanup_failure_does_not_abort_the_tick(prod_settings, lego_mock, now, 
     next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
     assert next_state.consecutive_failures == 1
     assert "read-only file system" in caplog.text
-
-
-# lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a file that does not decode into
-# the account struct is an error no run recovers from; a missing or null registration is not (the CA is asked).
-@pytest.mark.parametrize(
-    ("body", "unreadable"),
-    [
-        (None, False),  # no account.json
-        (json.dumps({"registration": {"status": "valid"}}), False),
-        (json.dumps({"registration": None}), False),
-        ("{}", False),
-        (json.dumps({"registration": {"body": {"status": "valid"}}}), False),
-        (json.dumps({"registration": "valid"}), True),
-        ("[]", True),
-        ('{"id": "ops@po', True),
-        ("", True),
-    ],
-    ids=[
-        "missing", "v5-registered", "null-registration", "absent-registration", "v4-shaped",
-        "registration-not-an-object", "not-an-object", "truncated", "empty"
-    ],
-)
-def test_account_file_unreadable_follows_lego_v5s_decoding(tmp_path, body, unreadable):
-    account_json = tmp_path / "account.json"
-    if body is not None:
-        account_json.write_text(body)
-    assert cert_driver._account_file_unreadable(account_json) is unreadable
 
 
 STEP_CA_OLD = "https://ca.internal/acme/old/directory"
@@ -1187,6 +1195,60 @@ def test_account_reset_log_names_the_directory(prod_settings, lego_mock, now, ce
     _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
     _advance(_step_ca_switch(prod_settings, now), prod_settings, lego_mock, now)
     assert "ACME directory changed; resetting lego account dir" in caplog.text
+
+
+# Lego's stored certificate ============================================================================================
+def _lego_certificates(cert_dir: Path) -> Path:
+    return cert_dir / "lego" / "certificates"
+
+
+def _store_lego_certificate(cert_dir: Path, domain: str, *, resource: str) -> None:
+    """lego's stored set, with a certificate that parses and the given resource file."""
+    from tests.e2e._certs import generate_test_pki
+    generate_test_pki(cert_dir / "stored-pki", hostname=domain)
+    (_lego_certificates(cert_dir) / f"{domain}.crt").write_bytes(
+        (cert_dir / "stored-pki" / "fullchain.pem").read_bytes()
+    )
+    (_lego_certificates(cert_dir) / f"{domain}.json").write_text(resource)
+
+
+@pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
+def test_an_unloadable_stored_certificate_is_discarded_after_a_failed_run_and_the_guard_stays_clear(
+    prod_settings, lego_mock, now, cert_dir, state_name
+):
+    """A truncated resource file fails every `lego run`, forced or not, and fails it before any order is placed."""
+    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test", "domains": ["postern.te')
+    _fail_lego(lego_mock, RATE_LIMITED)
+    state = dataclasses.replace(
+        _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
+    )
+    failed = _advance(state, prod_settings, lego_mock, now)
+    assert list(_lego_certificates(cert_dir).glob(f"{prod_settings.domain}*")) == []
+    assert failed.consecutive_failures == 1
+    assert failed.last_issued_by_directory == {PROD: "2000-01-01T00:00:00+00:00"}
+
+
+def test_a_loadable_stored_certificate_is_kept_after_a_failed_run(prod_settings, lego_mock, now, cert_dir):
+    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
+    _fail_lego(lego_mock, RATE_LIMITED)
+    failed = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert sorted(p.name for p in _lego_certificates(cert_dir).glob(f"{prod_settings.domain}*")
+                  ) == [f"{prod_settings.domain}.crt", f"{prod_settings.domain}.json"]
+    assert failed.last_issued_by_directory == {PROD: now.isoformat()}
+
+
+def test_an_unparseable_stored_certificate_is_discarded_even_when_the_account_is_too(
+    prod_settings, lego_mock, now, cert_dir
+):
+    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
+    (_lego_certificates(cert_dir) /
+     f"{prod_settings.domain}.crt").write_text("-----BEGIN CERTIFICATE-----" + chr(10) + "AAAA")
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
+    _fail_lego(lego_mock)
+    failed = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert list(_lego_certificates(cert_dir).glob(f"{prod_settings.domain}*")) == []
+    assert not account.exists()
+    assert failed.last_issued_by_directory == {}
 
 
 # ACME account email change ============================================================================================

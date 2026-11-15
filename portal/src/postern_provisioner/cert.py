@@ -54,6 +54,9 @@ class CertSettings:
     cert_force_reissue: bool = False
     expected_sans: set[str] = field(default_factory=set)
 
+    def __post_init__(self) -> None:
+        cert_state.check_renewal_days(self.cert_renewal_days_before_expiry)
+
 
 def expected_sans_for(domain: str) -> set[str]:
     """Wildcard SAN list: <domain> + *.<domain>. The wildcard hides subdomain

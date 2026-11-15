@@ -53,3 +53,27 @@ def test_cert_renewal_full_config_valid():
     assert s.dns_provider == "cloudflare"
     assert s.cert_renewal_days_before_expiry == 14
     assert s.public_ipv4 == "1.2.3.4"
+
+
+@pytest.mark.parametrize("days", [0, -1])
+def test_provisioner_cert_settings_reject_a_renewal_threshold_below_one(days):
+    """lego treats 0 as one third of the lifetime and a negative number as always renew."""
+    from postern_provisioner.cert import CertSettings
+    with pytest.raises(ValueError, match="CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1"):
+        CertSettings(
+            domain="postern.test",
+            dns_provider="cloudflare",
+            cert_acme_email="ops@postern.test",
+            cert_renewal_days_before_expiry=days,
+        )
+
+
+def test_provisioner_cert_settings_accept_a_threshold_of_one():
+    from postern_provisioner.cert import CertSettings
+    settings = CertSettings(
+        domain="postern.test",
+        dns_provider="cloudflare",
+        cert_acme_email="ops@postern.test",
+        cert_renewal_days_before_expiry=1,
+    )
+    assert settings.cert_renewal_days_before_expiry == 1

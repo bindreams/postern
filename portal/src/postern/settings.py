@@ -3,6 +3,8 @@ from typing import Any, Literal, Self
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
+from postern.cert.state import check_renewal_days
+
 
 class Settings(BaseSettings):
     """Application configuration, loaded from environment variables."""
@@ -186,8 +188,7 @@ class Settings(BaseSettings):
             validate_ipv4(self.public_ipv4)
             if self.public_ipv6:
                 validate_ipv6(self.public_ipv6)
-        if self.cert_renewal_days_before_expiry < 1:
-            raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
+        check_renewal_days(self.cert_renewal_days_before_expiry)
         return self
 
     @model_validator(mode="after")

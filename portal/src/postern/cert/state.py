@@ -54,6 +54,13 @@ SCHEMA_VERSION = 1
 State = Literal["NO_CERT", "ISSUING", "ISSUED_PENDING_INSTALL", "INSTALLED", "RENEWING", "FAILED"]
 
 
+def check_renewal_days(days: int) -> None:
+    """Reject a CERT_RENEWAL_DAYS_BEFORE_EXPIRY that lego misreads: it takes 0 as a third of the certificate's lifetime
+    and a negative number as always renew. Shared by the portal's settings and the provisioner's."""
+    if days < 1:
+        raise ValueError("CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be >= 1")
+
+
 # Schema ===============================================================================================================
 @dataclass
 class CertState:

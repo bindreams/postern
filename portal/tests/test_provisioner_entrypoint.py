@@ -43,6 +43,7 @@ def test_build_ticks_wires_ssl_tick_to_target(entrypoint, monkeypatch):
     )
     ticks = entrypoint._build_ticks("postern.test", "s", "full", counters, en, None)
     assert "ssl" in ticks
+    assert "cert" not in ticks  # no cert settings, so no cert tick
     ticks["ssl"]()
     assert captured["settings"].domain == "postern.test"
     assert captured["settings"].target == "full"  # the configured target flows through
@@ -135,6 +136,17 @@ def test_cert_settings_or_die_exits_on_an_invalid_renewal_threshold(entrypoint, 
     monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", days)
     with pytest.raises(SystemExit):
         entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=True))
+
+
+@pytest.mark.parametrize("days", ["thirty", "1.5", ""])
+def test_cert_settings_or_die_names_the_variable_and_the_value_of_a_non_integer_threshold(
+    entrypoint, monkeypatch, caplog, days
+):
+    monkeypatch.setenv("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", days)
+    with pytest.raises(SystemExit):
+        entrypoint._cert_settings_or_die("postern.test", _cert_en(cert_renewal=True))
+    assert "CERT_RENEWAL_DAYS_BEFORE_EXPIRY" in caplog.text
+    assert repr(days) in caplog.text
 
 
 def test_cert_settings_or_die_returns_the_settings_when_cert_renewal_is_on(entrypoint, monkeypatch):

@@ -31,6 +31,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from typing import NoReturn
 
@@ -317,12 +318,17 @@ def _consume_cert_trigger() -> None:
 
 
 def _build_cert_settings(domain: str) -> cert_driver.CertSettings:
+    raw_days = os.environ.get("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", "30")
+    try:
+        days = int(raw_days)
+    except ValueError:
+        raise ValueError(f"CERT_RENEWAL_DAYS_BEFORE_EXPIRY must be an integer, got {raw_days!r}") from None
     return cert_driver.CertSettings(
         domain=domain,
         dns_provider=os.environ.get("DNS_PROVIDER", "none").strip().lower(),
         cert_acme_email=os.environ.get("CERT_ACME_EMAIL", ""),
         cert_acme_directory=os.environ.get("CERT_ACME_DIRECTORY", "https://acme-v02.api.letsencrypt.org/directory"),
-        cert_renewal_days_before_expiry=int(os.environ.get("CERT_RENEWAL_DAYS_BEFORE_EXPIRY", "30")),
+        cert_renewal_days_before_expiry=days,
         cert_force_reissue=_bool_env("CERT_FORCE_REISSUE", False),
     )
 
@@ -388,8 +394,7 @@ def _try_advance_dkim(domain: str, selector_prefix: str, counters: dict[str, int
         logger.exception("dkim rotation step failed (%d consecutive)", counters["dkim"])
 
 
-def _try_advance_cert(settings: cert_driver.CertSettings | None, counters: dict[str, int]) -> None:
-    assert settings is not None  # the cert tick runs only when cert renewal is enabled
+def _try_advance_cert(settings: cert_driver.CertSettings, counters: dict[str, int]) -> None:
     try:
         state = cert_state.read_state()
         had_trigger = _has_cert_trigger()
@@ -588,16 +593,19 @@ def _build_ticks(
     cert_settings: cert_driver.CertSettings | None
 ) -> dict[str, Callable[[], None]]:
     """Assemble the per-subsystem tick callables. Kept separate from run_combined_loop so
-    the wiring (esp. the ssl tick + its target) is unit-testable without the infinite loop."""
-    return {
+    the wiring (esp. the ssl tick + its target) is unit-testable without the infinite loop. The cert tick exists only
+    when there are cert settings (cert renewal is on)."""
+    ticks: dict[str, Callable[[], None]] = {
         "dkim": lambda: _try_advance_dkim(domain, selector_prefix, counters),
-        "cert": lambda: _try_advance_cert(cert_settings, counters),
         "dns": lambda: _try_advance_dns(domain, counters, enablement),
         "mta_records": lambda: _try_advance_mta_records(domain, counters),
         "edge": lambda: _try_advance_edge(counters),
         "ssl": lambda: _try_advance_ssl(domain, ssl_target, counters),
         "ech": lambda: _try_advance_ech(domain, counters),
     }
+    if cert_settings is not None:
+        ticks["cert"] = partial(_try_advance_cert, cert_settings, counters)
+    return ticks
 
 
 def run_combined_loop(

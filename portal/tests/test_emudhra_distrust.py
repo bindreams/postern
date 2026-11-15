@@ -187,13 +187,41 @@ def test_compose_builds_pull_base_images():
     assert {name: build.get("pull") for name, build in built.items()} == {name: True for name in built}
 
 
-# The ssserver build's TLS client (hickory DNS-over-HTTPS/TLS). webpki-roots 0.26.x
-# is a shim re-exporting the 1.x roots, so only same-major versions are checked.
-RUST_CRATE_FLOORS = {"rustls-webpki": Version("0.103.16"), "webpki-roots": Version("1.0.10")}
+# Crate floors for the ssserver build: the first release of each locked crate that fixes a
+# RustSec advisory (cargo audit, 2026-11-15) -- webpki-roots / rustls-webpki / webpki-root-certs
+# are the emSign distrust (#254). The vendored Cargo.lock is upstream's, so the Dockerfile raises
+# each stale crate with `cargo update --precise`. webpki-roots 0.26.x is a shim re-exporting
+# the 1.x roots, so only the matching series is checked.
+RUST_CRATE_FLOORS = {
+    "ctutils": Version("0.4.4"),
+    "hickory-net": Version("0.26.2"),
+    "hickory-proto": Version("0.26.2"),
+    "hickory-resolver": Version("0.26.2"),
+    "libz-sys": Version("1.1.31"),
+    "quinn-proto": Version("0.11.19"),
+    "quinn-udp": Version("0.5.16"),
+    "rustix": Version("1.1.6"),
+    "rustls": Version("0.23.46"),
+    "rustls-webpki": Version("0.103.16"),
+    "tokio": Version("1.53.3"),
+    "webpki-root-certs": Version("1.0.10"),
+    "webpki-roots": Version("1.0.10"),
+    "zstd": Version("0.13.4"),
+    "zstd-safe": Version("7.4.0"),
+    "zstd-sys": Version("2.1.2"),
+}
 
 
-def _locked_versions(lockfile: Path, crate: str) -> list[Version]:
-    return [Version(v) for v in re.findall(rf'^name = "{crate}"\nversion = "([^"]+)"', lockfile.read_text(), re.M)]
+def _locked_versions(lockfile: Path, crate: str) -> list[str]:
+    """Raw version strings of every locked entry of `crate`."""
+    return re.findall(rf'^name = "{re.escape(crate)}"\nversion = "([^"]+)"', lockfile.read_text(), re.M)
+
+
+def _same_series(locked: Version, floor: Version) -> bool:
+    """Semver-compatible: same major, or for 0.x the same (major, minor)."""
+    if floor.major == 0:
+        return (locked.major, locked.minor) == (floor.major, floor.minor)
+    return locked.major == floor.major
 
 
 def test_ssserver_build_overrides_stale_rust_crates():
@@ -204,12 +232,18 @@ def test_ssserver_build_overrides_stale_rust_crates():
     _base, body = _stages((REPO_ROOT / "shadowsocks/Dockerfile").read_text())["build-shadowsocks"]
     build_at = body.index("cargo build")
     for crate, floor in RUST_CRATE_FLOORS.items():
-        stale = [v for v in _locked_versions(lockfile, crate) if v.major == floor.major and v < floor]
-        override = re.search(rf"cargo update -p {crate}(@\S+)? --precise (\S+)", body)
+        locked = _locked_versions(lockfile, crate)
+        stale = [v for v in locked if _same_series(Version(v), floor) and Version(v) < floor]
+        override = re.search(rf"cargo update -p {re.escape(crate)}(@\S+)? --precise (\S+)", body)
         if stale:
             assert override is not None, f"{crate} {stale} is below {floor}"
             assert override.start() < build_at
             assert Version(override[2]) >= floor
-            assert override[1] == f"@{stale[0]}", "qualify the crate: a second locked version makes the spec ambiguous"
+            # Not pinned to the exact stale version, so the spec survives a subrepo pull that
+            # moves the lock; it must still name exactly one locked package, a stale one.
+            qualifier = (override[1] or "@")[1:]
+            matched = [v for v in locked if not qualifier or v == qualifier or v.startswith(f"{qualifier}.")]
+            assert len(matched) == 1, f"`-p {crate}{override[1] or ''}` matches {matched} of {locked}: ambiguous"
+            assert matched[0] in stale, f"`-p {crate}{override[1] or ''}` matches {matched[0]}, which meets {floor}"
         else:
             assert override is None, f"Cargo.lock now meets {crate} {floor}; drop the override"

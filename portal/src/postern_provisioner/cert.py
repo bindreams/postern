@@ -258,6 +258,7 @@ def advance_cert_state(
             state.state == "ISSUING" or email_changed or under_new_directory
             or settings.cert_acme_directory not in state.last_issued_by_directory
         )
+        prior_serial = _stored_serial(settings.domain)
         try:
             output = lego.issue_or_renew(settings=settings, force=force)
         except subprocess.CalledProcessError as e:
@@ -270,11 +271,22 @@ def advance_cert_state(
             return _failed_or_increment(failed_state, settings, now)
 
         # The tick's `now` is when it began: a CA that does not backdate sets notBefore to the issuance time, after it.
-        problem = _lego_output_problem(output, expected, settings, dt.datetime.now(tz=dt.timezone.utc))
-        if problem:
-            logger.error("cert: lego's output is not installable: %s", problem)
-            _discard_lego_certificate(settings.domain)
-            return _failed_or_increment(attempt_state, settings, now)
+        rejection = _reject_lego_output(
+            output,
+            expected,
+            settings,
+            forced=force,
+            prior_serial=prior_serial,
+            at=dt.datetime.now(tz=dt.timezone.utc),
+        )
+        if rejection:
+            logger.error("cert: lego's output is not installable: %s", rejection.problem)
+            if rejection.discard_files:
+                _discard_lego_certificate(settings.domain)
+            failed_state = attempt_state
+            if not rejection.order_placed:
+                failed_state = replace(attempt_state, last_issued_by_directory=state.last_issued_by_directory)
+            return _failed_or_increment(failed_state, settings, now)
 
         return replace(
             attempt_state,
@@ -403,28 +415,65 @@ def _discard_unusable_lego_state(settings: CertSettings, lego_output: str) -> bo
     return unusable_account or unusable_certificate
 
 
-def _lego_output_problem(
-    output: LegoOutput, expected: set[str], settings: CertSettings, now: dt.datetime
-) -> str | None:
+@dataclass(frozen=True)
+class _Rejection:
+    problem: str
+    discard_files: bool  # lego's stored set is bad (or must not be handed back): delete it so the next run issues anew
+    order_placed: bool  # whether this run asked the CA for a certificate: if so the 24h guard is armed
+
+
+def _stored_serial(domain: str) -> int | None:
+    """Serial of the leaf lego holds for `domain` before a run, None when there is none it can be read from."""
+    info = _read_cert_or_none(LEGO_PATH / "certificates" / f"{domain}.crt")
+    return info.serial if info else None
+
+
+def _reject_lego_output(
+    output: LegoOutput,
+    expected: set[str],
+    settings: CertSettings,
+    *,
+    forced: bool,
+    prior_serial: int | None,
+    at: dt.datetime,
+) -> _Rejection | None:
     """Why the certificate lego left on disk must not be installed, or None.
 
     Lego exits 0 for a run that wrote nothing, and its non-atomic save (.crt, .issuer.crt, .key, then the resource file)
-    can leave a new certificate beside the old key, so success says nothing about the files. A certificate that is
-    already due is what lego hands back when it declined to renew."""
+    can leave a new certificate beside the old key, so success says nothing about the files. On an unforced run (lego
+    applies Postern's own threshold) the leaf's serial tells whether lego wrote anything: an unchanged serial means it
+    declined and placed no order, and the certificate it handed back is installed only if it is not due, which is what
+    an earlier run's certificate looks like after its tick crashed."""
     try:
         leaf = cert_inspect.read_cert(output.fullchain)
         key_matches = cert_inspect.key_matches_cert(output.fullchain, output.privkey)
     except (OSError, ValueError) as e:
-        return f"cannot read the certificate and key: {e}"
+        return _Rejection(f"cannot read the certificate and key: {e}", True, True)
     if not key_matches:
-        return f"the private key is not the key of {output.fullchain.name}"
+        return _Rejection(f"the private key is not the key of {output.fullchain.name}", True, True)
     if not leaf.sans_match(expected):
-        return f"its names {sorted(leaf.sans)} are not {sorted(expected)}"
-    if not leaf.not_before <= now <= leaf.not_after:
-        return f"it is not valid now (valid {leaf.not_before.isoformat()} to {leaf.not_after.isoformat()})"
-    days_left = leaf.days_until_expiry(now=now)
-    if days_left < settings.cert_renewal_days_before_expiry:
-        return f"it expires in {days_left:.1f} days, which is due: lego declined to renew"
+        return _Rejection(f"its names {sorted(leaf.sans)} are not {sorted(expected)}", True, True)
+    if at < leaf.not_before:
+        return _Rejection(f"it is not valid until {leaf.not_before.isoformat()}", True, True)
+    if at > leaf.not_after:
+        return _Rejection(f"it expired at {leaf.not_after.isoformat()}", True, True)
+    threshold = settings.cert_renewal_days_before_expiry
+    lifetime_days = (leaf.not_after - leaf.not_before).total_seconds() / 86400.0
+    if lifetime_days <= threshold:
+        # Discarding a valid certificate would only be followed by another that is due at once.
+        return _Rejection(
+            f"CERT_RENEWAL_DAYS_BEFORE_EXPIRY={threshold} is not shorter than the certificate's {lifetime_days:.1f}-day "
+            "lifetime, so every certificate is due as soon as it is issued; lower it",
+            False,
+            True,
+        )
+    if not forced and leaf.serial == prior_serial and leaf.days_until_expiry(now=at) < threshold:
+        days_left = leaf.days_until_expiry(now=at)
+        return _Rejection(
+            f"it is the certificate lego already held, with {days_left:.1f} days left, which is due: lego declined to renew",
+            True,
+            False,
+        )
     return None
 
 

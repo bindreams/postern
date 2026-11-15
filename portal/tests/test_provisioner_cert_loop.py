@@ -784,16 +784,22 @@ def _days_from_now(days: float) -> dt.datetime:
     return dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(days=days)
 
 
+# Each flaw with the problem the log must name.
 BAD_LEGO_OUTPUT = {
     # A crash between lego's writes of the .crt and the .key leaves a new certificate with the old key.
-    "mismatched-key": lambda out, tmp: _replace_with_pki(out, tmp, cert=False),
-    "wrong-sans": lambda out, tmp: _replace_with_pki(out, tmp, hostname="other.test"),
-    "expired": lambda out, tmp:
-    _replace_with_pki(out, tmp, leaf_not_before=_days_from_now(-10), leaf_not_after=_days_from_now(-1)),
-    # lego declined to renew and handed back the certificate that was already there.
-    "already-due": lambda out, tmp: _replace_with_pki(out, tmp, leaf_not_after=_days_from_now(5)),
-    "unparseable-cert": lambda out, tmp: out.fullchain.write_text("not a certificate"),
-    "unparseable-key": lambda out, tmp: out.privkey.write_text("not a key"),
+    "mismatched-key": (lambda out, tmp: _replace_with_pki(out, tmp, cert=False), "is not the key of"),
+    "wrong-sans": (lambda out, tmp: _replace_with_pki(out, tmp, hostname="other.test"), "its names"),
+    "expired": (
+        lambda out, tmp:
+        _replace_with_pki(out, tmp, leaf_not_before=_days_from_now(-10), leaf_not_after=_days_from_now(-1)), "expired"
+    ),
+    "not-yet-valid": (
+        lambda out, tmp:
+        _replace_with_pki(out, tmp, leaf_not_before=_days_from_now(0.05), leaf_not_after=_days_from_now(90)),
+        "not valid until"
+    ),
+    "unparseable-cert": (lambda out, tmp: out.fullchain.write_text("not a certificate"), "cannot read"),
+    "unparseable-key": (lambda out, tmp: out.privkey.write_text("not a key"), "cannot read"),
 }
 
 
@@ -802,7 +808,8 @@ BAD_LEGO_OUTPUT = {
 def test_a_lego_output_that_is_not_installable_is_never_installed(
     prod_settings, lego_mock, now, cert_dir, tmp_path, caplog, flaw, state_name
 ):
-    _lego_writes(lego_mock, lambda out: BAD_LEGO_OUTPUT[flaw](out, tmp_path / "bad"))
+    mutate, problem = BAD_LEGO_OUTPUT[flaw]
+    _lego_writes(lego_mock, lambda out: mutate(out, tmp_path / "bad"))
     state = dataclasses.replace(
         _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
     )
@@ -811,6 +818,9 @@ def test_a_lego_output_that_is_not_installable_is_never_installed(
     assert next_state.pending_cert_paths == {}
     assert next_state.consecutive_failures == 1
     assert "not installable" in caplog.text
+    assert problem in caplog.text
+    # An order was placed, so the 24h guard is armed.
+    assert next_state.last_issued_by_directory == {PROD: now.isoformat()}
     # lego's resource file is what makes `lego run` renew instead of obtain; without it the next run is a fresh
     # issuance whatever flag Postern passes, and none of the bad files stays around to be trusted.
     assert sorted(p.name for p in (cert_dir / "lego" / "certificates").glob(f"{prod_settings.domain}*")) == []
@@ -839,22 +849,10 @@ def test_a_leaf_that_became_valid_after_the_tick_began_is_accepted(prod_settings
     assert next_state.last_attempt_iso == tick.isoformat()
 
 
-def test_a_leaf_that_is_not_yet_valid_when_lego_returns_is_rejected(prod_settings, lego_mock, now, tmp_path, caplog):
-    _lego_writes(
-        lego_mock, lambda out: _replace_with_pki(
-            out, tmp_path / "future", leaf_not_before=_days_from_now(0.05), leaf_not_after=_days_from_now(90)
-        )
-    )
-    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
-    assert next_state.state == "ISSUING"
-    assert next_state.pending_cert_paths == {}
-    assert "not valid" in caplog.text
-
-
 def test_a_failed_cleanup_of_rejected_lego_output_is_logged_not_raised(
     prod_settings, lego_mock, now, tmp_path, monkeypatch, caplog
 ):
-    _lego_writes(lego_mock, lambda out: BAD_LEGO_OUTPUT["mismatched-key"](out, tmp_path / "bad"))
+    _lego_writes(lego_mock, lambda out: BAD_LEGO_OUTPUT["mismatched-key"][0](out, tmp_path / "bad"))
 
     def boom(self, *args, **kwargs):
         raise OSError("read-only file system")
@@ -912,6 +910,110 @@ def test_renewing_under_a_changed_email_forces_the_run(prod_settings, lego_mock,
     state = dataclasses.replace(_issuing(prod_settings, "RENEWING"), acme_account_email="old@postern.test")
     _advance(state, prod_settings, lego_mock, now)
     assert _forced(lego_mock) is True
+
+
+# A lego run that writes nothing =======================================================================================
+def _lego_declines(lego_mock: MagicMock, output: LegoOutput) -> None:
+    """lego exits 0 without placing an order and hands back the set it already holds."""
+    lego_mock.issue_or_renew.side_effect = lambda *, settings, force: output
+
+
+def _unforced_renewing(settings: CertSettings, now: dt.datetime) -> cert_state.CertState:
+    return _renewing_after_an_attempt(settings, now)
+
+
+def test_lego_declining_a_certificate_that_is_not_due_installs_it(prod_settings, lego_mock, now, cert_dir):
+    """The recovery of a tick that crashed after lego issued: lego now sees its own newer certificate as not due."""
+    stored = _stored_lego_set(cert_dir, prod_settings.domain, leaf_not_after=_days_from_now(90))
+    _lego_declines(lego_mock, stored)
+    next_state = _advance(_unforced_renewing(prod_settings, now), prod_settings, lego_mock, now)
+    assert next_state.state == "ISSUED_PENDING_INSTALL"
+    assert next_state.pending_cert_paths["fullchain"] == str(stored.fullchain)
+
+
+def test_lego_declining_a_certificate_that_is_due_is_rejected_and_places_no_order(
+    prod_settings, lego_mock, now, cert_dir, caplog
+):
+    stored = _stored_lego_set(
+        cert_dir, prod_settings.domain, leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5)
+    )
+    _lego_declines(lego_mock, stored)
+    state = _unforced_renewing(prod_settings, now)
+    next_state = _advance(state, prod_settings, lego_mock, now)
+    assert next_state.state == "RENEWING"
+    assert next_state.pending_cert_paths == {}
+    assert next_state.consecutive_failures == 1
+    assert "declined" in caplog.text
+    # No order was placed, so the 24h guard is as it was; and lego's set is gone, so the next run obtains afresh.
+    assert next_state.last_issued_by_directory == state.last_issued_by_directory
+    assert list(_lego_certificates(cert_dir).glob(f"{prod_settings.domain}*")) == []
+
+
+@pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
+def test_a_new_certificate_is_not_held_to_the_due_check(prod_settings, lego_mock, now, tmp_path, state_name):
+    """Forced runs never get it, and an unforced run that wrote a new certificate placed an order for it."""
+    _lego_writes(
+        lego_mock, lambda out: _replace_with_pki(
+            out, tmp_path / "due", leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5)
+        )
+    )
+    state = dataclasses.replace(
+        _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
+    )
+    assert _advance(state, prod_settings, lego_mock, now).state == "ISSUED_PENDING_INSTALL"
+
+
+def test_a_forced_run_is_not_compared_with_the_stored_certificate(prod_settings, lego_mock, now, cert_dir):
+    stored = _stored_lego_set(
+        cert_dir, prod_settings.domain, leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5)
+    )
+    _lego_declines(lego_mock, stored)
+    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert next_state.state == "ISSUED_PENDING_INSTALL"
+
+
+@pytest.mark.parametrize(("at_offset", "problem"), [(dt.timedelta(0), False), (dt.timedelta(seconds=1), True)])
+def test_a_certificate_is_due_when_it_has_less_than_the_threshold_left(
+    prod_settings, cert_dir, tmp_path, at_offset, problem
+):
+    """Postern's rule is `days_left < threshold`; lego's own `<=` would call the boundary due."""
+    from postern.cert import inspect as cert_inspect
+    stored = _stored_lego_set(
+        cert_dir, prod_settings.domain, leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5)
+    )
+    leaf = cert_inspect.read_cert(stored.fullchain)
+    at = leaf.not_after - dt.timedelta(days=prod_settings.cert_renewal_days_before_expiry) + at_offset
+    rejection = cert_driver._reject_lego_output(
+        stored, {prod_settings.domain, f"*.{prod_settings.domain}"}, prod_settings, forced=False,
+        prior_serial=leaf.serial, at=at
+    )
+    assert (rejection is not None) is problem
+
+
+@pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
+@pytest.mark.parametrize(("extra", "accepted"), [(dt.timedelta(0), False), (dt.timedelta(seconds=1), True)])
+def test_a_renewal_threshold_that_is_not_shorter_than_the_lifetime_fails_naming_the_limit(
+    prod_settings, lego_mock, now, cert_dir, tmp_path, caplog, state_name, extra, accepted
+):
+    """Every certificate would be due at once, so it is never renewed in a loop; the valid certificate is kept."""
+    start = now - dt.timedelta(days=1)
+    lifetime = dt.timedelta(days=prod_settings.cert_renewal_days_before_expiry) + extra
+    _lego_writes(
+        lego_mock,
+        lambda out: _replace_with_pki(out, tmp_path / "short", leaf_not_before=start, leaf_not_after=start + lifetime)
+    )
+    state = dataclasses.replace(
+        _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
+    )
+    next_state = _advance(state, prod_settings, lego_mock, now)
+    if accepted:
+        assert next_state.state == "ISSUED_PENDING_INSTALL"
+        return
+    assert next_state.state == state_name
+    assert next_state.consecutive_failures == 1
+    assert "CERT_RENEWAL_DAYS_BEFORE_EXPIRY" in caplog.text
+    assert next_state.last_issued_by_directory == {PROD: now.isoformat()}  # an order was placed
+    assert (_lego_certificates(cert_dir) / f"{prod_settings.domain}.crt").exists()
 
 
 # Lego's account directory =============================================================================================
@@ -1227,14 +1329,16 @@ def _lego_certificates(cert_dir: Path) -> Path:
     return cert_dir / "lego" / "certificates"
 
 
-def _store_lego_certificate(cert_dir: Path, domain: str, *, resource: str) -> None:
-    """lego's stored set, with a certificate that parses and the given resource file."""
+def _stored_lego_set(cert_dir: Path, domain: str, *, resource: str | None = None, **pki) -> LegoOutput:
+    """lego's certificate directory as an earlier run left it: a loadable set, with the given resource file."""
     from tests.e2e._certs import generate_test_pki
-    generate_test_pki(cert_dir / "stored-pki", hostname=domain)
-    (_lego_certificates(cert_dir) / f"{domain}.crt").write_bytes(
-        (cert_dir / "stored-pki" / "fullchain.pem").read_bytes()
-    )
-    (_lego_certificates(cert_dir) / f"{domain}.json").write_text(resource)
+    certs = _lego_certificates(cert_dir)
+    generate_test_pki(cert_dir / "stored-pki", hostname=domain, **pki)
+    output = LegoOutput(fullchain=certs / f"{domain}.crt", privkey=certs / f"{domain}.key", chain=certs / f"{domain}.issuer.crt")
+    for target, name in ((output.fullchain, "fullchain.pem"), (output.privkey, "privkey.pem"), (output.chain, "chain.pem")):
+        target.write_bytes((cert_dir / "stored-pki" / name).read_bytes())
+    (certs / f"{domain}.json").write_text(json.dumps({"id": domain, "domains": [domain]}) if resource is None else resource)
+    return output
 
 
 @pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
@@ -1242,7 +1346,7 @@ def test_an_unloadable_stored_certificate_is_discarded_after_a_failed_run_and_th
     prod_settings, lego_mock, now, cert_dir, state_name
 ):
     """A truncated resource file fails every `lego run`, forced or not, and fails it before any order is placed."""
-    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test", "domains": ["postern.te')
+    _stored_lego_set(cert_dir, prod_settings.domain, resource='{"id": "postern.test", "domains": ["postern.te')
     _fail_lego(lego_mock, RATE_LIMITED)
     state = dataclasses.replace(
         _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
@@ -1254,18 +1358,17 @@ def test_an_unloadable_stored_certificate_is_discarded_after_a_failed_run_and_th
 
 
 def test_a_loadable_stored_certificate_is_kept_after_a_failed_run(prod_settings, lego_mock, now, cert_dir):
-    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
+    _stored_lego_set(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
     _fail_lego(lego_mock, RATE_LIMITED)
     failed = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
-    assert sorted(p.name for p in _lego_certificates(cert_dir).glob(f"{prod_settings.domain}*")
-                  ) == [f"{prod_settings.domain}.crt", f"{prod_settings.domain}.json"]
+    assert len(list(_lego_certificates(cert_dir).glob(f"{prod_settings.domain}*"))) == 4
     assert failed.last_issued_by_directory == {PROD: now.isoformat()}
 
 
 def test_an_unparseable_stored_certificate_is_discarded_even_when_the_account_is_too(
     prod_settings, lego_mock, now, cert_dir
 ):
-    _store_lego_certificate(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
+    _stored_lego_set(cert_dir, prod_settings.domain, resource='{"id": "postern.test"}')
     (_lego_certificates(cert_dir) /
      f"{prod_settings.domain}.crt").write_text("-----BEGIN CERTIFICATE-----" + chr(10) + "AAAA")
     account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")

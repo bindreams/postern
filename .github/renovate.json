@@ -34,8 +34,14 @@
       "groupName": "libdns ecosystem"
     },
     {
-      "description": "The docker-proxy's base image is the HAProxy and Lua build that policy.lua runs in. A bump can change Lua or HTTP-parsing semantics the allow-list depends on, so a person runs the policy suites (portal/tests/test_docker_proxy_policy.py and the e2e test_docker_api_policy.py) before it merges.",
+      "description": "The docker-proxy's base image is the HAProxy and Lua build that policy.lua runs in. A bump can change Lua or HTTP-parsing semantics the allow-list depends on, so a person runs the policy suites (portal/tests/test_docker_proxy_policy.py and the e2e test_docker_api_policy.py) before it merges. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
       "matchPackageNames": ["ghcr.io/linuxserver/socket-proxy"],
+      "automerge": false
+    },
+    {
+      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold updates to other registries (dhi.io, ghcr.io) pending forever. Updates open at once, and a person merging stands in for the cooldown. Docker Hub images are included on purpose: a person merges every docker update, and Renovate cannot match on \"has a timestamp\".",
+      "matchDatasources": ["docker"],
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "automerge": false
     },
     {
@@ -45,11 +51,10 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`. `timestamp-optional` because the docker datasource reads release timestamps only from Docker Hub, so every dhi.io tag has none and the default `timestamp-required` would hold the bump pending forever; safe here because the bump is never automerged.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on the alpine-base tag the mta and provisioner Dockerfiles use. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
-      "automerge": false,
-      "minimumReleaseAgeBehaviour": "timestamp-optional"
+      "automerge": false
     },
     {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",

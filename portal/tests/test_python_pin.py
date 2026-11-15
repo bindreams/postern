@@ -106,11 +106,12 @@ def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls()
 
 # Renovate packageRules ------------------------------------------------------------------------------------------------
 # Rules are evaluated in order and a later match wins. The evaluator decides a rule only through
-# matchers it models exactly: exact-name entries of the keys below. A rule that sets the checked
-# key through anything else (glob, `/regex/`, `!negation`, another match* key) fails the test
+# matchers it models exactly: exact entries of the keys below. A rule that sets the checked key
+# through anything else (a glob, `/regex/`, `!negation`, another match* key) fails the test
 # instead of being guessed at.
 MODELLED_MATCHERS = {
     "matchManagers": "manager",
+    "matchDatasources": "datasource",
     "matchDepNames": "dep_name",
     "matchPackageNames": "package_name",
     "matchFileNames": "file",
@@ -168,7 +169,9 @@ def _final_setting(key: str, dep: dict[str, str]):
 
 
 def _python_dep(manager: str, rel: str) -> dict[str, str]:
-    return {"manager": manager, "dep_name": "python", "package_name": "dhi.io/python", "file": rel}
+    return {
+        "manager": manager, "datasource": "docker", "dep_name": "python", "package_name": "dhi.io/python", "file": rel
+    }
 
 
 @pytest.mark.parametrize("rel", PIN_SITES)
@@ -177,16 +180,47 @@ def test_renovate_python_bump_is_not_automerged(rel):
     assert _final_setting("automerge", _python_dep("custom.regex", rel)) is False
 
 
+# Docker-datasource updates --------------------------------------------------------------------------------------------
+# One representative dependency per manager that yields docker-datasource updates here. The
+# docker-compose and github-actions managers have no registry image today (compose.yaml builds
+# `local/` tags only); their entries keep a later one covered.
+DOCKER_DEPS = [
+    ("dockerfile", "dhi.io/alpine-base", "mta/Dockerfile"),
+    ("dockerfile", "ghcr.io/astral-sh/uv", "portal/Dockerfile"),
+    ("docker-compose", "ghcr.io/linuxserver/socket-proxy", "compose.yaml"),
+    ("github-actions", "ghcr.io/linuxserver/socket-proxy", ".github/workflows/test.yaml"),
+]
+
+
+@pytest.mark.parametrize(("manager", "image", "rel"), DOCKER_DEPS)
+def test_renovate_docker_updates_open_without_a_release_timestamp_and_wait_for_a_person(manager, image, rel):
+    """Docker Hub is the only registry with release timestamps, so any other image needs `timestamp-optional` to be
+    raised under the cooldown; the evaluator fails on any rule it cannot decide."""
+    dep = {"manager": manager, "datasource": "docker", "dep_name": image, "package_name": image, "file": rel}
+    assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional"
+    assert _final_setting("automerge", dep) is False
+
+
 @pytest.mark.parametrize("rel", PIN_SITES)
 def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
-    """The docker datasource has timestamps only for Docker Hub, so a dhi.io tag has none and would stay pending."""
+    """The `custom.regex` manager's python pin is a docker-datasource dep on `dhi.io/python`."""
     assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
+
+
+def test_renovate_keeps_the_release_age_cooldown_for_other_datasources():
+    """GitHub tags carry timestamps, so the cooldown applies to them as written."""
+    dep = {
+        "manager": "custom.regex", "datasource": "github-tags", "dep_name": "bindreams/hole-ex-ray",
+        "package_name": "bindreams/hole", "file": "shadowsocks/Dockerfile"
+    }
+    assert _final_setting("minimumReleaseAgeBehaviour", dep) is None
+    assert _renovate()["minimumReleaseAge"] == "7 days"
 
 
 def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
     """It would resolve the portal's `${PYTHON_MINOR}` tag into a second, unreplaceable update."""
     dep = {
-        "manager": "dockerfile", "dep_name": "dhi.io/python", "package_name": "dhi.io/python",
+        "manager": "dockerfile", "datasource": "docker", "dep_name": "dhi.io/python", "package_name": "dhi.io/python",
         "file": "portal/Dockerfile"
     }
     assert _final_setting("enabled", dep) is False

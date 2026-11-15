@@ -20,8 +20,8 @@ COPY provisioner/postern-dns/main.go provisioner/postern-dns/cloudflare_tlsa.go 
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 
 # Lego (ACME DNS-01 client). Pin a specific tag; Renovate's customManager regex
-# in .github/renovate.json tracks upgrades.
-RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v4/cmd/lego@v4.35.2
+# in .github/renovate.json tracks upgrades. From v5 the main package is the module root.
+RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v5@v5.6.0
 
 FROM dhi.io/alpine-base:3.23-dev AS build
 ARG PYTHON_MINOR

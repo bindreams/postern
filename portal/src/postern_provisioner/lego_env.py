@@ -88,7 +88,7 @@ _PROVIDERS: dict[str, tuple[str, Callable[[dict[str, str]], dict[str, str]]]] = 
     "digitalocean": ("digitalocean", _digitalocean),
     "ovh": ("ovh", _ovh),
     "hetzner": ("hetzner", _hetzner),
-    "linode": ("linodev4", _linode),
+    "linode": ("linode", _linode),
     "namecheap": ("namecheap", _namecheap),
     "pebble": ("exec", _pebble),
 }

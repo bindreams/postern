@@ -61,7 +61,7 @@ def test_hetzner_pass_through():
 
 def test_linode_pass_through():
     cfg = lego_env.lego_config("linode", {"LINODE_TOKEN": "tok"})
-    assert cfg.dns_slug == "linodev4"
+    assert cfg.dns_slug == "linode"
     assert cfg.env == {"LINODE_TOKEN": "tok"}
 
 

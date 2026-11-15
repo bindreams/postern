@@ -74,6 +74,8 @@ When happy, remove the `CERT_ACME_DIRECTORY` line and restart the provisioner. T
 The provisioner discards every account under `/etc/letsencrypt/lego/accounts` and registers a new one on the first Lego run after `CERT_ACME_EMAIL` differs from the email of the last recorded Lego attempt, or `CERT_ACME_DIRECTORY` (including a respelling of the same URL) differs from the directory of that attempt. That run may be at expiry rather than right after the change, and a state with no recorded attempt (an adopted BYO cert, a lost `state.json`) never triggers a reset. If the removal fails, the provisioner logs an error and retries on the next tick. An operator who pins `accounturi` in a CAA record must update the pin.
 
 **Upgrading from an earlier release.** A deployment that switched to production under an earlier release and still serves the staging cert (`postern cert show` prints the issuer) is not detected. Run `postern cert renew`, and if the provisioner logs that the 24-hour guard is active, set `CERT_FORCE_REISSUE=true` for that one run, then reset it.
+
+**Upgrading from lego v4 to v5.** The provisioner image now ships lego v5. It reads the v4 certificate files as they are, so nothing is required: on the next issuance tick it registers a new ACME account under `CERT_ACME_EMAIL` and issues. The old account's key stays orphaned under `/etc/letsencrypt/lego/accounts/*/*/keys/` after a successful registration, and is deleted with the account directory if that registration fails. An operator who pins `accounturi` in a CAA record must update the pin to the new account, or keep the old one: stop the provisioner (`docker compose stop provisioner`, which is already ticking on the new image), back up the `postern-letsencrypt` volume (`migrate` rewrites it in place), run `docker compose run --rm -it --no-deps --entrypoint lego provisioner migrate --path /etc/letsencrypt/lego` and answer `Y`, then start the provisioner. Where lego cannot determine the system resolvers, its fallback resolvers are now Cloudflare's (`1.1.1.1`, `1.0.0.1`) instead of Google's.
 ````
 
 ### CLI commands
@@ -103,8 +105,8 @@ NO_CERT  ──(adopt: existing on-disk cert with valid SANs)──▶  INSTALLE
 NO_CERT  ──(no on-disk cert; or SAN mismatch)──▶  ISSUING
 ISSUING  ──(lego success; record pending paths and the directory)──▶  ISSUED_PENDING_INSTALL
 ISSUED_PENDING_INSTALL  ──(symlink-flip success)──▶  INSTALLED
-INSTALLED  ──(ACME directory drift / SAN mismatch / .renew-cert; 24-hour guard clear)──▶  ISSUING   (`lego run`)
-INSTALLED  ──(expiry)──▶  RENEWING   (`lego renew`, or `run` when no account, no Lego-issued cert, or the directory changed)
+INSTALLED  ──(ACME directory drift / SAN mismatch / .renew-cert; 24-hour guard clear)──▶  ISSUING   (`lego run --renew-force`)
+INSTALLED  ──(expiry)──▶  RENEWING   (`lego run --renew-force`)
 RENEWING   ──(success)──▶  ISSUED_PENDING_INSTALL
 *  ──(consecutive_failures >= 6)──▶  FAILED
 FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried

@@ -15,6 +15,9 @@ import subprocess
 
 import pytest
 
+from postern_provisioner import cert as provisioner_cert
+from postern_provisioner import lego_env
+
 from ._helpers import E2E_MTA_IMAGE, E2E_PROVISIONER_IMAGE, run
 from ._mta_helpers import (
     assert_mta_submit_network_is_internal_and_disjoint,
@@ -261,6 +264,68 @@ def test_image_ships_no_pip(mta_e2e_stack, image):
     )
     assert result.returncode != 0, f"{image} still ships pip"
     assert "No module named 'pip'" in result.stderr, result.stderr
+
+
+# lego CLI contract (CI never runs `lego` against a CA) ================================================================
+# Both tests need only the built provisioner image, not the stack. lego creates `.lego` in its working directory,
+# which is `/` (not writable by the image's user) unless overridden.
+def _lego(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [
+            "docker", "run", "--rm", "--network", "none", "--workdir", "/tmp", "--entrypoint", "lego",
+            E2E_PROVISIONER_IMAGE, *args
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch):
+    """A lego release that renames or drops a flag fails here, not at the next renewal."""
+    argv: list[str] = []
+    settings = provisioner_cert.CertSettings(
+        domain="postern.test", dns_provider="cloudflare", cert_acme_email="a@b.test"
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(provisioner_cert.subprocess, "run", lambda cmd, env, check: argv.extend(cmd))
+        provisioner_cert.LegoRunner(env={}).issue_or_renew(settings=settings)
+
+    result = _lego("run", "--help")
+    assert result.returncode == 0, result.stderr
+    # Option lines only: usage prose names other flags ("Requires eab.kid..."), and a removed flag named in a
+    # neighbour's description must not pass.
+    documented = set(re.findall(r"^\s+(--[\w.-]+)", result.stdout, flags=re.MULTILINE))
+    passed = {a for a in argv if a.startswith("--")}
+    assert passed, argv
+    assert passed <= documented, f"lego run does not document: {sorted(passed - documented)}"
+
+
+class _EveryKey(dict):
+    """An environment in which every credential variable is set, so each translator emits all it can."""
+
+    def get(self, key, default=None):
+        return "dummy"
+
+    def __contains__(self, key):
+        return True
+
+    def __getitem__(self, key):
+        return "dummy"
+
+
+# Emitted by lego_env but never read by lego, which detects the egress IP itself (issue #332).
+_IGNORED_BY_LEGO = {"NAMECHEAP_CLIENT_IP"}
+
+
+@pytest.mark.parametrize("provider", lego_env.supported_providers())
+def test_provisioner_lego_knows_every_provider_slug_and_variable(provider):
+    """A renamed provider slug or credential variable in a later lego fails here."""
+    cfg = lego_env.lego_config(provider, _EveryKey())
+    assert cfg.env, provider
+    result = _lego("dnshelp", "-c", cfg.dns_slug)
+    assert result.returncode == 0, result.stdout + result.stderr
+    for var in cfg.env.keys() - _IGNORED_BY_LEGO:
+        assert f'"{var}"' in result.stdout, f"lego {cfg.dns_slug} does not document {var}"
 
 
 def test_smtp_tls_cafile_set_for_mta_sts_secure_policy(mta_e2e_stack):

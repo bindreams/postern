@@ -57,13 +57,13 @@ _NGINX_SEAMS = {
 _RECEIVED_WITHOUT_BEING_SPELLED = {"portal": {"DOCKER_HOST"}}
 
 # Lego's documented environment variables for the eight DNS_PROVIDERs (credentials and tuning), from
-# https://github.com/go-acme/lego/blob/v4.35.2/providers/dns/<slug>/<slug>.toml, plus AWS_SESSION_TOKEN, which the
+# https://github.com/go-acme/lego/blob/v5.6.0/providers/dns/<slug>/<slug>.toml, plus AWS_SESSION_TOKEN, which the
 # route53 description names. The provisioner runs lego with its whole environment, so lego reads these without any
 # Postern code naming them. A new lego version means re-reading those pages (see test_lego_variables_match_the_pin).
 # Left out on purpose: route53's file-based credentials (AWS_PROFILE, AWS_SHARED_CREDENTIALS_FILE, AWS_SDK_LOAD_CONFIG).
 # The provisioner is read-only with no ~/.aws, so they can only break it (a profile that names nothing is an error).
 # Static keys, optionally with AWS_SESSION_TOKEN, are the supported route53 credentials.
-_LEGO_DOCS_VERSION = "v4.35.2"
+_LEGO_DOCS_VERSION = "v5.6.0"
 _LEGO_TUNING = ("POLLING_INTERVAL", "PROPAGATION_TIMEOUT", "TTL", "HTTP_TIMEOUT")
 LEGO_NATIVE_VARS = frozenset({
     # cloudflare
@@ -83,7 +83,7 @@ LEGO_NATIVE_VARS = frozenset({
     "OVH_CLIENT_SECRET", "OVH_ACCESS_TOKEN", *(f"OVH_{t}" for t in _LEGO_TUNING),
     # hetzner
     "HETZNER_API_TOKEN", *(f"HETZNER_{t}" for t in _LEGO_TUNING),
-    # linode (lego slug linodev4)
+    # linode
     "LINODE_TOKEN", *(f"LINODE_{t}" for t in _LEGO_TUNING),
     # namecheap
     "NAMECHEAP_API_USER", "NAMECHEAP_API_KEY", "NAMECHEAP_SANDBOX", *(f"NAMECHEAP_{t}" for t in _LEGO_TUNING),
@@ -193,8 +193,8 @@ def test_every_service_receives_exactly_what_it_reads(service: str, reads: dict[
 
 def test_lego_variables_match_the_pin():
     """LEGO_NATIVE_VARS was read off lego's provider pages at one version."""
-    pinned = re.search(r"github\.com/go-acme/lego/v4/cmd/lego@(v[0-9.]+)", _read("provisioner/Dockerfile"))
-    assert pinned, "provisioner/Dockerfile no longer pins lego with `go install ...lego@<version>`"
+    pinned = re.search(r"github\.com/go-acme/lego/v5@(v[0-9.]+)", _read("provisioner/Dockerfile"))
+    assert pinned, "provisioner/Dockerfile no longer pins lego with `go install ...lego/v5@<version>`"
     assert pinned.group(1) == _LEGO_DOCS_VERSION, (
         f"lego is pinned at {pinned.group(1)} but LEGO_NATIVE_VARS was read from {_LEGO_DOCS_VERSION}: re-read the "
         "providers/dns/<slug>/<slug>.toml pages for the eight providers and update the set and the version"

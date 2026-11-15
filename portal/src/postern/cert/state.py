@@ -35,11 +35,12 @@ declines only a certificate of its own that is newer than the live one, which an
 crashed.
 
 Whatever lego issues is validated before ISSUED_PENDING_INSTALL (`postern_provisioner.cert._reject_lego_output`): key
-pair, issuer certificate, exact SAN set, valid when lego returns, and a lifetime longer than the renewal threshold. A
-rejected set is a failure, never installed, and lego's stored copy is deleted so the next run issues anew; an unforced
-run whose leaf serial is unchanged wrote nothing, and its certificate is installed only if it is not due. A failed run
-discards lego state lego cannot load, and then leaves the 24-hour guard clear. `last_attempt_directory` records the
-directory of the latest attempt whatever happened to its guard time.
+pair, issuer certificate, exact SAN set, and valid when lego returns. A rejected set is a failure, never installed, and
+lego's stored copy is deleted so the next run issues anew; an unforced run whose leaf serial is unchanged wrote nothing
+(no order, so no rejection arms the 24-hour guard), and its certificate is installed only if it is not due. A renewal
+threshold not shorter than the certificate's lifetime is logged as an error and the certificate is installed. A failed
+run discards lego state lego cannot load, and leaves the 24-hour guard clear when lego could not load it when the run
+began. `last_attempt_directory` records the directory of the latest attempt whatever happened to its guard time.
 """
 
 from __future__ import annotations
@@ -138,8 +139,8 @@ def read_state(certdir: Path | None = None) -> CertState:
     fields fall back to their dataclass defaults. A schema version higher than
     we know logs a warning so the operator can upgrade the portal.
 
-    State written before `last_issued_by_directory` or `last_attempt_directory` existed is migrated on every read until
-    the provisioner writes it back (see `_migrate_legacy`, `_migrate_attempt_directory`).
+    State written before `last_issued_by_directory` existed is migrated on every read until the provisioner writes it
+    back (see `_migrate_legacy`).
     """
     path = state_path(certdir)
     if not path.exists():
@@ -165,8 +166,6 @@ def read_state(certdir: Path | None = None) -> CertState:
         state = CertState(**known)
         if "last_issued_by_directory" not in known:
             state = _migrate_legacy(state)
-        if "last_attempt_directory" not in known:
-            state = _migrate_attempt_directory(state)
         return state
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         logger.warning("cert: state.json unreadable (%s); treating as NO_CERT", e)
@@ -179,14 +178,6 @@ def _migrate_legacy(state: CertState) -> CertState:
     if not (state.last_issued_iso and state.acme_directory):
         return state
     return replace(state, last_issued_by_directory={state.acme_directory: state.last_issued_iso})
-
-
-def _migrate_attempt_directory(state: CertState) -> CertState:
-    """Seed `last_attempt_directory` from the directory with the latest guard time, which until it was recorded
-    separately was what named it."""
-    by_directory = state.last_issued_by_directory
-    latest = max(by_directory, key=lambda d: datetime.fromisoformat(by_directory[d]), default="")
-    return replace(state, last_attempt_directory=latest)
 
 
 def write_state(state: CertState, *, certdir: Path | None = None) -> None:

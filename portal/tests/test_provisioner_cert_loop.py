@@ -1520,22 +1520,6 @@ def test_legacy_failed_under_the_configured_directory_still_holds_off(prod_setti
     assert _advance(state, prod_settings, lego_mock, now).state == "FAILED"
 
 
-def test_legacy_failed_under_another_directory_skips_the_hold_off(prod_settings, lego_mock, now):
-    recent = (now - dt.timedelta(minutes=5)).isoformat()
-    state = _legacy_state(
-        prod_settings,
-        state="FAILED",
-        last_failed_state="RENEWING",
-        consecutive_failures=6,
-        acme_directory=STAGING,
-        last_issued_iso=recent,
-        last_attempt_iso=recent,
-    )
-    next_state = _advance(state, prod_settings, lego_mock, now)
-    assert next_state.state == "ISSUING"
-    assert next_state.consecutive_failures == 0
-
-
 def test_legacy_pending_install_completes_under_the_configured_directory(prod_settings, lego_mock, now):
     state = _advance(cert_state.CertState(state="ISSUING"), prod_settings, lego_mock, now)
     legacy = _legacy_state(

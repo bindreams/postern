@@ -180,64 +180,31 @@ def test_renovate_python_bump_is_not_automerged(rel):
     assert _final_setting("automerge", _python_dep("custom.regex", rel)) is False
 
 
-@pytest.mark.parametrize("rel", PIN_SITES)
-def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
-    """The docker datasource has timestamps only for Docker Hub, so a dhi.io tag has none and would stay pending."""
-    assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
+# Docker-datasource updates --------------------------------------------------------------------------------------------
+# One representative dependency per manager that yields docker-datasource updates here. The
+# docker-compose and github-actions managers have no registry image today (compose.yaml builds
+# `local/` tags only); their entries keep a later one covered.
+DOCKER_DEPS = [
+    ("dockerfile", "dhi.io/alpine-base", "mta/Dockerfile"),
+    ("dockerfile", "ghcr.io/astral-sh/uv", "portal/Dockerfile"),
+    ("docker-compose", "ghcr.io/linuxserver/socket-proxy", "compose.yaml"),
+    ("github-actions", "ghcr.io/linuxserver/socket-proxy", ".github/workflows/test.yaml"),
+]
 
 
-# Docker images --------------------------------------------------------------------------------------------------------
-# Renovate scans the Dockerfiles and compose files at the repo root and one directory down; it
-# ignores `**/tests/**` and `external/`.
-IMAGE_SOURCES = ("*/Dockerfile", "compose*.yaml")
-# A local build tag, not a registry image.
-LOCAL_IMAGE = "local/"
-
-
-def _image_name(ref: str) -> str:
-    """The registry image of a ref, tag and digest dropped."""
-    return re.split(r"[:@]", ref)[0]
-
-
-def _dockerfile_images(text: str) -> set[str]:
-    """Images a Dockerfile pulls: `FROM` and `COPY --from=` refs that are not one of its own stages."""
-    stages = set(re.findall(r"^FROM\s.*?\sAS\s+(\S+)\s*$", text, re.MULTILINE))
-    refs = re.findall(r"^FROM\s+(?:--\S+\s+)*(\S+)", text, re.MULTILINE)
-    refs += re.findall(r"^COPY\s+(?:--\S+\s+)*?--from=(\S+)", text, re.MULTILINE)
-    return {_image_name(ref) for ref in refs if ref not in stages}
-
-
-def _docker_images() -> dict[str, str]:
-    """Image name -> a production file that pulls it."""
-    images: dict[str, str] = {}
-    for pattern in IMAGE_SOURCES:
-        for path in sorted(REPO_ROOT.glob(pattern)):
-            text = path.read_text()
-            names = (
-                _dockerfile_images(text) if path.suffix != ".yaml" else
-                {_image_name(ref)
-                 for ref in re.findall(r"^\s*image:\s*(\S+)", text, re.MULTILINE)}
-            )
-            for name in names:
-                if not name.startswith(LOCAL_IMAGE):
-                    images.setdefault(name, path.relative_to(REPO_ROOT).as_posix())
-    assert {
-        "dhi.io/alpine-base", "dhi.io/nginx", "dhi.io/python", "ghcr.io/astral-sh/uv",
-        "ghcr.io/linuxserver/socket-proxy"
-    } <= set(images), images
-    return images
-
-
-@pytest.mark.parametrize("image", _docker_images())
-def test_renovate_docker_updates_open_without_a_release_timestamp_and_wait_for_a_person(image):
-    """The docker datasource has release timestamps only for Docker Hub, so under the global 7-day cooldown every
-    other registry (dhi.io, ghcr.io) would hold its updates pending forever; the update opens at once instead."""
-    dep = {
-        "manager": "dockerfile", "datasource": "docker", "dep_name": image, "package_name": image,
-        "file": _docker_images()[image]
-    }
+@pytest.mark.parametrize(("manager", "image", "rel"), DOCKER_DEPS)
+def test_renovate_docker_updates_open_without_a_release_timestamp_and_wait_for_a_person(manager, image, rel):
+    """Docker Hub is the only registry with release timestamps, so any other image needs `timestamp-optional` to be
+    raised under the cooldown; the evaluator fails on any rule it cannot decide."""
+    dep = {"manager": manager, "datasource": "docker", "dep_name": image, "package_name": image, "file": rel}
     assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional"
     assert _final_setting("automerge", dep) is False
+
+
+@pytest.mark.parametrize("rel", PIN_SITES)
+def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
+    """The `custom.regex` manager's python pin is a docker-datasource dep on `dhi.io/python`."""
+    assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
 
 
 def test_renovate_keeps_the_release_age_cooldown_for_other_datasources():

@@ -45,6 +45,9 @@ EOF
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
+# Same crate floors as the production ssserver build (shadowsocks/crate-floors.sh).
+COPY --chmod=755 shadowsocks/crate-floors.sh /usr/local/bin/crate-floors.sh
+RUN crate-floors.sh
 RUN cargo build --release --bin sslocal
 
 # Runtime: debian-base:trixie-dev (glibc 2.41) -- non-dev trixie lacks apt,

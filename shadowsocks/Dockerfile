@@ -69,30 +69,10 @@ RUN wget -q -O /LICENSE.md \
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
-# Crate floors: the first release of each locked crate that fixes a RustSec advisory
-# (rustls-webpki, webpki-roots and webpki-root-certs also distrust the compromised eMudhra
-# chain, #254). Mirrored by RUST_CRATE_FLOORS in portal/tests/test_emudhra_distrust.py. Each
-# line goes once the vendored Cargo.lock reaches its floor; the test fails until it does.
-# zstd-sys and zstd-safe come before zstd: after its bump their `--precise` would downgrade them.
-RUN <<-EOF
-	set -eu
-	cargo update -p ctutils --precise 0.4.4
-	cargo update -p hickory-net --precise 0.26.2
-	cargo update -p hickory-proto --precise 0.26.2
-	cargo update -p hickory-resolver --precise 0.26.2
-	cargo update -p libz-sys --precise 1.1.31
-	cargo update -p quinn-proto --precise 0.11.19
-	cargo update -p quinn-udp --precise 0.5.16
-	cargo update -p rustix --precise 1.1.6
-	cargo update -p rustls --precise 0.23.46
-	cargo update -p rustls-webpki --precise 0.103.16
-	cargo update -p tokio --precise 1.53.3
-	cargo update -p webpki-root-certs --precise 1.0.10
-	cargo update -p webpki-roots --precise 1.0.10
-	cargo update -p zstd-sys --precise 2.1.2
-	cargo update -p zstd-safe --precise 7.4.0
-	cargo update -p zstd --precise 0.13.4
-EOF
+# Raise crates below their RustSec floors in upstream's Cargo.lock, and fail the build if one stays
+# below (crate-floors.sh). The e2e sslocal build runs the same script.
+COPY --chmod=755 shadowsocks/crate-floors.sh /usr/local/bin/crate-floors.sh
+RUN crate-floors.sh
 RUN cargo build --release --bin ssserver
 
 # Runtime is dhi.io/debian-base:trixie (glibc 2.41) -- NOT alpine-base. The

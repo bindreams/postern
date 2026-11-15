@@ -34,10 +34,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Detect changed subrepos and pull
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          # Find which .gitrepo files this PR changed. The three-dot form diffs against the
-          # merge base, so a base that moved on after the branch was cut does not count.
-          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" -- 'external/*/.gitrepo')
+          # Both the changed-file list and the reset below read the merge base, so they see
+          # the same .gitrepo: a base that moved on after the branch was cut counts for neither.
+          merge_base=$(git merge-base "$BASE_SHA" HEAD)
+          changed=$(git diff --name-only "$merge_base" HEAD -- 'external/*/.gitrepo')
 
           for gitrepo_file in $changed; do
             subrepo_dir=$(dirname "$gitrepo_file")
@@ -46,12 +49,12 @@ jobs:
 
             echo "::group::Pulling $subrepo_dir at $target_branch"
 
-            # Reset .gitrepo to base so git-subrepo can do a clean pull
-            git checkout "${{ github.event.pull_request.base.sha }}" -- "$gitrepo_file"
-            git commit -m "Reset $gitrepo_file for subrepo pull"
+            # Reset .gitrepo to the merge base so git-subrepo can do a clean pull
+            git checkout "$merge_base" -- "$gitrepo_file"
+            git commit -m "chore(external): reset $gitrepo_file for subrepo pull"
 
             # Pull the new version
-            git subrepo pull "$subrepo_dir" -b "$target_branch"
+            git subrepo pull "$subrepo_dir" -b "$target_branch" -m "chore(external): pull $subrepo_dir at $target_branch"
 
             echo "::endgroup::"
           done

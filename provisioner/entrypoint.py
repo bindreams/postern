@@ -327,6 +327,17 @@ def _build_cert_settings(domain: str) -> cert_driver.CertSettings:
     )
 
 
+def _cert_settings_or_die(domain: str, enablement: Enablement) -> cert_driver.CertSettings | None:
+    """Build the cert settings once, at startup, when cert renewal is on (None otherwise): an invalid
+    CERT_RENEWAL_DAYS_BEFORE_EXPIRY ends the process here rather than failing every tick."""
+    if not enablement.cert_enabled:
+        return None
+    try:
+        return _build_cert_settings(domain)
+    except ValueError as e:
+        die(str(e))
+
+
 def _build_dns_settings(domain: str, enablement: Enablement) -> dns_driver.DnsRecordsSettings:
     """Build DnsRecordsSettings for the apex/wildcard/mail/mta-sts A/AAAA + CAA
     reconciler. Refuses to start without PUBLIC_IPV4 -- every record group this
@@ -377,9 +388,9 @@ def _try_advance_dkim(domain: str, selector_prefix: str, counters: dict[str, int
         logger.exception("dkim rotation step failed (%d consecutive)", counters["dkim"])
 
 
-def _try_advance_cert(domain: str, counters: dict[str, int]) -> None:
+def _try_advance_cert(settings: cert_driver.CertSettings | None, counters: dict[str, int]) -> None:
+    assert settings is not None  # the cert tick runs only when cert renewal is enabled
     try:
-        settings = _build_cert_settings(domain)
         state = cert_state.read_state()
         had_trigger = _has_cert_trigger()
         lego = cert_driver.LegoRunner()
@@ -572,13 +583,15 @@ def _sleep_with_triggers() -> None:
         slept += TRIGGER_POLL_SECONDS
 
 
-def _build_ticks(domain: str, selector_prefix: str, ssl_target: str, counters: dict[str, int],
-                 enablement: Enablement) -> dict[str, Callable[[], None]]:
+def _build_ticks(
+    domain: str, selector_prefix: str, ssl_target: str, counters: dict[str, int], enablement: Enablement,
+    cert_settings: cert_driver.CertSettings | None
+) -> dict[str, Callable[[], None]]:
     """Assemble the per-subsystem tick callables. Kept separate from run_combined_loop so
     the wiring (esp. the ssl tick + its target) is unit-testable without the infinite loop."""
     return {
         "dkim": lambda: _try_advance_dkim(domain, selector_prefix, counters),
-        "cert": lambda: _try_advance_cert(domain, counters),
+        "cert": lambda: _try_advance_cert(cert_settings, counters),
         "dns": lambda: _try_advance_dns(domain, counters, enablement),
         "mta_records": lambda: _try_advance_mta_records(domain, counters),
         "edge": lambda: _try_advance_edge(counters),
@@ -587,9 +600,12 @@ def _build_ticks(domain: str, selector_prefix: str, ssl_target: str, counters: d
     }
 
 
-def run_combined_loop(domain: str, selector_prefix: str, ssl_target: str, enablement: Enablement) -> NoReturn:
+def run_combined_loop(
+    domain: str, selector_prefix: str, ssl_target: str, enablement: Enablement,
+    cert_settings: cert_driver.CertSettings | None
+) -> NoReturn:
     counters: dict[str, int] = {"dkim": 0, "cert": 0, "dns": 0, "mta_records": 0, "edge": 0, "ssl": 0, "ech": 0}
-    ticks = _build_ticks(domain, selector_prefix, ssl_target, counters, enablement)
+    ticks = _build_ticks(domain, selector_prefix, ssl_target, counters, enablement, cert_settings)
     while True:
         run_enabled_ticks(enablement, ticks)
         _sleep_with_triggers()
@@ -615,6 +631,8 @@ def main() -> NoReturn:
         manage_zone_ech=_bool_env("EDGE_CF_MANAGE_ZONE_ECH", MANAGE_ZONE_ECH_DEFAULT),
         manage_ssl_mode=_bool_env("EDGE_CF_MANAGE_SSL_MODE", MANAGE_SSL_MODE_DEFAULT),
     )
+
+    cert_settings = _cert_settings_or_die(domain, enablement)
 
     # DKIM init is unconditional (matches the pre-cert-renewal behaviour).
     # The mta container blocks startup waiting for state.json regardless of
@@ -646,7 +664,7 @@ def main() -> NoReturn:
         sys.exit(0)
 
     ssl_target = _resolve_ssl_target_or_die(enablement)
-    run_combined_loop(domain, selector_prefix, ssl_target, enablement)
+    run_combined_loop(domain, selector_prefix, ssl_target, enablement, cert_settings)
 
 
 if __name__ == "__main__":

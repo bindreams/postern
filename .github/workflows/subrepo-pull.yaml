@@ -35,8 +35,9 @@ jobs:
 
       - name: Detect changed subrepos and pull
         run: |
-          # Find which .gitrepo files were changed in this PR
-          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD -- 'external/*/.gitrepo')
+          # Find which .gitrepo files this PR changed. The three-dot form diffs against the
+          # merge base, so a base that moved on after the branch was cut does not count.
+          changed=$(git diff --name-only "${{ github.event.pull_request.base.sha }}...HEAD" -- 'external/*/.gitrepo')
 
           for gitrepo_file in $changed; do
             subrepo_dir=$(dirname "$gitrepo_file")

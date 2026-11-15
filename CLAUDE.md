@@ -136,6 +136,8 @@ provisioner/
 
 **Do not** edit these files by hand, lint them, or include them in changes you make to the first-party code.
 
+The one exception taken so far: `external/shadowsocks-rust/.gitrepo`'s `parent =` was repaired by hand (22790764) after history rewriting left the recorded commit unreachable, a state git-subrepo itself cannot repair. It is not precedent for any other hand edit under `external/`.
+
 ## Testing
 
 Run from the `portal/` directory:

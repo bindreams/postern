@@ -13,10 +13,9 @@ jobs:
     # Only run on Renovate PRs that touched .gitrepo files
     if: startsWith(github.head_ref, 'renovate/')
     runs-on: ubuntu-latest
-    # Queued, not cancelled: the run this job's own push triggers must not cancel the run that pushed.
     concurrency:
       group: subrepo-pull-${{ github.head_ref }}
-      cancel-in-progress: false
+      cancel-in-progress: true
     env:
       # The nathan-blahaj app's bot user; the id prefix lets GitHub attribute the commits to it.
       BOT_NAME: nathan-blahaj[bot]
@@ -28,14 +27,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # This job's push triggers it again; that run finds its own commit on top and stops.
-      - name: Skip the run this job's own push triggered
-        id: own
-        run: |
-          if [ "$(git log -1 --format=%ae)" = "$BOT_EMAIL" ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; fi
-
       - name: Install git-subrepo
-        if: steps.own.outputs.skip != 'true'
         run: |
           git clone --quiet https://github.com/ingydotnet/git-subrepo /tmp/git-subrepo
           git -C /tmp/git-subrepo checkout --quiet ea108868fe0998c912c411830bfc50dc259cc635  # 0.4.9
@@ -45,19 +37,19 @@ jobs:
       # git-subrepo commits; a runner has no identity. Renovate's gitIgnoredAuthors lists this email, so it keeps
       # rebasing and automerging the branch.
       - name: Set git committer identity
-        if: steps.own.outputs.skip != 'true'
         run: |
           git config user.name "$BOT_NAME"
           git config user.email "$BOT_EMAIL"
 
       - name: Detect changed subrepos and pull
-        if: steps.own.outputs.skip != 'true'
+        id: pull
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
           # git-subrepo refuses a detached HEAD; the branch starts at the commit the checkout pinned.
           git switch -c "$HEAD_REF"
+          start=$(git rev-parse HEAD)
 
           # Diff and reset both use the merge base, so a base that moved on after the branch was cut counts for neither.
           merge_base=$(git merge-base "$BASE_SHA" HEAD)
@@ -67,6 +59,14 @@ jobs:
             subrepo_dir=$(dirname "$gitrepo_file")
             # Extract the target branch/tag from the .gitrepo file
             target_branch=$(grep '^\s*branch = ' "$gitrepo_file" | sed 's/.*branch = //')
+
+            # Already pulled (this job's own push triggers it again, as does any later commit): the vendored version is the
+            # declared one. portal/tests/test_vendored_subrepos.py checks the same thing for every merge.
+            vendored=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$subrepo_dir/Cargo.toml" | head -n 1)
+            if [ "v$vendored" = "$target_branch" ] || [ "$vendored" = "$target_branch" ]; then
+              echo "$subrepo_dir is already at $target_branch"
+              continue
+            fi
 
             echo "::group::Pulling $subrepo_dir at $target_branch"
 
@@ -80,20 +80,26 @@ jobs:
             echo "::endgroup::"
           done
 
+          if [ "$(git rev-parse HEAD)" != "$start" ]; then echo "pulled=true" >> "$GITHUB_OUTPUT"; fi
+
       # A GITHUB_TOKEN push does not trigger workflows, so the PR's checks would never run on the pulled source and
       # Renovate could not automerge it. The app's token does. Minted only for the push, after git-subrepo has run.
       - name: Mint nathan-blahaj token
-        if: steps.own.outputs.skip != 'true'
+        if: steps.pull.outputs.pulled == 'true'
         id: nathan
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.NATHAN_APP_ID }}
           private-key: ${{ secrets.NATHAN_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       # Fails, rather than overwrites, if the branch moved since the checkout.
       - name: Push updated source to PR branch
-        if: steps.own.outputs.skip != 'true'
+        if: steps.pull.outputs.pulled == 'true'
         env:
           HEAD_REF: ${{ github.head_ref }}
           TOKEN: ${{ steps.nathan.outputs.token }}
-        run: git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/${HEAD_REF}"
+        run: |
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/${HEAD_REF}"

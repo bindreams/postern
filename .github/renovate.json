@@ -16,12 +16,6 @@
   },
   "packageRules": [
     {
-      "description": "A .gitrepo bump is complete only once subrepo-pull.yaml has pushed the pulled source, and that job is not a required check: GitHub's own automerge could merge the bump alone. Renovate merges it itself, once every check on the branch head is green.",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["external/**/.gitrepo"],
-      "platformAutomerge": false
-    },
-    {
       "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability alerts bypass package rules, so the cargo manager is disabled above (no first-party Cargo manifest exists outside external/). Crate floors come from shadowsocks/crate-floors.sh at build time.",
       "matchFileNames": ["external/**"],
       "enabled": false

@@ -299,7 +299,7 @@ def test_provisioner_lego_accepts_every_flag_postern_passes(monkeypatch, force):
         domain="postern.test", dns_provider="cloudflare", cert_acme_email="a@b.test"
     )
     with monkeypatch.context() as patch:
-        patch.setattr(provisioner_cert.subprocess, "run", lambda cmd, env, check: argv.extend(cmd))
+        patch.setattr(provisioner_cert, "_run_lego", lambda cmd, env: argv.extend(cmd))
         provisioner_cert.LegoRunner(env={}).issue_or_renew(settings=settings, force=force)
 
     result = _lego("run", "--help")

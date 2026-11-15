@@ -889,8 +889,21 @@ def _issuing(settings: CertSettings, state: str = "ISSUING") -> cert_state.CertS
     return cert_state.CertState(state=state, acme_directory=settings.cert_acme_directory)
 
 
-def _fail_lego(lego_mock: MagicMock) -> None:
-    lego_mock.issue_or_renew.side_effect = subprocess.CalledProcessError(1, "lego")
+# What lego v5.6.0 logs (stdout) when the CA does not know the account key: acme/errors.go's problem type, wrapped by
+# cmd/internal/root/process_register.go's "resolve account by key".
+ACCOUNT_DOES_NOT_EXIST = (
+    'ERROR Error error="registration: resolve account by key: unable to communicate with the API server: '
+    "acme: error: 400 :: urn:ietf:params:acme:error:accountDoesNotExist :: unable to find existing account for "
+    'only-return-existing request"'
+)
+RATE_LIMITED = (
+    'ERROR Error error="obtain certificate: acme: error: 429 :: urn:ietf:params:acme:error:rateLimited :: too many '
+    'certificates (5) already issued"'
+)
+
+
+def _fail_lego(lego_mock: MagicMock, output: str = ACCOUNT_DOES_NOT_EXIST) -> None:
+    lego_mock.issue_or_renew.side_effect = subprocess.CalledProcessError(1, "lego", output=output)
 
 
 @pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
@@ -903,13 +916,60 @@ def test_unregistered_lego_account_is_kept_for_lego_to_recover(prod_settings, le
 
 
 @pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
-def test_unregistered_lego_account_is_discarded_after_a_failed_run(prod_settings, lego_mock, now, cert_dir, state_name):
-    """lego could not recover it (accountDoesNotExist): the next tick must register afresh."""
+def test_lego_account_is_discarded_after_a_run_that_says_the_account_does_not_exist(
+    prod_settings, lego_mock, now, cert_dir, state_name
+):
+    """The CA has no such account (RFC 8555 accountDoesNotExist), so the next tick must register afresh."""
     account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
     _fail_lego(lego_mock)
     next_state = _advance(_issuing(prod_settings, state_name), prod_settings, lego_mock, now)
     assert not account.exists()
     assert next_state.consecutive_failures == 1
+
+
+def test_registered_lego_account_the_ca_has_lost_is_discarded(prod_settings, lego_mock, now, cert_dir):
+    account = _register_account(cert_dir, PROD, "ops@postern.test")
+    _fail_lego(lego_mock)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert not account.exists()
+
+
+@pytest.mark.parametrize("output", [RATE_LIMITED, "", 'ERROR Error error="registration: dial tcp: i/o timeout"'])
+def test_unregistered_lego_account_is_kept_after_any_other_failure(prod_settings, lego_mock, now, cert_dir, output):
+    """lego may still recover the account by its key; only the CA's own answer says it cannot."""
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
+    _fail_lego(lego_mock, output)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert account.exists()
+
+
+def test_unreadable_lego_account_file_is_discarded_after_any_failed_run(prod_settings, lego_mock, now, cert_dir):
+    """lego cannot load it at all, so no run can recover it."""
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org", body='{"id": "ops@po')
+    _fail_lego(lego_mock, RATE_LIMITED)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert not account.exists()
+
+
+def test_a_run_that_discards_the_account_does_not_arm_the_24h_guard(prod_settings, lego_mock, now, cert_dir):
+    """An account the CA never had cannot have placed an order, so the next tick retries at once."""
+    _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
+    working_lego = lego_mock.issue_or_renew.side_effect
+    _fail_lego(lego_mock)
+    state = _issuing(prod_settings)
+    failed = _advance(state, prod_settings, lego_mock, now)
+    assert failed.last_issued_by_directory == {}
+    lego_mock.issue_or_renew.reset_mock()
+    lego_mock.issue_or_renew.side_effect = working_lego
+    _advance(failed, prod_settings, lego_mock, now + dt.timedelta(hours=1))
+    lego_mock.issue_or_renew.assert_called_once()
+
+
+def test_a_failed_run_that_keeps_the_account_arms_the_24h_guard(prod_settings, lego_mock, now, cert_dir):
+    _register_account(cert_dir, PROD, "ops@postern.test")
+    _fail_lego(lego_mock, RATE_LIMITED)
+    failed = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert failed.last_issued_by_directory == {PROD: now.isoformat()}
 
 
 def test_registered_lego_account_is_kept_after_a_failed_run(prod_settings, lego_mock, now, cert_dir):
@@ -975,34 +1035,31 @@ def test_cleanup_failure_does_not_abort_the_tick(prod_settings, lego_mock, now, 
     assert "read-only file system" in caplog.text
 
 
-# lego v5.6.0 getAccount (cmd/internal/storage/storage_accounts.go:249-254): a registration whose top-level `status`
-# is empty means NeedsRecovery; an unreadable account.json is an error.
+# lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a file that does not decode into
+# the account struct is an error no run recovers from; a missing or null registration is not (the CA is asked).
 @pytest.mark.parametrize(
-    ("body", "needs_discard"),
+    ("body", "unreadable"),
     [
         (None, False),  # no account.json
         (json.dumps({"registration": {"status": "valid"}}), False),
-        (json.dumps({"registration": None}), True),
-        ("{}", True),
-        (json.dumps({"registration": {"status": ""}}), True),
-        (json.dumps({"registration": {"accountURL": "https://ca.test/acct/1"}}), True),
-        # v4 nested the status under `body`; v5 reads it as empty and recovers the account by key.
-        (json.dumps({"registration": {"body": {"status": "valid"}, "uri": "https://ca.test/acct/1"}}), True),
+        (json.dumps({"registration": None}), False),
+        ("{}", False),
+        (json.dumps({"registration": {"body": {"status": "valid"}}}), False),
         (json.dumps({"registration": "valid"}), True),
-        (json.dumps({"registration": {"status": 1}}), True),
         ("[]", True),
         ('{"id": "ops@po', True),
+        ("", True),
     ],
     ids=[
-        "missing", "v5-registered", "null-registration", "absent-registration", "empty-status", "no-status",
-        "v4-shaped", "registration-not-an-object", "status-not-a-string", "not-an-object", "truncated"
+        "missing", "v5-registered", "null-registration", "absent-registration", "v4-shaped",
+        "registration-not-an-object", "not-an-object", "truncated", "empty"
     ],
 )
-def test_account_needs_discard_follows_lego_v5s_recovery_rule(tmp_path, body, needs_discard):
+def test_account_file_unreadable_follows_lego_v5s_decoding(tmp_path, body, unreadable):
     account_json = tmp_path / "account.json"
     if body is not None:
         account_json.write_text(body)
-    assert cert_driver._account_needs_discard(account_json) is needs_discard
+    assert cert_driver._account_file_unreadable(account_json) is unreadable
 
 
 STEP_CA_OLD = "https://ca.internal/acme/old/directory"

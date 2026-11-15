@@ -19,6 +19,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 CERT_DIR = Path("/etc/letsencrypt")
 LEGO_PATH = CERT_DIR / "lego"
 LIVE_DIR = CERT_DIR / "live"
+# RFC 8555 §6.7 problem type that lego prints when the CA does not know the account (acme/errors.go in lego v5.6.0).
+ACCOUNT_DOES_NOT_EXIST = "urn:ietf:params:acme:error:accountDoesNotExist"
 RATE_LIMIT_GUARD_SECONDS = 24 * 3600
 MAX_CONSECUTIVE_FAILURES = 6
 FAILED_HOLDOFF_SECONDS = 60 * 60  # 1 hour, matches TICK_SECONDS
@@ -116,7 +119,7 @@ class LegoRunner:
         else:
             cmd += ["--renew-days", str(settings.cert_renewal_days_before_expiry)]
             logger.info("lego: invoking run --renew-days %s", settings.cert_renewal_days_before_expiry)
-        subprocess.run(cmd, env=run_env, check=True)
+        _run_lego(cmd, run_env)
 
         cert_dir = LEGO_PATH / "certificates"
         return LegoOutput(
@@ -124,6 +127,22 @@ class LegoRunner:
             privkey=cert_dir / f"{settings.domain}.key",
             chain=cert_dir / f"{settings.domain}.issuer.crt",
         )
+
+
+def _run_lego(cmd: list[str], env: dict[str, str]) -> None:
+    """Run lego, relaying its output to ours as it arrives. Raises CalledProcessError, carrying that output, on a
+    non-zero exit. lego logs to stdout (log/logger.go, cmd/logger.go in v5.6.0), errors included."""
+    seen: list[str] = []
+    with subprocess.Popen(
+        cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
+    ) as lego:
+        assert lego.stdout is not None
+        for line in lego.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            seen.append(line)
+    if lego.returncode:
+        raise subprocess.CalledProcessError(lego.returncode, cmd, output="".join(seen))
 
 
 # State machine ========================================================================================================
@@ -241,8 +260,12 @@ def advance_cert_state(
             output = lego.issue_or_renew(settings=settings, force=force)
         except subprocess.CalledProcessError as e:
             logger.error("cert: lego failed: %s", e)
-            _discard_unrecoverable_lego_account(settings)
-            return _failed_or_increment(attempt_state, settings, now)
+            failed_state = attempt_state
+            if _discard_unrecoverable_lego_account(settings, e.output or ""):
+                # An account the CA never knew cannot have placed an order: leave the 24h guard unarmed (and the
+                # attempt unrecorded), so the next tick registers afresh at once.
+                failed_state = replace(attempt_state, last_issued_by_directory=state.last_issued_by_directory)
+            return _failed_or_increment(failed_state, settings, now)
 
         problem = _lego_output_problem(output, expected, settings, now)
         if problem:
@@ -351,38 +374,39 @@ def _account_host(directory: str) -> str:
     return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
-def _discard_unrecoverable_lego_account(settings: CertSettings) -> None:
-    """After a failed run, remove a lego account directory that is still unregistered (a failure is logged, not raised).
+def _discard_unrecoverable_lego_account(settings: CertSettings, lego_output: str) -> bool:
+    """After a failed run, remove the lego account directory when the failure shows no run can use it (a removal
+    failure is logged, not raised). True when it is such an account, removed or not.
 
-    lego v5 saves `account.json` (`"registration": null`) and the key before it registers. The next run recovers
-    such an account by looking its key up at the CA, and fails with `accountDoesNotExist` when the CA never got it;
-    only a fresh directory registers anew, so that costs one failed tick."""
+    That is when the CA answered `accountDoesNotExist` (lego v5 looks an account up by its key and does not register
+    anew; only a fresh directory registers) or when `account.json` cannot be decoded. Any other failure keeps the
+    account: lego may still recover it."""
     account_dir = LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
+    if ACCOUNT_DOES_NOT_EXIST not in lego_output and not _account_file_unreadable(account_dir / "account.json"):
+        return False
     try:
-        if not _account_needs_discard(account_dir / "account.json"):
-            return
-        logger.info("cert: removing lego account %s: it is not registered", account_dir)
+        logger.info("cert: removing lego account %s: no run can use it", account_dir)
         shutil.rmtree(account_dir)
+    except FileNotFoundError:
+        pass
     except OSError as e:
-        logger.error("cert: could not remove unregistered lego account %s: %s", account_dir, e)
+        logger.error("cert: could not remove lego account %s: %s", account_dir, e)
+    return True
 
 
-def _account_needs_discard(account_json: Path) -> bool:
-    """Whether lego's account file shows an unregistered account; False when there is no file.
+def _account_file_unreadable(account_json: Path) -> bool:
+    """Whether lego cannot decode its account file; False when there is none.
 
-    Mirrors lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a missing
-    `registration` or an empty top-level `registration.status` marks the account NeedsRecovery, and a file that does
-    not decode into the account struct (lego writes it non-atomically, so a crash can truncate it) is an error. v4
-    nested the status under `registration.body`, which v5 reads as empty."""
+    Mirrors lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a file that does not
+    decode into the account struct is an error (lego writes it non-atomically, so a crash can truncate it), whereas a
+    null or absent registration only makes lego ask the CA."""
     try:
         account = json.loads(account_json.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return False
     except ValueError:
         return True
-    registration = account.get("registration") if isinstance(account, dict) else None
-    status = registration.get("status") if isinstance(registration, dict) else None
-    return not (isinstance(status, str) and status)
+    return not isinstance(account, dict) or not isinstance(account.get("registration"), (dict, type(None)))
 
 
 def _lego_output_problem(

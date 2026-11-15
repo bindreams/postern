@@ -115,7 +115,7 @@ def test_lego_subprocess_receives_the_route53_session_token(monkeypatch):
     """lego reads AWS_SESSION_TOKEN natively; the runner hands it the whole environment, so a
     session token delivered to the provisioner reaches the process that signs the request."""
     seen = {}
-    monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(env=env))
+    monkeypatch.setattr(cert, "_run_lego", lambda cmd, env: seen.update(env=env))
     settings = cert.CertSettings(domain="postern.test", dns_provider="route53", cert_acme_email="a@postern.test")
     runner = cert.LegoRunner(env={"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SESSION_TOKEN": "session-sentinel"})
     runner.issue_or_renew(settings=settings, force=True)
@@ -124,7 +124,7 @@ def test_lego_subprocess_receives_the_route53_session_token(monkeypatch):
 
 def _runner_argv(monkeypatch, *, force: bool = True, renew_days: int = 30) -> list[str]:
     seen = {}
-    monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(cmd=cmd))
+    monkeypatch.setattr(cert, "_run_lego", lambda cmd, env: seen.update(cmd=cmd))
     settings = cert.CertSettings(
         domain="postern.test",
         dns_provider="cloudflare",
@@ -149,6 +149,27 @@ def test_runner_uses_the_v5_run_command(monkeypatch):
     assert argv[argv.index("--server") + 1] == "https://acme-v02.api.letsencrypt.org/directory"
     assert argv[argv.index("--key-type") + 1] == "rsa2048"
     assert "--accept-tos" in argv
+
+
+def _child(code: str) -> list[str]:
+    import sys
+    return [sys.executable, "-c", code]
+
+
+def test_run_lego_streams_both_streams_to_stdout_as_they_arrive(capfd):
+    cert._run_lego(_child("import sys; print('out'); print('err', file=sys.stderr)"), {})
+    captured = capfd.readouterr()
+    assert "out" in captured.out and "err" in captured.out
+
+
+def test_run_lego_failure_carries_what_lego_printed(capfd):
+    """lego logs its error to stdout; the state machine reads it to tell a lost ACME account from other failures."""
+    code = "import sys; print('ERROR accountDoesNotExist'); sys.exit(3)"
+    with pytest.raises(cert.subprocess.CalledProcessError) as raised:
+        cert._run_lego(_child(code), {})
+    assert raised.value.returncode == 3
+    assert "accountDoesNotExist" in raised.value.output
+    assert "accountDoesNotExist" in capfd.readouterr().out
 
 
 def test_runner_logs_the_timing_flag_it_passes(monkeypatch, caplog):

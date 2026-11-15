@@ -38,7 +38,7 @@ def test_every_pin_site_declares_the_same_minor():
 
 
 def test_portal_python_image_tag_comes_from_the_arg():
-    froms = re.findall(r"^FROM (dhi\.io/python:\S+)", _text("portal/Dockerfile"), re.MULTILINE)
+    froms = re.findall(r"^FROM (?:--\S+\s+)*(dhi\.io/python:\S+)", _text("portal/Dockerfile"), re.MULTILINE)
     assert len(froms) == 2, froms  # build and runtime stage
     assert all(f.startswith("dhi.io/python:${PYTHON_MINOR}-") for f in froms), froms
 
@@ -136,7 +136,7 @@ def test_apk_python_is_pinned_to_the_minor(rel):
     assert set(tokens) == {"python3~${PYTHON_MINOR}"}, tokens
 
 
-@pytest.mark.parametrize("rel", (*IMAGES, "mta/entrypoint.py", "provisioner/entrypoint.py"))
+@pytest.mark.parametrize("rel", (*PIN_DOCKERFILES, "mta/entrypoint.py", "provisioner/entrypoint.py"))
 def test_no_hardcoded_python_minor_path(rel):
     assert not re.search(r"python3\.\d+", _text(rel)), f"{rel} hardcodes a Python minor; use ${{PYTHON_MINOR}}"
 

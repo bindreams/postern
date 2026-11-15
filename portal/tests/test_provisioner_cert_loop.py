@@ -52,12 +52,15 @@ def cert_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+REGISTERED_ACCOUNT = json.dumps({"registration": {"body": {"status": "valid"}, "uri": "https://ca.test/acct/1"}})
+
+
 def _register_account(cert_dir: Path, directory: str, email: str) -> Path:
     """What lego leaves behind: accounts/<host>/<email>/account.json."""
     from urllib.parse import urlparse
     account = cert_dir / "lego" / "accounts" / urlparse(directory).netloc / email
     account.mkdir(parents=True, exist_ok=True)
-    (account / "account.json").write_text("{}")
+    (account / "account.json").write_text(REGISTERED_ACCOUNT)
     return account
 
 
@@ -86,11 +89,6 @@ def _install_live_cert(cert_dir: Path, settings: CertSettings) -> None:
     )
 
 
-def _lego_cert(cert_dir: Path, settings: CertSettings) -> None:
-    """The certificate file lego leaves under its --path after any issuance."""
-    (cert_dir / "lego" / "certificates" / f"{settings.domain}.crt").write_text("x")
-
-
 @pytest.fixture
 def lego_mock(cert_dir: Path, settings: CertSettings) -> MagicMock:
     """Returns a LegoRunner mock that, when invoked, writes a fake cert triple."""
@@ -98,7 +96,7 @@ def lego_mock(cert_dir: Path, settings: CertSettings) -> MagicMock:
     pki_dir = cert_dir / "lego" / "certificates"
     runner = MagicMock(spec=cert_driver.LegoRunner)
 
-    def _fake_issue(*, settings, action):
+    def _fake_issue(*, settings):
         # Reuse the existing wildcard-PKI helper to produce a real x.509 cert
         # with the right SANs, so the post-install adoption check passes.
         scratch = pki_dir / ".scratch"
@@ -436,10 +434,10 @@ def _staging_issued(now: dt.datetime, **overrides) -> cert_state.CertState:
 
 
 @pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
-def test_directory_switch_runs_lego_run_not_renew(prod_settings, lego_mock, now, state_name):
+def test_directory_switch_issues_from_either_state(prod_settings, lego_mock, now, state_name):
     state = _staging_issued(now, state=state_name)
     next_state = _advance(state, prod_settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
+    lego_mock.issue_or_renew.assert_called_once()
     assert next_state.state == "ISSUED_PENDING_INSTALL"
     assert next_state.last_issued_by_directory[PROD] == now.isoformat()
     # The staging cert is still what is installed.
@@ -490,24 +488,6 @@ def test_force_reissue_still_bypasses_guard_for_the_new_directory(prod_settings,
     state = _staging_issued(now, last_issued_by_directory={PROD: issued})
     _advance(state, prod_settings, lego_mock, now)
     lego_mock.issue_or_renew.assert_called_once()
-
-
-def test_failed_switch_attempt_keeps_run_action(prod_settings, lego_mock, now, cert_dir):
-    """Even with an account and a Lego cert (so `renew` would be possible), the drift still forces `run`."""
-    import subprocess
-    _lego_cert(cert_dir, prod_settings)
-    lego_mock.issue_or_renew.side_effect = subprocess.CalledProcessError(1, "lego")
-    failed = _advance(_staging_issued(now, state="RENEWING"), prod_settings, lego_mock, now)
-    assert failed.state == "RENEWING"
-    assert failed.acme_directory == STAGING  # on-disk cert is still the staging one
-
-    # Next attempt (guard bypassed): still `run`, even though the failed attempt may have registered an account.
-    prod_settings.cert_force_reissue = True
-    _register_account(cert_dir, PROD, "ops@postern.test")
-    lego_mock.issue_or_renew.side_effect = None
-    lego_mock.issue_or_renew.reset_mock()
-    _advance(failed, prod_settings, lego_mock, now + dt.timedelta(hours=1))
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
 
 
 def test_failures_under_the_old_directory_do_not_count_toward_the_new_one(prod_settings, lego_mock, now):
@@ -680,8 +660,8 @@ def test_force_reissue_leaves_installed_despite_the_guard(prod_settings, lego_mo
 
 
 # Forced reissue and renewal ===========================================================================================
-def test_san_mismatch_reissues_with_run(settings, lego_mock, now, cert_dir):
-    """`lego renew` would no-op on the (still fresh) cert."""
+def test_san_mismatch_reissues(settings, lego_mock, now, cert_dir):
+    """The (still fresh) cert is replaced: lego is called once."""
     _install_live_cert(cert_dir, settings)
     _register_account(cert_dir, STAGING, "ops@postern.test")
     settings.expected_sans = {"other.test"}
@@ -689,30 +669,7 @@ def test_san_mismatch_reissues_with_run(settings, lego_mock, now, cert_dir):
     state = _advance(state, settings, lego_mock, now)
     assert state.state == "ISSUING"
     _advance(state, settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-
-
-def test_renewing_without_a_registered_account_runs(settings, lego_mock, now):
-    """e.g. an adopted BYO cert reaching expiry: lego has no account to renew with."""
-    state = cert_state.CertState(state="RENEWING", acme_directory=STAGING)
-    _advance(state, settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-
-
-def test_renewing_with_an_account_but_no_lego_cert_runs(settings, lego_mock, now, cert_dir):
-    """An adopted BYO cert plus an earlier failed lego run leaves an account but nothing for `renew` to renew."""
-    _register_account(cert_dir, STAGING, "ops@postern.test")
-    state = cert_state.CertState(state="RENEWING", acme_directory=STAGING)
-    _advance(state, settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
-
-
-def test_renewing_with_a_registered_account_renews(settings, lego_mock, now, cert_dir):
-    _register_account(cert_dir, STAGING, "ops@postern.test")
-    _lego_cert(cert_dir, settings)
-    state = cert_state.CertState(state="RENEWING", acme_directory=STAGING)
-    _advance(state, settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "renew"
+    lego_mock.issue_or_renew.assert_called_once()
 
 
 # acme_directory moves with the install ================================================================================
@@ -749,7 +706,6 @@ def test_full_staging_to_production_switch(settings, prod_settings, lego_mock, n
     assert state.state == "INSTALLED"
     assert state.acme_directory == PROD
     lego_mock.issue_or_renew.assert_called_once()
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "run"
     assert not staging_account.exists()  # the switch discarded it
 
 
@@ -781,16 +737,97 @@ def test_adopted_cert_without_any_lego_state_is_left_alone(prod_settings, lego_m
 
 
 # Lego's account directory =============================================================================================
+def _unregistered_account(cert_dir: Path, host: str, email: str = "ops@postern.test", body: str | None = None) -> Path:
+    """What a v5 lego run leaves when it fails after saving its key but before registering."""
+    account = cert_dir / "lego" / "accounts" / host / email
+    account.mkdir(parents=True)
+    (account / "account.json").write_text(body if body is not None else json.dumps({"registration": None}))
+    (account / f"{email}.key").write_text("key")
+    return account
+
+
+def _issuing(settings: CertSettings, state: str = "ISSUING") -> cert_state.CertState:
+    return cert_state.CertState(state=state, acme_directory=settings.cert_acme_directory)
+
+
+@pytest.mark.parametrize("state_name", ["ISSUING", "RENEWING"])
+def test_unregistered_lego_account_is_removed_before_lego_runs(prod_settings, lego_mock, now, cert_dir, state_name):
+    """lego v5 never recovers from an account whose registration did not complete: every later run fails."""
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings, state_name), prod_settings, lego_mock, now)
+    assert present == [False]
+
+
+def test_account_without_a_registration_field_is_removed_before_lego_runs(prod_settings, lego_mock, now, cert_dir):
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org", body="{}")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [False]
+
+
+def test_truncated_account_json_is_removed_before_lego_runs(prod_settings, lego_mock, now, cert_dir):
+    """lego writes account.json non-atomically and cannot read a truncated one."""
+    account = _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org", body='{"id": "ops@po')
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [False]
+
+
+def test_registered_lego_account_is_kept(prod_settings, lego_mock, now, cert_dir):
+    account = _register_account(cert_dir, PROD, "ops@postern.test")
+    (account / f"ops@postern.test.key").write_text("key")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [True]
+    assert (account / "ops@postern.test.key").read_text() == "key"
+
+
+def test_v4_shaped_registered_account_is_kept(prod_settings, lego_mock, now, cert_dir):
+    """A v4 account.json has `registration.body`/`uri` and its key under keys/; v5 reads it, so it is not discarded."""
+    account = _register_account(cert_dir, PROD, "ops@postern.test")
+    (account / "keys").mkdir()
+    (account / "keys" / "ops@postern.test.key").write_text("v4 key")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [True]
+    assert (account / "keys" / "ops@postern.test.key").read_text() == "v4 key"
+
+
+def test_missing_lego_account_is_a_no_op(prod_settings, lego_mock, now):
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    lego_mock.issue_or_renew.assert_called_once()
+
+
 def test_account_path_of_a_host_with_a_port_replaces_the_colon(prod_settings, lego_mock, now, cert_dir):
     """Lego writes `accounts/<host>_<port>/<email>`; looking under `<host>:<port>` would never find it."""
     prod_settings.cert_acme_directory = "https://ca.internal:9000/acme/dir"
-    account = cert_dir / "lego" / "accounts" / "ca.internal_9000" / "ops@postern.test"
-    account.mkdir(parents=True)
-    (account / "account.json").write_text("{}")
-    _lego_cert(cert_dir, prod_settings)
-    state = cert_state.CertState(state="RENEWING", acme_directory=prod_settings.cert_acme_directory)
-    _advance(state, prod_settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "renew"
+    account = _unregistered_account(cert_dir, "ca.internal_9000")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [False]
+
+
+def test_account_path_ignores_userinfo_in_the_directory_url(prod_settings, lego_mock, now, cert_dir):
+    """Lego names the account directory by the URL's host and port, without `user:pass@`."""
+    prod_settings.cert_acme_directory = "https://user:pass@ca.internal:9000/acme/dir"
+    account = _unregistered_account(cert_dir, "ca.internal_9000")
+    present = _record_account_presence_at_run(lego_mock, account)
+    _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    assert present == [False]
+
+
+def test_cleanup_failure_does_not_abort_the_tick(prod_settings, lego_mock, now, cert_dir, monkeypatch, caplog):
+    _unregistered_account(cert_dir, "acme-v02.api.letsencrypt.org")
+
+    def boom(path, *args, **kwargs):
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(cert_driver.shutil, "rmtree", boom)
+    next_state = _advance(_issuing(prod_settings), prod_settings, lego_mock, now)
+    lego_mock.issue_or_renew.assert_called_once()
+    assert next_state.state == "ISSUED_PENDING_INSTALL"
+    assert "read-only file system" in caplog.text
 
 
 STEP_CA_OLD = "https://ca.internal/acme/old/directory"
@@ -804,9 +841,9 @@ def _record_account_presence_at_run(lego_mock: MagicMock, account: Path, *, fail
         lego_mock.base_issue = lego_mock.issue_or_renew.side_effect
     real_issue = lego_mock.base_issue
 
-    def run(*, settings, action):
+    def run(*, settings):
         present.append(account.exists())
-        output = real_issue(settings=settings, action=action)
+        output = real_issue(settings=settings)
         if fail:
             raise subprocess.CalledProcessError(1, "lego")
         return output
@@ -918,18 +955,6 @@ def test_account_reset_log_names_the_directory(prod_settings, lego_mock, now, ce
     _register_account(cert_dir, STEP_CA_OLD, "ops@postern.test")
     _advance(_step_ca_switch(prod_settings, now), prod_settings, lego_mock, now)
     assert "ACME directory changed; resetting lego account dir" in caplog.text
-
-
-def test_account_path_ignores_userinfo_in_the_directory_url(prod_settings, lego_mock, now, cert_dir):
-    """Lego names the account directory by the URL's host and port, without `user:pass@`."""
-    prod_settings.cert_acme_directory = "https://user:pass@ca.internal:9000/acme/dir"
-    account = cert_dir / "lego" / "accounts" / "ca.internal_9000" / "ops@postern.test"
-    account.mkdir(parents=True)
-    (account / "account.json").write_text("{}")
-    _lego_cert(cert_dir, prod_settings)
-    state = cert_state.CertState(state="RENEWING", acme_directory=prod_settings.cert_acme_directory)
-    _advance(state, prod_settings, lego_mock, now)
-    assert lego_mock.issue_or_renew.call_args.kwargs["action"] == "renew"
 
 
 # ACME account email change ============================================================================================

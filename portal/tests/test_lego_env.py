@@ -118,5 +118,37 @@ def test_lego_subprocess_receives_the_route53_session_token(monkeypatch):
     monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(env=env))
     settings = cert.CertSettings(domain="postern.test", dns_provider="route53", cert_acme_email="a@postern.test")
     runner = cert.LegoRunner(env={"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SESSION_TOKEN": "session-sentinel"})
-    runner.issue_or_renew(settings=settings, action="run")
+    runner.issue_or_renew(settings=settings)
     assert seen["env"]["AWS_SESSION_TOKEN"] == "session-sentinel"
+
+
+def _runner_argv(monkeypatch) -> list[str]:
+    seen = {}
+    monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(cmd=cmd))
+    settings = cert.CertSettings(domain="postern.test", dns_provider="cloudflare", cert_acme_email="a@postern.test")
+    cert.LegoRunner(env={}).issue_or_renew(settings=settings)
+    return seen["cmd"]
+
+
+def test_runner_uses_the_v5_run_command(monkeypatch):
+    """v5 takes its flags after the command; v4's global-flag layout is rejected."""
+    argv = _runner_argv(monkeypatch)
+    assert argv[:2] == ["lego", "run"]
+    assert "renew" not in argv
+    assert "--days" not in argv
+    assert "--renew-days" not in argv
+    assert argv[argv.index("--path") + 1] == str(cert.LEGO_PATH)
+    assert argv[argv.index("--email") + 1] == "a@postern.test"
+    domains = [argv[i + 1] for i, a in enumerate(argv) if a == "--domains"]
+    assert domains == ["postern.test", "*.postern.test"]
+    assert argv[argv.index("--dns") + 1] == "cloudflare"
+    assert argv[argv.index("--server") + 1] == "https://acme-v02.api.letsencrypt.org/directory"
+    assert argv[argv.index("--key-type") + 1] == "rsa2048"
+    assert "--accept-tos" in argv
+
+
+def test_runner_forces_reissue_and_hands_lego_no_timing_decision(monkeypatch):
+    """Without --renew-force an existing, not-yet-due cert makes `lego run` exit 0 and write nothing."""
+    argv = _runner_argv(monkeypatch)
+    for flag in ("--renew-force", "--force-cert-domains", "--ari-disable", "--no-random-sleep"):
+        assert flag in argv

@@ -14,6 +14,7 @@ filesystem or subprocess.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 import os
 import shutil
@@ -73,13 +74,20 @@ class LegoRunner:
     def __init__(self, *, env: dict[str, str] | None = None) -> None:
         self.env = env if env is not None else dict(os.environ)
 
-    def issue_or_renew(self, *, settings: CertSettings, action: str) -> LegoOutput:
-        """Run `lego ... run` (action='run') or `lego ... renew` (action='renew')."""
+    def issue_or_renew(self, *, settings: CertSettings) -> LegoOutput:
+        """Run `lego run --renew-force`: obtain a certificate, or replace the one lego already holds.
+
+        lego v5 has no `renew`; `run` on an existing, not-yet-due certificate exits 0 and writes nothing, so
+        `--renew-force` is always passed. `--force-cert-domains` keeps the SAN set exactly `--domains` (lego otherwise
+        merges the old certificate's names in). Timing is Postern's: no `--renew-days`, ARI off (`--ari-disable`), and no
+        pre-renewal sleep (`--no-random-sleep`).
+        """
         cfg = lego_env.lego_config(settings.dns_provider, self.env)
         run_env = dict(self.env)
         run_env.update(cfg.env)
         cmd = [
             "lego",
+            "run",
             "--path",
             str(LEGO_PATH),
             "--email",
@@ -95,12 +103,12 @@ class LegoRunner:
             "--key-type",
             "rsa2048",
             "--accept-tos",
+            "--renew-force",
+            "--force-cert-domains",
+            "--ari-disable",
+            "--no-random-sleep",
         ]
-        if action == "renew":
-            cmd.extend(["renew", "--days", str(settings.cert_renewal_days_before_expiry)])
-        else:
-            cmd.append("run")
-        logger.info("lego: invoking %s", action)
+        logger.info("lego: invoking run --renew-force")
         subprocess.run(cmd, env=run_env, check=True)
 
         cert_dir = LEGO_PATH / "certificates"
@@ -146,7 +154,7 @@ def advance_cert_state(
 
     # INSTALLED: check whether to renew --------------------------------------------------------------------------------
     if state.state == "INSTALLED":
-        # Every path but expiry takes ISSUING (`lego run`); see `renewable` below for why not `renew`.
+        # Every reissue is `lego run --renew-force`, so lego never decides timing.
         target: cert_state.State = "ISSUING"
         live = _read_live_cert(cert_dir, settings.domain)
         if directory_drift:
@@ -208,10 +216,7 @@ def advance_cert_state(
             if not _reset_lego_account_dir(" and ".join(changed)):
                 return state
 
-        # `renew` is a no-op on a fresh cert and fatal without a registered account or a cert under Lego's path (an
-        # adopted BYO cert has neither), so it is only for a due cert Lego itself issued.
-        renewable = _lego_account_registered(settings) and _lego_cert_exists(settings)
-        action = "run" if state.state == "ISSUING" or directory_drift or not renewable else "renew"
+        _discard_unregistered_lego_account(settings)
         # Record the attempt BEFORE Lego: defends rate limits even on post-issuance failures (rename, etc.).
         attempt_state = replace(
             state,
@@ -221,7 +226,7 @@ def advance_cert_state(
             acme_account_email=settings.cert_acme_email,
         )
         try:
-            output = lego.issue_or_renew(settings=settings, action=action)
+            output = lego.issue_or_renew(settings=settings)
         except subprocess.CalledProcessError as e:
             logger.error("cert: lego failed: %s", e)
             return _failed_or_increment(attempt_state, settings, now)
@@ -323,20 +328,37 @@ def _latest_attempt_directory(state: cert_state.CertState) -> str:
 
 def _account_host(directory: str) -> str:
     """Lego keeps accounts at `<path>/accounts/<url.Host, ':' -> '_'>/<email>/account.json`; Go's `url.Host` is the
-    authority without userinfo, with the port and IPv6 brackets as written (lego v4.35.2, cmd/accounts_storage.go)."""
+    authority without userinfo, with the port and IPv6 brackets as written (lego v5.6.0, cmd/internal/storage/storage_accounts.go)."""
     return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
-def _lego_server_dir(settings: CertSettings) -> Path:
-    return LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory)
+def _discard_unregistered_lego_account(settings: CertSettings) -> None:
+    """Remove a lego account directory whose registration never completed (a failure is logged, not raised).
+
+    lego v5 saves `account.json` (`"registration": null`) and the key before it registers, and a later run only looks
+    the key up at the CA, never registers: it fails with `accountDoesNotExist` until the directory is gone. Registered
+    accounts, v4-shaped ones included, are left alone."""
+    account_dir = LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
+    try:
+        registered = _account_is_registered(account_dir / "account.json")
+        if registered is None or registered:
+            return
+        logger.info("cert: removing lego account %s: its registration never completed", account_dir)
+        shutil.rmtree(account_dir)
+    except OSError as e:
+        logger.error("cert: could not remove unregistered lego account %s: %s", account_dir, e)
 
 
-def _lego_account_registered(settings: CertSettings) -> bool:
-    return (_lego_server_dir(settings) / settings.cert_acme_email / "account.json").exists()
-
-
-def _lego_cert_exists(settings: CertSettings) -> bool:
-    return (LEGO_PATH / "certificates" / f"{settings.domain}.crt").exists()
+def _account_is_registered(account_json: Path) -> bool | None:
+    """Whether lego's account file holds a registration; None when there is no file. A file lego cannot read
+    (lego writes it non-atomically, so a crash can truncate it) counts as unregistered."""
+    try:
+        account = json.loads(account_json.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except ValueError:
+        return False
+    return isinstance(account, dict) and account.get("registration") is not None
 
 
 def _rate_limit_guard_clear(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> bool:

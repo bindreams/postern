@@ -28,9 +28,10 @@ deferral from ISSUING/RENEWING returns to INSTALLED only when a cert is installe
 
 `acme_directory` moves only when an install completes, so a failed switch stays visible as drift and is retried.
 
-ISSUING and RENEWING both run `lego run --renew-force`; they differ only in what moved the
-state machine there (expiry for RENEWING). lego never decides timing: `run` without the flag
-exits 0 and writes nothing when lego already holds a cert that is not yet due.
+ISSUING and RENEWING both run `lego run`; they differ only in what moved the state machine there (expiry
+for RENEWING). ISSUING, and RENEWING after an ACME directory or email change, pass `--renew-force`; any other
+RENEWING passes Postern's own `--renew-days`, so lego declines only a certificate of its own that is newer than the
+live one, which an earlier run issued before its tick crashed.
 """
 
 from __future__ import annotations

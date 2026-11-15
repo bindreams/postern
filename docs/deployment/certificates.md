@@ -106,13 +106,13 @@ NO_CERT  ──(no on-disk cert; or SAN mismatch)──▶  ISSUING
 ISSUING  ──(lego success; record pending paths and the directory)──▶  ISSUED_PENDING_INSTALL
 ISSUED_PENDING_INSTALL  ──(symlink-flip success)──▶  INSTALLED
 INSTALLED  ──(ACME directory drift / SAN mismatch / .renew-cert; 24-hour guard clear)──▶  ISSUING   (`lego run --renew-force`)
-INSTALLED  ──(expiry)──▶  RENEWING   (`lego run --renew-force`)
+INSTALLED  ──(expiry)──▶  RENEWING   (`lego run --renew-days <CERT_RENEWAL_DAYS_BEFORE_EXPIRY>`; `--renew-force` when the ACME directory or email changed)
 RENEWING   ──(success)──▶  ISSUED_PENDING_INSTALL
 *  ──(consecutive_failures >= 6)──▶  FAILED
 FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried
 ```
 
-`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`, unless no cert is on disk, in which case it waits in `ISSUING`. A `postern cert renew` request made while the guard is active is dropped, and the provisioner logs it. State is persisted at `/etc/letsencrypt/state.json`.
+`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`, unless no cert is on disk, in which case it waits in `ISSUING`. A `postern cert renew` request made while the guard is active is dropped, and the provisioner logs it. A `RENEWING` run applies Postern's own threshold, so when an earlier run already issued a certificate and its tick crashed before the install, lego issues nothing new and the existing certificate is installed. State is persisted at `/etc/letsencrypt/state.json`.
 ````
 
 ### Threat-model notes

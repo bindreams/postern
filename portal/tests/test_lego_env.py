@@ -118,15 +118,20 @@ def test_lego_subprocess_receives_the_route53_session_token(monkeypatch):
     monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(env=env))
     settings = cert.CertSettings(domain="postern.test", dns_provider="route53", cert_acme_email="a@postern.test")
     runner = cert.LegoRunner(env={"AWS_ACCESS_KEY_ID": "AKIA", "AWS_SESSION_TOKEN": "session-sentinel"})
-    runner.issue_or_renew(settings=settings)
+    runner.issue_or_renew(settings=settings, force=True)
     assert seen["env"]["AWS_SESSION_TOKEN"] == "session-sentinel"
 
 
-def _runner_argv(monkeypatch) -> list[str]:
+def _runner_argv(monkeypatch, *, force: bool = True, renew_days: int = 30) -> list[str]:
     seen = {}
     monkeypatch.setattr(cert.subprocess, "run", lambda cmd, env, check: seen.update(cmd=cmd))
-    settings = cert.CertSettings(domain="postern.test", dns_provider="cloudflare", cert_acme_email="a@postern.test")
-    cert.LegoRunner(env={}).issue_or_renew(settings=settings)
+    settings = cert.CertSettings(
+        domain="postern.test",
+        dns_provider="cloudflare",
+        cert_acme_email="a@postern.test",
+        cert_renewal_days_before_expiry=renew_days,
+    )
+    cert.LegoRunner(env={}).issue_or_renew(settings=settings, force=force)
     return seen["cmd"]
 
 
@@ -136,7 +141,6 @@ def test_runner_uses_the_v5_run_command(monkeypatch):
     assert argv[:2] == ["lego", "run"]
     assert "renew" not in argv
     assert "--days" not in argv
-    assert "--renew-days" not in argv
     assert argv[argv.index("--path") + 1] == str(cert.LEGO_PATH)
     assert argv[argv.index("--email") + 1] == "a@postern.test"
     domains = [argv[i + 1] for i, a in enumerate(argv) if a == "--domains"]
@@ -147,8 +151,22 @@ def test_runner_uses_the_v5_run_command(monkeypatch):
     assert "--accept-tos" in argv
 
 
-def test_runner_forces_reissue_and_hands_lego_no_timing_decision(monkeypatch):
+def test_forced_run_passes_renew_force_and_no_renew_days(monkeypatch):
     """Without --renew-force an existing, not-yet-due cert makes `lego run` exit 0 and write nothing."""
-    argv = _runner_argv(monkeypatch)
-    for flag in ("--renew-force", "--force-cert-domains", "--ari-disable", "--no-random-sleep"):
+    argv = _runner_argv(monkeypatch, force=True)
+    assert "--renew-force" in argv
+    assert "--renew-days" not in argv
+
+
+def test_unforced_run_passes_postern_threshold_and_no_renew_force(monkeypatch):
+    """The threshold is Postern's own, so lego no-ops only on a cert newer than the live one (lego v5.6.0 getDueDate)."""
+    argv = _runner_argv(monkeypatch, force=False, renew_days=21)
+    assert "--renew-force" not in argv
+    assert argv[argv.index("--renew-days") + 1] == "21"
+
+
+@pytest.mark.parametrize("force", [True, False])
+def test_every_run_keeps_domains_exact_and_hands_lego_no_timing_decision(monkeypatch, force):
+    argv = _runner_argv(monkeypatch, force=force)
+    for flag in ("--force-cert-domains", "--ari-disable", "--no-random-sleep"):
         assert flag in argv

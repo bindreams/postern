@@ -74,13 +74,15 @@ class LegoRunner:
     def __init__(self, *, env: dict[str, str] | None = None) -> None:
         self.env = env if env is not None else dict(os.environ)
 
-    def issue_or_renew(self, *, settings: CertSettings) -> LegoOutput:
-        """Run `lego run --renew-force`: obtain a certificate, or replace the one lego already holds.
+    def issue_or_renew(self, *, settings: CertSettings, force: bool) -> LegoOutput:
+        """Run `lego run`: obtain a certificate, or replace the one lego already holds.
 
-        lego v5 has no `renew`; `run` on an existing, not-yet-due certificate exits 0 and writes nothing, so
-        `--renew-force` is always passed. `--force-cert-domains` keeps the SAN set exactly `--domains` (lego otherwise
-        merges the old certificate's names in). Timing is Postern's: no `--renew-days`, ARI off (`--ari-disable`), and no
-        pre-renewal sleep (`--no-random-sleep`).
+        lego v5 has no `renew`; `run` on an existing, not-yet-due certificate exits 0 and writes nothing. With `force`
+        it passes `--renew-force`. Without, it passes Postern's own `--renew-days`: the caller found the live
+        certificate due, so lego declines only a certificate of its own that is newer than the live one (one an earlier
+        run issued before its tick crashed), and that one is installed. `--force-cert-domains` keeps the SAN set
+        exactly `--domains` (lego otherwise merges the old certificate's names in). ARI is off (`--ari-disable`) and
+        so is the pre-renewal sleep (`--no-random-sleep`), so the due date is Postern's.
         """
         cfg = lego_env.lego_config(settings.dns_provider, self.env)
         run_env = dict(self.env)
@@ -103,12 +105,15 @@ class LegoRunner:
             "--key-type",
             "rsa2048",
             "--accept-tos",
-            "--renew-force",
             "--force-cert-domains",
             "--ari-disable",
             "--no-random-sleep",
         ]
-        logger.info("lego: invoking run --renew-force")
+        if force:
+            cmd.append("--renew-force")
+        else:
+            cmd += ["--renew-days", str(settings.cert_renewal_days_before_expiry)]
+        logger.info("lego: invoking run (%s)", "--renew-force" if force else "--renew-days")
         subprocess.run(cmd, env=run_env, check=True)
 
         cert_dir = LEGO_PATH / "certificates"
@@ -154,7 +159,6 @@ def advance_cert_state(
 
     # INSTALLED: check whether to renew --------------------------------------------------------------------------------
     if state.state == "INSTALLED":
-        # Every reissue is `lego run --renew-force`, so lego never decides timing.
         target: cert_state.State = "ISSUING"
         live = _read_live_cert(cert_dir, settings.domain)
         if directory_drift:
@@ -216,7 +220,6 @@ def advance_cert_state(
             if not _reset_lego_account_dir(" and ".join(changed)):
                 return state
 
-        _discard_unregistered_lego_account(settings)
         # Record the attempt BEFORE Lego: defends rate limits even on post-issuance failures (rename, etc.).
         attempt_state = replace(
             state,
@@ -225,10 +228,14 @@ def advance_cert_state(
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
+        # RENEWING is due by Postern's own threshold, so only a run that changed the account or directory (lego's
+        # certificate may then be from the old one) is forced; see `LegoRunner.issue_or_renew`.
+        force = state.state == "ISSUING" or email_changed or under_new_directory
         try:
-            output = lego.issue_or_renew(settings=settings)
+            output = lego.issue_or_renew(settings=settings, force=force)
         except subprocess.CalledProcessError as e:
             logger.error("cert: lego failed: %s", e)
+            _discard_unrecoverable_lego_account(settings)
             return _failed_or_increment(attempt_state, settings, now)
 
         return replace(
@@ -332,33 +339,38 @@ def _account_host(directory: str) -> str:
     return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
-def _discard_unregistered_lego_account(settings: CertSettings) -> None:
-    """Remove a lego account directory whose registration never completed (a failure is logged, not raised).
+def _discard_unrecoverable_lego_account(settings: CertSettings) -> None:
+    """After a failed run, remove a lego account directory that is still unregistered (a failure is logged, not raised).
 
-    lego v5 saves `account.json` (`"registration": null`) and the key before it registers, and a later run only looks
-    the key up at the CA, never registers: it fails with `accountDoesNotExist` until the directory is gone. Registered
-    accounts, v4-shaped ones included, are left alone."""
+    lego v5 saves `account.json` (`"registration": null`) and the key before it registers. The next run recovers
+    such an account by looking its key up at the CA, and fails with `accountDoesNotExist` when the CA never got it;
+    only a fresh directory registers anew, so that costs one failed tick."""
     account_dir = LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
     try:
-        registered = _account_is_registered(account_dir / "account.json")
-        if registered is None or registered:
+        if not _account_needs_discard(account_dir / "account.json"):
             return
-        logger.info("cert: removing lego account %s: its registration never completed", account_dir)
+        logger.info("cert: removing lego account %s: it is not registered", account_dir)
         shutil.rmtree(account_dir)
     except OSError as e:
         logger.error("cert: could not remove unregistered lego account %s: %s", account_dir, e)
 
 
-def _account_is_registered(account_json: Path) -> bool | None:
-    """Whether lego's account file holds a registration; None when there is no file. A file lego cannot read
-    (lego writes it non-atomically, so a crash can truncate it) counts as unregistered."""
+def _account_needs_discard(account_json: Path) -> bool:
+    """Whether lego's account file shows an unregistered account; False when there is no file.
+
+    Mirrors lego v5.6.0 `AccountsStorage.getAccount` (cmd/internal/storage/storage_accounts.go): a missing
+    `registration` or an empty top-level `registration.status` marks the account NeedsRecovery, and a file that does
+    not decode into the account struct (lego writes it non-atomically, so a crash can truncate it) is an error. v4
+    nested the status under `registration.body`, which v5 reads as empty."""
     try:
         account = json.loads(account_json.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return None
-    except ValueError:
         return False
-    return isinstance(account, dict) and account.get("registration") is not None
+    except ValueError:
+        return True
+    registration = account.get("registration") if isinstance(account, dict) else None
+    status = registration.get("status") if isinstance(registration, dict) else None
+    return not (isinstance(status, str) and status)
 
 
 def _rate_limit_guard_clear(state: cert_state.CertState, settings: CertSettings, now: dt.datetime) -> bool:

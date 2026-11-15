@@ -193,12 +193,11 @@ DOCKER_DEPS = [
 
 
 @pytest.mark.parametrize(("manager", "image", "rel"), DOCKER_DEPS)
-def test_renovate_docker_updates_open_without_a_release_timestamp_and_wait_for_a_person(manager, image, rel):
+def test_renovate_docker_updates_open_without_a_release_timestamp(manager, image, rel):
     """Docker Hub is the only registry with release timestamps, so any other image needs `timestamp-optional` to be
     raised under the cooldown; the evaluator fails on any rule it cannot decide."""
     dep = {"manager": manager, "datasource": "docker", "dep_name": image, "package_name": image, "file": rel}
     assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional"
-    assert _final_setting("automerge", dep) is False
 
 
 @pytest.mark.parametrize("rel", PIN_SITES)

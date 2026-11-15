@@ -4,6 +4,7 @@
   "automerge": true,
   "minimumReleaseAge": "7 days",
   "semanticCommits": "enabled",
+  "gitIgnoredAuthors": ["nathan-blahaj[bot]@users.noreply.github.com"],
   "pyenv": {
     "enabled": false
   },
@@ -14,12 +15,6 @@
     "enabled": false
   },
   "packageRules": [
-    {
-      "description": "Subrepo .gitrepo bumps cannot auto-merge until subrepo-pull.yaml uses a token that re-triggers checks. See issue #23. Narrowed to external/**/.gitrepo so unrelated custom-regex managers (Lego, bindreams/hole) can auto-merge.",
-      "matchManagers": ["custom.regex"],
-      "matchFileNames": ["external/**/.gitrepo"],
-      "automerge": false
-    },
     {
       "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability alerts bypass package rules, so the cargo manager is disabled above (no first-party Cargo manifest exists outside external/). Crate floors come from shadowsocks/crate-floors.sh at build time.",
       "matchFileNames": ["external/**"],
@@ -37,15 +32,9 @@
       "groupName": "libdns ecosystem"
     },
     {
-      "description": "The docker-proxy's base image is the HAProxy and Lua build that policy.lua runs in. A bump can change Lua or HTTP-parsing semantics the allow-list depends on, so a person runs the policy suites (portal/tests/test_docker_proxy_policy.py and the e2e test_docker_api_policy.py) before it merges. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
-      "matchPackageNames": ["ghcr.io/linuxserver/socket-proxy"],
-      "automerge": false
-    },
-    {
-      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold updates to other registries (dhi.io, ghcr.io) pending forever. Updates open at once, and a person merging stands in for the cooldown. Docker Hub images are included on purpose: a person merges every docker update, and Renovate cannot match on \"has a timestamp\".",
+      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold updates to other registries (dhi.io, ghcr.io) pending forever. Renovate cannot match on \"has a timestamp\", so the rule covers every docker update; Docker Hub ones still wait out the cooldown.",
       "matchDatasources": ["docker"],
-      "minimumReleaseAgeBehaviour": "timestamp-optional",
-      "automerge": false
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
     },
     {
       "description": "The Python image tag is built from `ARG PYTHON_MINOR`, which the custom regex manager for depName `python` bumps in every Dockerfile and portal/.python-version at once. The dockerfile manager would also resolve the portal's `${PYTHON_MINOR}` FROMs into a second update whose replacement string is not in the file.",

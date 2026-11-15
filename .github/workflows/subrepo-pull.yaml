@@ -6,23 +6,31 @@ on:
       - "external/**/.gitrepo"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   subrepo-pull:
-    # Only run on Renovate PRs that touched .gitrepo files
-    if: startsWith(github.head_ref, 'renovate/')
+    # Renovate PRs that touched .gitrepo files; not the push this job makes itself.
+    if: startsWith(github.head_ref, 'renovate/') && github.actor != 'nathan-blahaj[bot]'
     runs-on: ubuntu-latest
     concurrency:
       group: subrepo-pull-${{ github.head_ref }}
       cancel-in-progress: true
     steps:
+      # A GITHUB_TOKEN push does not trigger workflows, so the PR's checks would never run on the pulled source and
+      # Renovate could not automerge it. The nathan-blahaj app's token does.
+      - name: Mint nathan-blahaj token
+        id: nathan
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.NATHAN_APP_ID }}
+          private-key: ${{ secrets.NATHAN_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          # Needs a token that can push back to the PR branch
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.nathan.outputs.token }}
 
       - name: Install git-subrepo
         run: |
@@ -30,11 +38,12 @@ jobs:
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
-      # git-subrepo commits; a runner has no identity.
+      # git-subrepo commits; a runner has no identity. Renovate's gitIgnoredAuthors lists this email, so it keeps
+      # rebasing and automerging the branch.
       - name: Set git committer identity
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "nathan-blahaj[bot]"
+          git config user.email "nathan-blahaj[bot]@users.noreply.github.com"
 
       - name: Detect changed subrepos and pull
         env:

@@ -173,9 +173,7 @@ def test_state_without_the_latest_attempt_directory_seeds_it_from_the_per_direct
         tmp_path,
         state="INSTALLED",
         acme_directory=STAGING,
-        last_issued_by_directory={
-            STAGING: "2026-11-01T00:00:00+00:00", PROD: "2026-11-02T00:00:00+00:00"
-        },
+        last_issued_by_directory={STAGING: "2026-11-01T00:00:00+00:00", PROD: "2026-11-02T00:00:00+00:00"},
     )
     assert cert_state.read_state(certdir=tmp_path).last_attempt_directory == PROD
 

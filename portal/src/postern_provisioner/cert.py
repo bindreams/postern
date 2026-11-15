@@ -447,7 +447,9 @@ def _reject_lego_output(
     if not key_matches:
         return _Rejection(f"the private key is not the key of {output.fullchain.name}", True, True)
     if not issued_by_chain:
-        return _Rejection(f"the issuer certificate {output.chain.name} did not issue {output.fullchain.name}", True, True)
+        return _Rejection(
+            f"the issuer certificate {output.chain.name} did not issue {output.fullchain.name}", True, True
+        )
     if not leaf.sans_match(expected):
         return _Rejection(f"its names {sorted(leaf.sans)} are not {sorted(expected)}", True, True)
     if at < leaf.not_before:

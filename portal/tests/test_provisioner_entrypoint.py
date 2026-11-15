@@ -153,7 +153,9 @@ def test_build_ticks_runs_the_cert_tick_on_the_settings_built_at_startup(entrypo
     seen: list = []
     monkeypatch.setattr(entrypoint.cert_state, "read_state", lambda: "state")
     monkeypatch.setattr(entrypoint.cert_driver, "LegoRunner", lambda: "lego")
-    monkeypatch.setattr(entrypoint.cert_driver, "advance_cert_state", lambda state, **k: seen.append(k["settings"]) or state)
+    monkeypatch.setattr(
+        entrypoint.cert_driver, "advance_cert_state", lambda state, **k: seen.append(k["settings"]) or state
+    )
     settings = object()
     counters = {"cert": 1}
     ticks = entrypoint._build_ticks("postern.test", "s", "strict", counters, _cert_en(cert_renewal=True), settings)

@@ -525,9 +525,7 @@ def test_an_attempt_records_the_directory_it_ran_under(prod_settings, lego_mock,
     assert _advance(_staging_issued(now), prod_settings, lego_mock, now).last_attempt_directory == PROD
 
 
-def test_a_discarded_account_keeps_the_guard_clear_but_records_the_directory_attempted(
-    prod_settings, lego_mock, now
-):
+def test_a_discarded_account_keeps_the_guard_clear_but_records_the_directory_attempted(prod_settings, lego_mock, now):
     _fail_lego(lego_mock)
     failed = _advance(_staging_issued(now), prod_settings, lego_mock, now)
     assert failed.last_issued_by_directory == _staging_issued(now).last_issued_by_directory
@@ -1011,9 +1009,8 @@ def test_lego_declining_a_certificate_that_is_due_is_rejected_and_places_no_orde
 def test_a_new_certificate_is_not_held_to_the_due_check(prod_settings, lego_mock, now, tmp_path, state_name):
     """Forced runs never get it, and an unforced run that wrote a new certificate placed an order for it."""
     _lego_writes(
-        lego_mock, lambda out: _replace_with_pki(
-            out, tmp_path / "due", leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5)
-        )
+        lego_mock, lambda out:
+        _replace_with_pki(out, tmp_path / "due", leaf_not_before=_days_from_now(-85), leaf_not_after=_days_from_now(5))
     )
     state = dataclasses.replace(
         _issuing(prod_settings, state_name), last_issued_by_directory={PROD: "2000-01-01T00:00:00+00:00"}
@@ -1042,8 +1039,11 @@ def test_a_certificate_is_due_when_it_has_less_than_the_threshold_left(
     leaf = cert_inspect.read_cert(stored.fullchain)
     at = leaf.not_after - dt.timedelta(days=prod_settings.cert_renewal_days_before_expiry) + at_offset
     rejection = cert_driver._reject_lego_output(
-        stored, {prod_settings.domain, f"*.{prod_settings.domain}"}, prod_settings, forced=False,
-        prior_serial=leaf.serial, at=at
+        stored, {prod_settings.domain, f"*.{prod_settings.domain}"},
+        prod_settings,
+        forced=False,
+        prior_serial=leaf.serial,
+        at=at
     )
     assert (rejection is not None) is problem
 
@@ -1394,10 +1394,14 @@ def _stored_lego_set(cert_dir: Path, domain: str, *, resource: str | None = None
     from tests.e2e._certs import generate_test_pki
     certs = _lego_certificates(cert_dir)
     generate_test_pki(cert_dir / "stored-pki", hostname=domain, **pki)
-    output = LegoOutput(fullchain=certs / f"{domain}.crt", privkey=certs / f"{domain}.key", chain=certs / f"{domain}.issuer.crt")
-    for target, name in ((output.fullchain, "fullchain.pem"), (output.privkey, "privkey.pem"), (output.chain, "chain.pem")):
+    output = LegoOutput(
+        fullchain=certs / f"{domain}.crt", privkey=certs / f"{domain}.key", chain=certs / f"{domain}.issuer.crt"
+    )
+    for target, name in ((output.fullchain, "fullchain.pem"), (output.privkey, "privkey.pem"),
+                         (output.chain, "chain.pem")):
         target.write_bytes((cert_dir / "stored-pki" / name).read_bytes())
-    (certs / f"{domain}.json").write_text(json.dumps({"id": domain, "domains": [domain]}) if resource is None else resource)
+    (certs /
+     f"{domain}.json").write_text(json.dumps({"id": domain, "domains": [domain]}) if resource is None else resource)
     return output
 
 

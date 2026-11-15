@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 CERT_DIR = Path("/etc/letsencrypt")
 LEGO_PATH = CERT_DIR / "lego"
 LIVE_DIR = CERT_DIR / "live"
-# RFC 8555 §6.7 problem type that lego prints when the CA does not know the account (acme/errors.go in lego v5.6.0).
+# RFC 8555 §6.7 problem type lego prints when the CA does not know the account.
 ACCOUNT_DOES_NOT_EXIST = "urn:ietf:params:acme:error:accountDoesNotExist"
 RATE_LIMIT_GUARD_SECONDS = 24 * 3600
 MAX_CONSECUTIVE_FAILURES = 6
@@ -85,8 +85,8 @@ class LegoRunner:
         lego v5 has no `renew`; `run` on an existing, not-yet-due certificate exits 0 and writes nothing. With `force`
         it passes `--renew-force`. Without, it passes Postern's own `--renew-days`: the caller found the live
         certificate due and knows that lego's own copy came from an attempt under this directory, so lego declines only
-        a certificate newer than the live one (one an earlier run issued before its tick crashed), and that one is
-        installed after `advance_cert_state` has validated it. `--force-cert-domains` keeps the SAN set
+        a certificate newer than the live one (one an earlier run issued before its tick crashed): `advance_cert_state`
+        tells that from a run that wrote nothing by the leaf's serial, and installs it once validated. `--force-cert-domains` keeps the SAN set
         exactly `--domains` (lego otherwise merges the old certificate's names in). ARI is off (`--ari-disable`) and
         so is the pre-renewal sleep (`--no-random-sleep`), so the due date is Postern's.
         """
@@ -133,7 +133,7 @@ class LegoRunner:
 
 def _run_lego(cmd: list[str], env: dict[str, str]) -> None:
     """Run lego, relaying its output to ours as it arrives. Raises CalledProcessError, carrying that output, on a
-    non-zero exit. lego logs to stdout (log/logger.go, cmd/logger.go in v5.6.0), errors included."""
+    non-zero exit. lego logs to stdout, errors included."""
     seen: list[str] = []
     with subprocess.Popen(
         cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace"
@@ -243,7 +243,8 @@ def advance_cert_state(
             if not _reset_lego_account_dir(" and ".join(changed)):
                 return state
 
-        # Record the attempt BEFORE Lego: defends rate limits even on post-issuance failures (rename, etc.).
+        # In memory before lego runs, persisted by the caller after it returns: a crash during a run loses the attempt, so
+        # a forced run can cost one more issuance.
         attempt_state = replace(
             state,
             last_attempt_iso=now.isoformat(),
@@ -252,9 +253,7 @@ def advance_cert_state(
             consecutive_failures=0 if under_new_directory else state.consecutive_failures,
             acme_account_email=settings.cert_acme_email,
         )
-        # RENEWING is due by Postern's own threshold, so it is forced only when nothing proves that lego's certificate is
-        # its own: the account or directory changed, or no attempt is on record under this directory (an adopted cert,
-        # a lost state.json); see `LegoRunner.issue_or_renew`.
+        # Forced unless an attempt on record under this directory shows lego's certificate is ours.
         force = (
             state.state == "ISSUING" or email_changed or under_new_directory
             or settings.cert_acme_directory not in state.last_issued_by_directory
@@ -479,7 +478,7 @@ def _discard_lego_certificate(domain: str) -> None:
     """Delete lego's stored certificate for `domain` (a failure is logged, not raised).
 
     `lego run` renews only while the resource file (`<domain>.json`) exists, and otherwise obtains a new certificate
-    whatever the renewal flags say (cmd/cmd_run.go in lego v5.6.0). Removing it first makes the next run a fresh
+    whatever the renewal flags say. Removing it makes the next run a fresh
     issuance even when it is not forced, so the files just rejected cannot be handed back again. The resource file goes
     first and a failure stops the cleanup: lego holding a resource file with no certificate beside it cannot run."""
     for suffix in (".json", ".crt", ".issuer.crt", ".key"):

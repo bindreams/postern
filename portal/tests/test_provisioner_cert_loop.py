@@ -1088,8 +1088,7 @@ def _issuing(settings: CertSettings, state: str = "ISSUING") -> cert_state.CertS
     return cert_state.CertState(state=state, acme_directory=settings.cert_acme_directory)
 
 
-# What lego v5.6.0 logs (stdout) when the CA does not know the account key: acme/errors.go's problem type, wrapped by
-# cmd/internal/root/process_register.go's "resolve account by key".
+# lego's stdout when the CA does not know the account key.
 ACCOUNT_DOES_NOT_EXIST = (
     'ERROR Error error="registration: resolve account by key: unable to communicate with the API server: '
     "acme: error: 400 :: urn:ietf:params:acme:error:accountDoesNotExist :: unable to find existing account for "

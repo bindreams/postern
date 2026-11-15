@@ -29,8 +29,8 @@ def account_dir(tmp_path: Path) -> Path:
 
 
 # Account ==============================================================================================================
-# A file that does not decode into lego's account struct is fatal to lego (it writes the file non-atomically, so a crash
-# can truncate it); a missing or null registration is not (the CA is asked).
+# A file that does not decode into the account struct is fatal to lego; a missing or null registration is not (the CA is
+# asked).
 @pytest.mark.parametrize(
     ("body", "unloadable"),
     [

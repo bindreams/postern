@@ -354,7 +354,7 @@ class _EveryKey(dict):
         return "dummy"
 
 
-# Emitted by lego_env but never read by lego, which detects the egress IP itself (issue #332).
+# Emitted by lego_env but never read by lego, which detects the egress IP itself.
 _IGNORED_BY_LEGO = {"NAMECHEAP_CLIENT_IP"}
 
 

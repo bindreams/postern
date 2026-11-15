@@ -34,9 +34,12 @@ the configured directory, pass `--renew-force`; any other RENEWING passes Poster
 declines only a certificate of its own that is newer than the live one, which an earlier run issued before its tick
 crashed.
 
-Whatever lego leaves is validated before ISSUED_PENDING_INSTALL (`postern_provisioner.cert._lego_output_problem`): key
-pair, exact SAN set, valid now, not already due. A rejected set is a failure, never installed, and lego's stored copy
-is deleted so the next run issues anew.
+Whatever lego issues is validated before ISSUED_PENDING_INSTALL (`postern_provisioner.cert._reject_lego_output`): key
+pair, issuer certificate, exact SAN set, valid when lego returns, and a lifetime longer than the renewal threshold. A
+rejected set is a failure, never installed, and lego's stored copy is deleted so the next run issues anew; an unforced
+run whose leaf serial is unchanged wrote nothing, and its certificate is installed only if it is not due. A failed run
+discards lego state lego cannot load, and then leaves the 24-hour guard clear. `last_attempt_directory` records the
+directory of the latest attempt whatever happened to its guard time.
 """
 
 from __future__ import annotations
@@ -75,7 +78,8 @@ class CertState:
     sans: list[str] = field(default_factory=list)
     # Legacy; read only by the migration in `read_state`.
     last_issued_iso: str | None = None
-    # ACME directory -> time of the last Lego attempt under it, set BEFORE calling Lego (defends rate limits).
+    # ACME directory -> time of the last Lego attempt under it, set in the tick's state before Lego runs and persisted
+    # after (a crash during a run loses it); the 24h guard reads it.
     last_issued_by_directory: dict[str, str] = field(default_factory=dict)
     # ACME directory of the most recent Lego attempt, recorded even when the attempt's guard time is not (a discarded
     # account clears it): failures and the FAILED hold-off are counted per directory by this, not by the guard times.

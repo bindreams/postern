@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1
 # The Docker API allow-list: a pinned HAProxy socket proxy running our policy as a Lua action.
-# The tag and the digest are bumped together; the digest is what is pinned (Renovate does not automerge this base:
-# a HAProxy or Lua change is checked by the policy suites first, see .github/renovate.json).
+# The tag and the digest are bumped together; the digest is what is pinned.
 FROM ghcr.io/linuxserver/socket-proxy:3.4.7-r0-ls105@sha256:823dda971e9a3951257eb251586a804199819fe1587c35faa43adc7b52a2ff16
 
 COPY haproxy.cfg policy.lua action.lua /etc/postern-proxy/

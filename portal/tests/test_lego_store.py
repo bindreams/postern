@@ -29,6 +29,19 @@ def account_dir(tmp_path: Path) -> Path:
 
 
 # Account ==============================================================================================================
+def test_an_account_key_of_an_unsupported_algorithm_is_unloadable(account_dir: Path, monkeypatch):
+    """`load_pem_private_key` raises UnsupportedAlgorithm for a key type or curve this build lacks."""
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    def unsupported(*args, **kwargs):
+        raise UnsupportedAlgorithm("no such key")
+
+    (account_dir / "account.json").write_text(json.dumps({"registration": {"status": "valid"}}))
+    (account_dir / f"{EMAIL}.key").write_bytes(_key_pem("ec"))
+    monkeypatch.setattr(lego_store.serialization, "load_pem_private_key", unsupported)
+    assert lego_store.account_unloadable(account_dir, EMAIL)
+
+
 # A file that does not decode into the account struct is fatal to lego; a missing or null registration is not (the CA is
 # asked).
 @pytest.mark.parametrize(

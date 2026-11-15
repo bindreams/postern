@@ -118,6 +118,20 @@ def test_issued_directly_by_raises_value_error_on_an_unparseable_issuer(tmp_path
         cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "chain.pem")
 
 
+def test_issued_directly_by_treats_an_unsupported_signature_algorithm_as_not_issued(tmp_path: Path, monkeypatch):
+    """The issuer certificate parses but its key or signature is of a kind this build cannot verify."""
+    from cryptography.exceptions import UnsupportedAlgorithm
+
+    class _Unverifiable:
+
+        def verify_directly_issued_by(self, issuer):
+            raise UnsupportedAlgorithm("no such signature algorithm")
+
+    generate_test_pki(tmp_path)
+    monkeypatch.setattr(cert_inspect.x509, "load_pem_x509_certificate", lambda pem: _Unverifiable())
+    assert not cert_inspect.issued_directly_by(tmp_path / "fullchain.pem", tmp_path / "chain.pem")
+
+
 def test_issued_directly_by_raises_os_error_on_a_missing_issuer(tmp_path: Path):
     generate_test_pki(tmp_path)
     with pytest.raises(OSError):

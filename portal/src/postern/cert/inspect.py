@@ -86,6 +86,6 @@ def issued_directly_by(cert_path: Path, issuer_path: Path) -> bool:
     issuer = x509.load_pem_x509_certificate(issuer_path.read_bytes())
     try:
         leaf.verify_directly_issued_by(issuer)
-    except (ValueError, TypeError, InvalidSignature):
+    except (ValueError, TypeError, InvalidSignature, UnsupportedAlgorithm):
         return False
     return True

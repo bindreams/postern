@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from cryptography import x509
+from cryptography.exceptions import UnsupportedAlgorithm
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 
@@ -126,7 +127,7 @@ def _decodes_into(value: Any, spec: _Spec) -> bool:
 def _is_private_key(pem: bytes) -> bool:
     try:
         key = serialization.load_pem_private_key(pem, password=None)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, UnsupportedAlgorithm):
         return False
     return isinstance(key, (rsa.RSAPrivateKey, ec.EllipticCurvePrivateKey, ed25519.Ed25519PrivateKey))
 

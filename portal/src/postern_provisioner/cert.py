@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import urlparse
@@ -86,9 +87,10 @@ class LegoRunner:
         it passes `--renew-force`. Without, it passes Postern's own `--renew-days`: the caller found the live
         certificate due and knows that lego's own copy came from an attempt under this directory, so lego declines only
         a certificate newer than the live one (one an earlier run issued before its tick crashed): `advance_cert_state`
-        tells that from a run that wrote nothing by the leaf's serial, and installs it once validated. `--force-cert-domains` keeps the SAN set
-        exactly `--domains` (lego otherwise merges the old certificate's names in). ARI is off (`--ari-disable`) and
-        so is the pre-renewal sleep (`--no-random-sleep`), so the due date is Postern's.
+        tells that from a run that wrote nothing by the leaf's serial, and installs it once validated.
+        `--force-cert-domains` keeps the SAN set exactly `--domains` (lego otherwise merges the old certificate's names
+        in). ARI is off (`--ari-disable`) and so is the pre-renewal sleep (`--no-random-sleep`), so the due date is
+        Postern's.
         """
         cfg = lego_env.lego_config(settings.dns_provider, self.env)
         run_env = dict(self.env)
@@ -148,6 +150,10 @@ def _run_lego(cmd: list[str], env: dict[str, str]) -> None:
 
 
 # State machine ========================================================================================================
+def _utc_now() -> dt.datetime:
+    return dt.datetime.now(tz=dt.timezone.utc)
+
+
 def advance_cert_state(
     state: cert_state.CertState,
     *,
@@ -155,15 +161,19 @@ def advance_cert_state(
     lego: LegoRunner,
     trigger_present: bool,
     now: dt.datetime | None = None,
+    clock: Callable[[], dt.datetime] = _utc_now,
     cert_dir: Path = CERT_DIR,
 ) -> cert_state.CertState:
     """One transition. Idempotent enough to retry on failure.
 
     Pure with respect to fs+subprocess: takes everything as parameters or
     via the injected `lego` runner. Easy to unit-test by patching `lego`.
+
+    The only source of time is `clock`: `now` (default: `clock()`) is when the tick began, and a run of lego reads
+    `clock()` once more when it returns, since the certificate it issued may be valid only from then.
     """
     if now is None:
-        now = dt.datetime.now(tz=dt.timezone.utc)
+        now = clock()
     expected = settings.expected_sans or expected_sans_for(settings.domain)
 
     # FAILED handling: after the hold-off, retry the prior state -------------------------------------------------------
@@ -243,8 +253,8 @@ def advance_cert_state(
             if not _reset_lego_account_dir(" and ".join(changed)):
                 return state
 
-        # In memory before lego runs, persisted by the caller after it returns: a crash during a run loses the attempt, so
-        # a forced run can cost one more issuance.
+        # In memory before lego runs, persisted by the caller after it returns: a crash during a run loses the attempt,
+        # so a forced run can cost one more issuance.
         attempt_state = replace(
             state,
             last_attempt_iso=now.isoformat(),
@@ -259,14 +269,15 @@ def advance_cert_state(
             or settings.cert_acme_directory not in state.last_issued_by_directory
         )
         prior_serial = _stored_serial(settings.domain)
+        unloadable_before = any(_unloadable_lego_state(settings))
         try:
             output = lego.issue_or_renew(settings=settings, force=force)
         except subprocess.CalledProcessError as e:
             logger.error("cert: lego failed: %s", e)
             failed_state = attempt_state
-            if _discard_unusable_lego_state(settings, e.output or ""):
-                # State lego could not load, or an account the CA never knew, placed no order: leave the 24h guard
-                # unarmed, so the next tick starts afresh at once.
+            if _discard_unusable_lego_state(settings, e.output or "", unloadable_before=unloadable_before):
+                # State lego could not load when the run began, or an account the CA never knew, placed no order: leave
+                # the 24h guard unarmed, so the next tick starts afresh at once.
                 failed_state = replace(attempt_state, last_issued_by_directory=state.last_issued_by_directory)
             return _failed_or_increment(failed_state, settings, now)
 
@@ -277,7 +288,7 @@ def advance_cert_state(
             settings,
             forced=force,
             prior_serial=prior_serial,
-            at=dt.datetime.now(tz=dt.timezone.utc),
+            at=clock(),
         )
         if rejection:
             logger.error("cert: lego's output is not installable: %s", rejection.problem)
@@ -378,23 +389,37 @@ def _issued_at(state: cert_state.CertState, directory: str) -> dt.datetime | Non
 
 
 def _account_host(directory: str) -> str:
-    """The `<host>` of lego's `<path>/accounts/<host>/<email>`: Go's `url.Host` (the authority without userinfo, port and
-    IPv6 brackets as written) with `:` replaced by `_`."""
+    """The `<host>` of lego's `<path>/accounts/<host>/<email>`: Go's `url.Host` (the authority without userinfo, port
+    and IPv6 brackets as written) with `:` replaced by `_`."""
     return urlparse(directory).netloc.rpartition("@")[2].replace(":", "_")
 
 
-def _discard_unusable_lego_state(settings: CertSettings, lego_output: str) -> bool:
+def _lego_account_dir(settings: CertSettings) -> Path:
+    return LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
+
+
+def _unloadable_lego_state(settings: CertSettings) -> tuple[bool, bool]:
+    """Whether lego cannot load its account and its stored certificate, in that order (`lego_store`)."""
+    return (
+        lego_store.account_unloadable(_lego_account_dir(settings), settings.cert_acme_email),
+        lego_store.certificate_unloadable(LEGO_PATH / "certificates", settings.domain),
+    )
+
+
+def _discard_unusable_lego_state(settings: CertSettings, lego_output: str, *, unloadable_before: bool) -> bool:
     """After a failed run, remove the lego account directory and the stored certificate that no later run can use (a
-    removal failure is logged, not raised). True when either was one, removed or not.
+    removal failure is logged, not raised). True when the run cannot have placed an order, so the 24h guard stays
+    clear: the CA answered `accountDoesNotExist`, or lego could not load its state when the run began
+    (`unloadable_before`). State a run broke itself (its non-atomic save, after the CA issued) is removed all the same,
+    but the guard stays armed.
 
     An account is unusable when the CA answered `accountDoesNotExist` (lego v5 looks an account up by its key and does
     not register anew; only a fresh directory registers) or when lego cannot load it; a certificate, when lego cannot
-    load it (`lego_store`). Any other failure keeps both: lego may still recover them."""
-    account_dir = LEGO_PATH / "accounts" / _account_host(settings.cert_acme_directory) / settings.cert_acme_email
-    unusable_account = (
-        ACCOUNT_DOES_NOT_EXIST in lego_output or lego_store.account_unloadable(account_dir, settings.cert_acme_email)
-    )
-    if unusable_account:
+    load it. Any other failure keeps both: lego may still recover them."""
+    account_dir = _lego_account_dir(settings)
+    unknown_account = ACCOUNT_DOES_NOT_EXIST in lego_output
+    account_unloadable, certificate_unloadable = _unloadable_lego_state(settings)
+    if unknown_account or account_unloadable:
         try:
             logger.info("cert: removing lego account %s: no run can use it", account_dir)
             shutil.rmtree(account_dir)
@@ -402,11 +427,10 @@ def _discard_unusable_lego_state(settings: CertSettings, lego_output: str) -> bo
             pass
         except OSError as e:
             logger.error("cert: could not remove lego account %s: %s", account_dir, e)
-    unusable_certificate = lego_store.certificate_unloadable(LEGO_PATH / "certificates", settings.domain)
-    if unusable_certificate:
+    if certificate_unloadable:
         logger.info("cert: removing lego's stored certificate for %s: no run can use it", settings.domain)
         _discard_lego_certificate(settings.domain)
-    return unusable_account or unusable_certificate
+    return unknown_account or unloadable_before
 
 
 @dataclass(frozen=True)
@@ -440,38 +464,46 @@ def _reject_lego_output(
     an earlier run's certificate looks like after its tick crashed."""
     try:
         leaf = cert_inspect.read_cert(output.fullchain)
+    except (OSError, ValueError) as e:
+        # Whether lego wrote it is unknown: assume it did, which arms the guard.
+        return _Rejection(f"cannot read the certificate: {e}", True, True)
+    # An unforced run that left the serial alone wrote nothing: the CA was not asked, whatever else is wrong.
+    order_placed = forced or leaf.serial != prior_serial
+    try:
         key_matches = cert_inspect.key_matches_cert(output.fullchain, output.privkey)
         issued_by_chain = cert_inspect.issued_directly_by(output.fullchain, output.chain)
     except (OSError, ValueError) as e:
-        return _Rejection(f"cannot read the certificate, key and issuer certificate: {e}", True, True)
+        return _Rejection(f"cannot read the key and issuer certificate: {e}", True, order_placed)
     if not key_matches:
-        return _Rejection(f"the private key is not the key of {output.fullchain.name}", True, True)
+        return _Rejection(f"the private key is not the key of {output.fullchain.name}", True, order_placed)
     if not issued_by_chain:
         return _Rejection(
-            f"the issuer certificate {output.chain.name} did not issue {output.fullchain.name}", True, True
+            f"the issuer certificate {output.chain.name} did not issue {output.fullchain.name}", True, order_placed
         )
     if not leaf.sans_match(expected):
-        return _Rejection(f"its names {sorted(leaf.sans)} are not {sorted(expected)}", True, True)
+        return _Rejection(f"its names {sorted(leaf.sans)} are not {sorted(expected)}", True, order_placed)
     if at < leaf.not_before:
-        return _Rejection(f"it is not valid until {leaf.not_before.isoformat()}", True, True)
+        return _Rejection(f"it is not valid until {leaf.not_before.isoformat()}", True, order_placed)
     if at > leaf.not_after:
-        return _Rejection(f"it expired at {leaf.not_after.isoformat()}", True, True)
+        return _Rejection(f"it expired at {leaf.not_after.isoformat()}", True, order_placed)
     threshold = settings.cert_renewal_days_before_expiry
+    days_left = leaf.days_until_expiry(now=at)
+    if not order_placed and days_left < threshold:
+        return _Rejection(
+            f"it is the certificate lego already held, with {days_left:.1f} days left, which is due: "
+            "lego declined to renew",
+            True,
+            order_placed,
+        )
     lifetime_days = (leaf.not_after - leaf.not_before).total_seconds() / 86400.0
     if lifetime_days <= threshold:
-        # Discarding a valid certificate would only be followed by another that is due at once.
-        return _Rejection(
-            f"CERT_RENEWAL_DAYS_BEFORE_EXPIRY={threshold} is not shorter than the certificate's {lifetime_days:.1f}-day "
-            "lifetime, so every certificate is due as soon as it is issued; lower it",
-            False,
-            True,
-        )
-    if not forced and leaf.serial == prior_serial and leaf.days_until_expiry(now=at) < threshold:
-        days_left = leaf.days_until_expiry(now=at)
-        return _Rejection(
-            f"it is the certificate lego already held, with {days_left:.1f} days left, which is due: lego declined to renew",
-            True,
-            False,
+        # Rejecting a valid certificate would leave the live one to expire; every certificate is due as soon as it is
+        # issued, so the operator has to lower the threshold.
+        logger.error(
+            "cert: CERT_RENEWAL_DAYS_BEFORE_EXPIRY=%d is not shorter than the certificate's %.1f-day lifetime, so "
+            "every certificate is due as soon as it is issued and is renewed whenever the 24h guard allows; lower it",
+            threshold,
+            lifetime_days,
         )
     return None
 

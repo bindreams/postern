@@ -39,10 +39,10 @@
       "automerge": false
     },
     {
-      "description": "dhi.io serves no release timestamps (the docker datasource reads them only from Docker Hub), so under the global `minimumReleaseAge` the default `timestamp-required` holds every dhi.io update pending forever. The cooldown protects nothing here: every dhi.io ref is a floating tag without a digest, so CI and `docker build --pull` already take whatever DHI pushed under the tag, unaged. `timestamp-optional` lets the update PR open (and, where the global `automerge` applies, merge on green CI). See issue #330.",
+      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold every update to an image from another registry (dhi.io, ghcr.io/astral-sh/uv) pending forever. `timestamp-optional` opens the PR at once instead, with no cooldown, and `automerge: false` leaves the merge to a person, who is the cooldown here. See issue #330.",
       "matchDatasources": ["docker"],
-      "matchPackageNames": ["dhi.io/**"],
-      "minimumReleaseAgeBehaviour": "timestamp-optional"
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "automerge": false
     },
     {
       "description": "The Python image tag is built from `ARG PYTHON_MINOR`, which the custom regex manager for depName `python` bumps in every Dockerfile and portal/.python-version at once. The dockerfile manager would also resolve the portal's `${PYTHON_MINOR}` FROMs into a second update whose replacement string is not in the file.",
@@ -51,7 +51,7 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on the alpine-base tag the mta and provisioner Dockerfiles use.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "automerge": false

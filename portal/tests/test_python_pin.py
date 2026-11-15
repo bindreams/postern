@@ -106,10 +106,9 @@ def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls()
 
 # Renovate packageRules ------------------------------------------------------------------------------------------------
 # Rules are evaluated in order and a later match wins. The evaluator decides a rule only through
-# matchers it models exactly: exact-name entries of the keys below, and `<literal>/**` (every name
-# under a prefix) for matchPackageNames. A rule that sets the checked key through anything else
-# (another glob, `/regex/`, `!negation`, another match* key) fails the test instead of being
-# guessed at.
+# matchers it models exactly: exact entries of the keys below. A rule that sets the checked key
+# through anything else (a glob, `/regex/`, `!negation`, another match* key) fails the test
+# instead of being guessed at.
 MODELLED_MATCHERS = {
     "matchManagers": "manager",
     "matchDatasources": "datasource",
@@ -125,8 +124,6 @@ def _entry_matches(key: str, entry: str, dep: dict[str, str]) -> bool | None:
     value = dep[MODELLED_MATCHERS[key]]
     if not re.search(PATTERN_CHARS, entry) and not (entry.startswith("/") and entry.endswith("/")):
         return entry == value
-    if key == "matchPackageNames" and entry.endswith("/**") and not re.search(PATTERN_CHARS, entry[:-3]):
-        return value.startswith(entry[:-2])
     # A file glob can only match a path that starts with its literal prefix.
     prefix = re.split(PATTERN_CHARS, entry)[0]
     if key == "matchFileNames" and prefix and not value.startswith(prefix):
@@ -189,34 +186,65 @@ def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
     assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
 
 
-# dhi.io images --------------------------------------------------------------------------------------------------------
-DHI_IO_SOURCES = (
-    "mta/Dockerfile", "nginx/Dockerfile", "portal/Dockerfile", "provisioner/Dockerfile", "shadowsocks/Dockerfile"
-)
+# Docker images --------------------------------------------------------------------------------------------------------
+# Renovate scans the Dockerfiles and compose files at the repo root and one directory down; it
+# ignores `**/tests/**` and `external/`.
+IMAGE_SOURCES = ("*/Dockerfile", "compose*.yaml")
+# A local build tag, not a registry image.
+LOCAL_IMAGE = "local/"
 
 
-def _dhi_io_packages() -> list[str]:
-    """Every `dhi.io/<name>` the production Dockerfiles pull (Renovate ignores `**/tests/**`)."""
-    names = {name for rel in DHI_IO_SOURCES for name in re.findall(r"\bdhi\.io/([\w.-]+)", _text(rel))}
-    assert {"nginx", "python"} <= names, names
-    return sorted(names)
+def _image_name(ref: str) -> str:
+    """The registry image of a ref, tag and digest dropped."""
+    return re.split(r"[:@]", ref)[0]
 
 
-@pytest.mark.parametrize("name", _dhi_io_packages())
-def test_renovate_raises_dhi_io_updates_without_a_release_timestamp(name):
-    """dhi.io serves no release timestamps, so the global 7-day cooldown would hold every one of them pending forever."""
-    for manager in ("dockerfile", "docker-compose"):
-        dep = {
-            "manager": manager, "datasource": "docker", "dep_name": f"dhi.io/{name}", "package_name": f"dhi.io/{name}",
-            "file": "x"
-        }
-        assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional", manager
+def _dockerfile_images(text: str) -> set[str]:
+    """Images a Dockerfile pulls: `FROM` and `COPY --from=` refs that are not one of its own stages."""
+    stages = set(re.findall(r"^FROM\s.*?\sAS\s+(\S+)\s*$", text, re.MULTILINE))
+    refs = re.findall(r"^FROM\s+(?:--\S+\s+)*(\S+)", text, re.MULTILINE)
+    refs += re.findall(r"^COPY\s+(?:--\S+\s+)*?--from=(\S+)", text, re.MULTILINE)
+    return {_image_name(ref) for ref in refs if ref not in stages}
 
 
-def test_renovate_keeps_the_release_age_cooldown_for_other_registries():
+def _docker_images() -> dict[str, str]:
+    """Image name -> a production file that pulls it."""
+    images: dict[str, str] = {}
+    for pattern in IMAGE_SOURCES:
+        for path in sorted(REPO_ROOT.glob(pattern)):
+            text = path.read_text()
+            names = (
+                _dockerfile_images(text) if path.suffix != ".yaml" else
+                {_image_name(ref)
+                 for ref in re.findall(r"^\s*image:\s*(\S+)", text, re.MULTILINE)}
+            )
+            for name in names:
+                if not name.startswith(LOCAL_IMAGE):
+                    images.setdefault(name, path.relative_to(REPO_ROOT).as_posix())
+    assert {
+        "dhi.io/alpine-base", "dhi.io/nginx", "dhi.io/python", "ghcr.io/astral-sh/uv",
+        "ghcr.io/linuxserver/socket-proxy"
+    } <= set(images), images
+    return images
+
+
+@pytest.mark.parametrize("image", _docker_images())
+def test_renovate_docker_updates_open_without_a_release_timestamp_and_wait_for_a_person(image):
+    """The docker datasource has release timestamps only for Docker Hub, so under the global 7-day cooldown every
+    other registry (dhi.io, ghcr.io) would hold its updates pending forever; the update opens at once instead."""
     dep = {
-        "manager": "dockerfile", "datasource": "docker", "dep_name": "ghcr.io/linuxserver/socket-proxy",
-        "package_name": "ghcr.io/linuxserver/socket-proxy", "file": "compose.yaml"
+        "manager": "dockerfile", "datasource": "docker", "dep_name": image, "package_name": image,
+        "file": _docker_images()[image]
+    }
+    assert _final_setting("minimumReleaseAgeBehaviour", dep) == "timestamp-optional"
+    assert _final_setting("automerge", dep) is False
+
+
+def test_renovate_keeps_the_release_age_cooldown_for_other_datasources():
+    """GitHub tags carry timestamps, so the cooldown applies to them as written."""
+    dep = {
+        "manager": "custom.regex", "datasource": "github-tags", "dep_name": "bindreams/hole-ex-ray",
+        "package_name": "bindreams/hole", "file": "shadowsocks/Dockerfile"
     }
     assert _final_setting("minimumReleaseAgeBehaviour", dep) is None
     assert _renovate()["minimumReleaseAge"] == "7 days"

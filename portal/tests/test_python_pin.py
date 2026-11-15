@@ -8,7 +8,6 @@ py3-* packages; the portal derives its `dhi.io/python` tag from it.
 import json
 import re
 import shlex
-from fnmatch import fnmatch
 from pathlib import Path
 
 import pytest
@@ -46,7 +45,7 @@ def _python_froms() -> list[tuple[str, str]]:
 
 def test_portal_python_image_tag_comes_from_the_arg():
     froms = _python_froms()
-    assert len(froms) == 2, froms  # build and runtime stage
+    assert len(froms) == 2, froms
     assert all(image.startswith("dhi.io/python:${PYTHON_MINOR}-") for image, _ in froms), froms
 
 
@@ -57,7 +56,7 @@ def _renovate() -> dict:
 def _regex_managers_matching(rel: str) -> list[dict]:
     """Custom regex managers that track the `python` dependency and whose file patterns select `rel`.
 
-    Renovate wraps a file pattern in `/.../`. Other managers also select the Dockerfiles (Lego, for one).
+    Renovate wraps a file pattern in `/.../`.
     """
     return [
         m for m in _renovate()["customManagers"] if m["customType"] == "regex" and m.get("depNameTemplate") == "python"
@@ -66,8 +65,8 @@ def _regex_managers_matching(rel: str) -> list[dict]:
 
 
 def _js_regex(pattern: str) -> re.Pattern[str]:
-    """A Renovate (JS) regex as a Python one: named groups `(?<n>` become `(?P<n>`; lookbehinds `(?<=`/`(?<!` stay."""
-    return re.compile(re.sub(r"\(\?<(?=[A-Za-z_])", "(?P<", pattern))
+    """A Renovate (JS, flags `gm`) regex as a Python one: named groups `(?<n>` become `(?P<n>`; lookbehinds stay."""
+    return re.compile(re.sub(r"\(\?<(?=[A-Za-z_])", "(?P<", pattern), re.MULTILINE)
 
 
 def _manager_for(rel: str) -> dict:
@@ -90,14 +89,6 @@ def test_renovate_manager_reads_the_pin_site(rel):
     assert found == [_pin(rel)], found
 
 
-def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
-    """It would resolve the portal's `${PYTHON_MINOR}` tag into a second, unreplaceable update."""
-    assert any(
-        rule.get("matchManagers") == ["dockerfile"] and rule.get("matchPackageNames") == ["dhi.io/python"]
-        and rule.get("enabled") is False for rule in _renovate()["packageRules"]
-    )
-
-
 def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls():
     """The bare `3.16` tag (Debian) can appear before `3.16-alpine3.23-dev`; the build stage's tag is the one offered."""
     (build_tag, ) = [image for image, stage in _python_froms() if stage == "build"]
@@ -113,27 +104,92 @@ def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls()
         assert tag_to_version(tag) is None, tag
 
 
-def _final_automerge(rel: str) -> bool:
-    """`automerge` for the python dependency at `rel` after every packageRule, in order: a later match wins."""
-    dep = {
-        "matchManagers": "custom.regex",
-        "matchDepNames": "python",
-        "matchPackageNames": "dhi.io/python",
-    }
+# Renovate packageRules ------------------------------------------------------------------------------------------------
+# Rules are evaluated in order and a later match wins. The evaluator decides a rule only through
+# matchers it models exactly: exact-name entries of the keys below. A rule that sets the checked
+# key through anything else (glob, `/regex/`, `!negation`, another match* key) fails the test
+# instead of being guessed at.
+MODELLED_MATCHERS = {
+    "matchManagers": "manager",
+    "matchDepNames": "dep_name",
+    "matchPackageNames": "package_name",
+    "matchFileNames": "file",
+}
+PATTERN_CHARS = r"[*?\[\]{}()!|\\]"
+
+
+def _entry_matches(key: str, entry: str, dep: dict[str, str]) -> bool | None:
+    """Whether one matcher entry matches `dep`; None when it is a pattern the evaluator cannot decide."""
+    value = dep[MODELLED_MATCHERS[key]]
+    if not re.search(PATTERN_CHARS, entry) and not (entry.startswith("/") and entry.endswith("/")):
+        return entry == value
+    # A file glob can only match a path that starts with its literal prefix.
+    prefix = re.split(PATTERN_CHARS, entry)[0]
+    if key == "matchFileNames" and prefix and not value.startswith(prefix):
+        return False
+    return None
+
+
+def _rule_matches(rule: dict, dep: dict[str, str]) -> bool | None:
+    """True/False when decided; None when an undecidable matcher could still change the answer.
+
+    Matchers are ANDed, so one that definitely fails decides the rule whatever the others are.
+    """
+    verdicts = []
+    for key, entries in rule.items():
+        if not key.startswith("match"):
+            continue
+        if key not in MODELLED_MATCHERS:
+            verdicts.append(None)
+            continue
+        results = [_entry_matches(key, entry, dep) for entry in entries]
+        verdicts.append(True if True in results else None if None in results else False)
+    if False in verdicts:
+        return False
+    return None if None in verdicts else True
+
+
+def _final_setting(key: str, dep: dict[str, str]):
+    """`key` for `dep` after every packageRule, in order; fails on a rule that sets it and cannot be decided."""
     config = _renovate()
-    automerge = config["automerge"]
+    value = config.get(key)
     for rule in config["packageRules"]:
-        matched = all(dep[key] in rule[key] for key in dep if key in rule)
-        if "matchFileNames" in rule:
-            matched = matched and any(fnmatch(rel, glob) for glob in rule["matchFileNames"])
-        if matched and "automerge" in rule:
-            automerge = rule["automerge"]
-    return automerge
+        if key not in rule:
+            continue
+        verdict = _rule_matches(rule, dep)
+        if verdict is None:
+            pytest.fail(
+                f"cannot prove whether the packageRule {rule.get('description', rule)[:60]!r} sets {key} for {dep}; "
+                "check by hand or extend the evaluator"
+            )
+        if verdict:
+            value = rule[key]
+    return value
 
 
-def test_renovate_python_bump_is_not_automerged():
+def _python_dep(manager: str, rel: str) -> dict[str, str]:
+    return {"manager": manager, "dep_name": "python", "package_name": "dhi.io/python", "file": rel}
+
+
+@pytest.mark.parametrize("rel", PIN_SITES)
+def test_renovate_python_bump_is_not_automerged(rel):
     """The lockfile and the apk set trail a new minor, so a person looks at every bump."""
-    assert [_final_automerge(rel) for rel in PIN_SITES] == [False] * len(PIN_SITES)
+    assert _final_setting("automerge", _python_dep("custom.regex", rel)) is False
+
+
+@pytest.mark.parametrize("rel", PIN_SITES)
+def test_renovate_python_bump_is_raised_without_a_release_timestamp(rel):
+    """The docker datasource has timestamps only for Docker Hub, so a dhi.io tag has none and would stay pending."""
+    assert _final_setting("minimumReleaseAgeBehaviour", _python_dep("custom.regex", rel)) == "timestamp-optional"
+
+
+def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
+    """It would resolve the portal's `${PYTHON_MINOR}` tag into a second, unreplaceable update."""
+    dep = {
+        "manager": "dockerfile", "dep_name": "dhi.io/python", "package_name": "dhi.io/python",
+        "file": "portal/Dockerfile"
+    }
+    assert _final_setting("enabled", dep) is False
 
 
 def test_renovate_pyenv_manager_is_off():
@@ -159,9 +215,20 @@ def test_apk_python_is_pinned_to_the_minor(rel):
     assert set(tokens) == {"python3~${PYTHON_MINOR}"}, tokens
 
 
+# Alpine releases and licence versions look like a Python minor but are not one.
+NOT_A_PYTHON_MINOR = re.compile(r"(?i)\b(?:alpine-base:|alpine|AGPL-)\s?\d+\.\d+")
+HARDCODED_MINOR = (r"python3\.\d+", r"py3\.\d+-", r"cp3\d+", r"\b3\.\d+\b")
+
+
 @pytest.mark.parametrize("rel", (*PIN_DOCKERFILES, "mta/entrypoint.py", "provisioner/entrypoint.py"))
-def test_no_hardcoded_python_minor_path(rel):
-    assert not re.search(r"python3\.\d+", _text(rel)), f"{rel} hardcodes a Python minor; use ${{PYTHON_MINOR}}"
+def test_no_hardcoded_python_minor(rel):
+    hits = []
+    for number, line in enumerate(_text(rel).splitlines(), 1):
+        if line.startswith("ARG PYTHON_MINOR="):
+            continue
+        line = NOT_A_PYTHON_MINOR.sub("", line)
+        hits += [f"{rel}:{number}: {line.strip()}" for pattern in HARDCODED_MINOR if re.search(pattern, line)]
+    assert not hits, "hardcodes a Python minor; use ${PYTHON_MINOR}:\n" + "\n".join(hits)
 
 
 def _code_lines(rel: str) -> list[str]:

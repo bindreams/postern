@@ -54,13 +54,13 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that the mta and provisioner images build on the new minor: they take Python libraries from Alpine, which can lag a release. Never close a Python PR by hand: Renovate then ignores that version for good. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that the mta and provisioner images build on the new minor: they take Python libraries from Alpine. Never close a Python PR by hand: Renovate then ignores that version for good. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "automerge": false
     },
     {
-      "description": "Python held at 3.14 (owner, 2026-11-15) until Alpine ships the py3.15 libraries the mta and provisioner install; issue #336 has the check. Delete this rule to lift the hold.",
+      "description": "Python held below 3.15 until Alpine ships py3.15 builds of the libraries the mta and provisioner images install (see #336). Delete this rule to lift the hold.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "allowedVersions": "<3.15"

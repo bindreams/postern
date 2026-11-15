@@ -45,10 +45,11 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic: portal/uv.lock needs a refresh (`uv lock -P` on the native packages; a stale lock fails `uv sync --frozen` with no wheels for the new minor), and the Alpine `py3-dnspython`/`py3-cryptography` the mta/provisioner install (the `py3.<minor>-*` packages built for the new minor) may lag (none existed for 3.15 at 3.15.2). Check with `apk list -a py3.<minor>-dnspython py3.<minor>-cryptography` on `dhi.io/alpine-base:3.23-dev`. Hosted Renovate cannot refresh the lock in the same PR, so a person does it.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`. `timestamp-optional` because the docker datasource reads release timestamps only from Docker Hub, so every dhi.io tag has none and the default `timestamp-required` would hold the bump pending forever; safe here because the bump is never automerged.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
-      "automerge": false
+      "automerge": false,
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
     },
     {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
@@ -56,7 +57,7 @@
       "automerge": false
     },
     {
-      "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. It is a packageRule on the logical depName because both tracks share one `bindreams/hole` packageName; a custom manager's own `extractVersionTemplate` is also supported (see the python manager below).",
+      "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. It is a packageRule on the logical depName because both tracks share one `bindreams/hole` packageName.",
       "matchDepNames": ["bindreams/hole-ex-ray"],
       "extractVersion": "^releases/ex-ray/(?<version>v\\d+\\.\\d+\\.\\d+(?:-[\\w.]+)?)$"
     },
@@ -120,7 +121,7 @@
       "versioningTemplate": "loose"
     },
     {
-      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). extractVersionTemplate offers only minors already published as the `-alpine3.23-dev` tag the portal's build stage pulls, not the bare Debian-default tag that can appear first. Assumes DHI publishes the `-alpine3.23` runtime tag alongside every `-alpine3.23-dev` one; one regex cannot check both, and a minor with only the `-dev` tag opens a PR whose runtime FROM fails to pull, which a person sees because the bump is never automerged. portal/tests/test_python_pin.py pins that every site is covered and agrees.",
+      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). The e2e udp-echo image in portal/tests/e2e/e2e.compose.yaml is a helper, deliberately not on this pin. extractVersionTemplate offers only minors already published as the `-alpine3.23-dev` tag the portal's build stage pulls, not the bare Debian-default tag that can appear first. Assumes DHI publishes the `-alpine3.23` runtime tag alongside every `-alpine3.23-dev` one; one regex cannot check both, and a minor with only the `-dev` tag opens a PR whose runtime FROM fails to pull, which a person sees because the bump is never automerged.",
       "customType": "regex",
       "managerFilePatterns": [
         "/^(portal|mta|provisioner)/Dockerfile$/",

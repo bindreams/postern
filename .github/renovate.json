@@ -4,6 +4,9 @@
   "automerge": true,
   "minimumReleaseAge": "7 days",
   "semanticCommits": "enabled",
+  "pyenv": {
+    "enabled": false
+  },
   "registryAliases": {
     "dhi.io": "dhi.io"
   },
@@ -36,12 +39,25 @@
       "automerge": false
     },
     {
+      "description": "The Python image tag is built from `ARG PYTHON_MINOR`, which the custom regex manager for depName `python` bumps in every Dockerfile and portal/.python-version at once. The dockerfile manager would also resolve the portal's `${PYTHON_MINOR}` FROMs into a second update whose replacement string is not in the file.",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["dhi.io/python"],
+      "enabled": false
+    },
+    {
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on `dhi.io/alpine-base:3.23-dev`. `timestamp-optional` because the docker datasource reads release timestamps only from Docker Hub, so every dhi.io tag has none and the default `timestamp-required` would hold the bump pending forever; safe here because the bump is never automerged.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["python"],
+      "automerge": false,
+      "minimumReleaseAgeBehaviour": "timestamp-optional"
+    },
+    {
       "description": "ex-ray and galoshes are pre-1.0, wire-facing, and their users supply their own client binary -- so a bump can be a flag day, not a routine dependency move. galoshes v0.4.0 was one (see CLAUDE.md's 'Two plugin binaries' invariant). A pin bump can never trip the version floors in portal/tests/test_plugin_pins.py, which only reject a DOWNGRADE, and the e2e job builds client and server from the same pin so it never stands up a skewed pair. Nothing here is automatic; a human has to read the release notes and decide whether the client instructions in docs/connecting.md need to change.",
       "matchDepNames": ["bindreams/hole-ex-ray", "bindreams/hole-galoshes"],
       "automerge": false
     },
     {
-      "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. Renovate disallows extractVersion on custom managers, so it lives here.",
+      "description": "Filter bindreams/hole tags to the ex-ray track only and strip the per-track prefix. It is a packageRule on the logical depName because both tracks share one `bindreams/hole` packageName.",
       "matchDepNames": ["bindreams/hole-ex-ray"],
       "extractVersion": "^releases/ex-ray/(?<version>v\\d+\\.\\d+\\.\\d+(?:-[\\w.]+)?)$"
     },
@@ -103,6 +119,22 @@
       "depNameTemplate": "bindreams/hole-galoshes",
       "packageNameTemplate": "bindreams/hole",
       "versioningTemplate": "loose"
+    },
+    {
+      "description": "The Python minor, kept in one value everywhere: `ARG PYTHON_MINOR=<minor>` in the portal, mta and provisioner Dockerfiles, and portal/.python-version. One manager reads every site, so one Renovate PR bumps them all (the pyenv manager, which would bump .python-version alone, is disabled above). The e2e udp-echo image in portal/tests/e2e/e2e.compose.yaml is a helper, deliberately not on this pin. extractVersionTemplate offers only minors already published as the `-alpine3.23-dev` tag the portal's build stage pulls, not the bare Debian-default tag that can appear first. Assumes DHI publishes the `-alpine3.23` runtime tag alongside every `-alpine3.23-dev` one; one regex cannot check both, and a minor with only the `-dev` tag opens a PR whose runtime FROM fails to pull, which a person sees because the bump is never automerged.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^(portal|mta|provisioner)/Dockerfile$/",
+        "/^portal/\\.python-version$/"
+      ],
+      "matchStrings": [
+        "ARG PYTHON_MINOR=(?<currentValue>\\d+\\.\\d+)\\s",
+        "^(?<currentValue>\\d+\\.\\d+)\\s*$"
+      ],
+      "datasourceTemplate": "docker",
+      "depNameTemplate": "python",
+      "packageNameTemplate": "dhi.io/python",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+)-alpine3\\.23-dev$"
     }
   ],
   "hostRules": [

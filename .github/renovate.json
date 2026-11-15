@@ -18,7 +18,7 @@
       "automerge": false
     },
     {
-      "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability alerts are a second path into the tree, and a package rule alone is not a guard there: a manager-level `cargo.enabled: false` (https://docs.renovatebot.com/modules/manager/#disabling-managers) keeps them out for the Cargo crates in external/shadowsocks-rust, because no first-party Cargo manifest exists outside external/, so no crate is extracted and no alert has a dependency to edit. A bump the tree needs comes with the next subrepo pull, and shadowsocks/crate-floors.sh raises crates below their advisory floors at build time. See issues #82 and #326.",
+      "description": "external/** is a vendored git-subrepo. Disable all package updates inside this tree so Renovate doesn't edit inner files -- such edits would conflict with the next `git subrepo pull` from upstream and require manual resolution. Routine bumps must come via the .gitrepo customManager (re-enabled by the next rule). Vulnerability alerts bypass package rules, so the cargo manager is disabled above (no first-party Cargo manifest exists outside external/). Crate floors come from shadowsocks/crate-floors.sh at build time.",
       "matchFileNames": ["external/**"],
       "enabled": false
     },

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Download stages verify TLS against this bundle; the base image's trusts the
-# compromised eMudhra chain (#254).
+# compromised eMudhra chain.
 FROM dhi.io/alpine-base:3.23-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 
@@ -69,8 +69,7 @@ RUN wget -q -O /LICENSE.md \
 FROM dhi.io/rust:1-debian13-dev AS build-shadowsocks
 WORKDIR /src
 COPY external/shadowsocks-rust/ .
-# Raise crates below their RustSec floors in upstream's Cargo.lock, and fail the build if one stays
-# below (crate-floors.sh). The e2e sslocal build runs the same script.
+# Raise crates below their RustSec floors in upstream's Cargo.lock; see crate-floors.sh.
 COPY --chmod=755 shadowsocks/crate-floors.sh /usr/local/bin/crate-floors.sh
 RUN crate-floors.sh
 RUN cargo build --release --bin ssserver

@@ -26,10 +26,12 @@ use pin_project::pin_project;
 use shadowsocks::relay::Address;
 use tokio::sync::Mutex;
 
-use crate::local::{context::ServiceContext, loadbalancing::PingBalancer, net::AutoProxyClientStream};
+use crate::{
+    local::{context::ServiceContext, loadbalancing::PingBalancer, net::AutoProxyClientStream},
+    net::http_stream::ProxyHttpStream,
+};
 
 use super::{
-    http_stream::ProxyHttpStream,
     tokio_rt::{TokioExecutor, TokioIo},
     utils::{check_keep_alive, connect_host, host_addr},
 };
@@ -249,6 +251,9 @@ where
                 if c.is_closed() {
                     continue;
                 }
+                if !c.is_ready() {
+                    continue;
+                }
                 return Some(c);
             }
         }
@@ -271,12 +276,23 @@ where
                 "HTTP connection keep-alive for host: {}, response: {:?}",
                 host, response
             );
-            self.cache_conn
-                .lock()
-                .await
-                .entry(host)
-                .or_insert_with(VecDeque::new)
-                .push_back((c, Instant::now()));
+            let cache_conn = self.cache_conn.clone();
+            tokio::spawn(async move {
+                match c.ready().await {
+                    Ok(_) => {
+                        trace!("HTTP connection for host: {host} is ready and will be cached");
+                        cache_conn
+                            .lock()
+                            .await
+                            .entry(host)
+                            .or_insert_with(VecDeque::new)
+                            .push_back((c, Instant::now()));
+                    }
+                    Err(e) => {
+                        trace!("HTTP connection for host: {host}  failed to become ready: {}", e);
+                    }
+                };
+            });
         }
 
         Ok(response)
@@ -446,6 +462,20 @@ where
         match self {
             Self::Http1(r) => r.is_closed(),
             Self::Http2(r) => r.is_closed(),
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        match self {
+            Self::Http1(r) => r.is_ready(),
+            Self::Http2(r) => r.is_ready(),
+        }
+    }
+
+    pub async fn ready(&mut self) -> Result<(), hyper::Error> {
+        match self {
+            HttpConnection::Http1(r) => r.ready().await,
+            HttpConnection::Http2(r) => r.ready().await,
         }
     }
 }

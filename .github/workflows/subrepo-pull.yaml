@@ -60,7 +60,7 @@ jobs:
             git commit -m "chore(external): reset $gitrepo_file for subrepo pull"
 
             # Pull the new version
-            git subrepo pull "$subrepo_dir" -b "$target_branch" -m "chore(external): pull $subrepo_dir at $target_branch"
+            git subrepo pull "$subrepo_dir" -b "$target_branch" -u -m "chore(external): pull $subrepo_dir at $target_branch"
 
             echo "::endgroup::"
           done

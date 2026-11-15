@@ -54,13 +54,13 @@
       "enabled": false
     },
     {
-      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython` and `py3.<minor>-cryptography` exist: `apk list -a ...` on the alpine-base tag the mta and provisioner Dockerfiles use. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
+      "description": "A new Python minor is never automatic. A person must (1) refresh portal/uv.lock with `uv lock -P` on the native packages (hosted Renovate cannot; a stale lock fails `uv sync --frozen` for lack of wheels) and (2) check that `py3.<minor>-dnspython`, `py3.<minor>-cryptography` and `py3.<minor>-cffi` exist: `apk list -a ...` on the alpine-base tag the mta and provisioner Dockerfiles use. Independent of the docker-datasource rule: holds even if that rule is narrowed.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "automerge": false
     },
     {
-      "description": "Python held at 3.14 (owner, 2026-11-15): the mta and provisioner install dnspython and cryptography from Alpine, which has no py3.15 builds of them yet. Delete this rule to lift the hold; issue #336 has the check.",
+      "description": "Python held at 3.14 (owner, 2026-11-15): the mta and provisioner install dnspython, cryptography and cffi from Alpine, which has no py3.15 builds of them yet. Delete this rule to lift the hold; issue #336 has the check. Never close Renovate's 3.15 PR by hand: Renovate then ignores 3.15 for good.",
       "matchManagers": ["custom.regex"],
       "matchDepNames": ["python"],
       "allowedVersions": "<3.15"

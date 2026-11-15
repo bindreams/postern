@@ -175,6 +175,12 @@ def _python_dep(manager: str, rel: str) -> dict[str, str]:
 
 
 @pytest.mark.parametrize("rel", PIN_SITES)
+def test_renovate_holds_python_at_3_14(rel):
+    """Alpine has no py3.15 dnspython/cryptography/cffi for the mta and provisioner yet (issue #336)."""
+    assert _final_setting("allowedVersions", _python_dep("custom.regex", rel)) == "<3.15"
+
+
+@pytest.mark.parametrize("rel", PIN_SITES)
 def test_renovate_python_bump_is_not_automerged(rel):
     """The lockfile and the apk set trail a new minor, so a person looks at every bump."""
     assert _final_setting("automerge", _python_dep("custom.regex", rel)) is False

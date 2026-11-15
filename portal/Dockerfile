@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Keep equal to mta/Dockerfile, provisioner/Dockerfile and portal/.python-version; Renovate bumps them together, test_python_pin.py enforces it.
-ARG PYTHON_MINOR=3.14
+ARG PYTHON_MINOR=3.15
 
 FROM dhi.io/python:${PYTHON_MINOR}-alpine3.23-dev AS build
 COPY --from=ghcr.io/astral-sh/uv:0.13.4 /uv /bin/uv

@@ -4,7 +4,7 @@
 # to. Alpine's live index can offer two minors at once, and an unpinned `python3` then
 # either fails to solve or installs a minor the py3-* packages were not built for.
 # Keep equal to portal/Dockerfile, mta/Dockerfile and portal/.python-version; Renovate bumps them together, test_python_pin.py enforces it.
-ARG PYTHON_MINOR=3.14
+ARG PYTHON_MINOR=3.15
 
 FROM dhi.io/golang:1-alpine3.23-dev AS go-build
 # go.mod's `go` line is then the floor for both binaries; under `auto`, `go install

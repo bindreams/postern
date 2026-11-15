@@ -17,7 +17,7 @@ jobs:
       group: subrepo-pull-${{ github.head_ref }}
       cancel-in-progress: true
     env:
-      # The nathan-blahaj app's bot user; the id prefix lets GitHub attribute the commits to it.
+      # The numeric id prefix makes GitHub attribute commits to the app.
       BOT_NAME: nathan-blahaj[bot]
       BOT_EMAIL: 317541977+nathan-blahaj[bot]@users.noreply.github.com
     steps:
@@ -34,8 +34,7 @@ jobs:
           echo "/tmp/git-subrepo/lib" >> "$GITHUB_PATH"
           echo "MANPATH=/tmp/git-subrepo/man:$MANPATH" >> "$GITHUB_ENV"
 
-      # git-subrepo commits; a runner has no identity. Renovate's gitIgnoredAuthors lists this email, so it keeps
-      # rebasing and automerging the branch.
+      # git-subrepo commits; a runner has no identity. Keep BOT_EMAIL in sync with gitIgnoredAuthors in renovate.json.
       - name: Set git committer identity
         run: |
           git config user.name "$BOT_NAME"
@@ -60,10 +59,17 @@ jobs:
             # Extract the target branch/tag from the .gitrepo file
             target_branch=$(grep '^\s*branch = ' "$gitrepo_file" | sed 's/.*branch = //')
 
-            # Already pulled (this job's own push triggers it again, as does any later commit): the vendored version is the
-            # declared one. portal/tests/test_vendored_subrepos.py checks the same thing for every merge.
-            vendored=$(sed -n 's/^version = "\(.*\)"$/\1/p' "$subrepo_dir/Cargo.toml" | head -n 1)
-            if [ "v$vendored" = "$target_branch" ] || [ "$vendored" = "$target_branch" ]; then
+            # Skip when already pulled (the job's own push re-triggers it): .gitrepo records the tag's commit.
+            remote=$(git config -f "$gitrepo_file" subrepo.remote)
+            recorded=$(git config -f "$gitrepo_file" subrepo.commit)
+            # An annotated tag lists its peeled commit (`^{}`) as well; sorting puts that line first.
+            refs=$(git ls-remote "$remote" "refs/tags/${target_branch}^{}" "refs/tags/${target_branch}")
+            tagged=$(printf '%s\n' "$refs" | sort -r -k2 | head -n 1 | cut -f1)
+            if [ -z "$tagged" ]; then
+              echo "::error::$remote has no tag $target_branch"
+              exit 1
+            fi
+            if [ "$recorded" = "$tagged" ]; then
               echo "$subrepo_dir is already at $target_branch"
               continue
             fi
@@ -83,7 +89,7 @@ jobs:
           if [ "$(git rev-parse HEAD)" != "$start" ]; then echo "pulled=true" >> "$GITHUB_OUTPUT"; fi
 
       # A GITHUB_TOKEN push does not trigger workflows, so the PR's checks would never run on the pulled source and
-      # Renovate could not automerge it. The app's token does. Minted only for the push, after git-subrepo has run.
+      # Renovate could not automerge it. The app's token does.
       - name: Mint nathan-blahaj token
         if: steps.pull.outputs.pulled == 'true'
         id: nathan
@@ -102,4 +108,5 @@ jobs:
         run: |
           auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)
           echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" push origin "HEAD:refs/heads/${HEAD_REF}"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin "HEAD:refs/heads/${HEAD_REF}"

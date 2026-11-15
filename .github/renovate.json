@@ -32,7 +32,7 @@
       "groupName": "libdns ecosystem"
     },
     {
-      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold updates to other registries (dhi.io, ghcr.io) pending forever. Renovate cannot match on \"has a timestamp\", so the rule covers every docker update; Docker Hub ones still wait out the cooldown.",
+      "description": "The docker datasource has release timestamps only for Docker Hub, so under the global `minimumReleaseAge` the default `timestamp-required` would hold updates to other registries (dhi.io, ghcr.io) pending forever. Renovate cannot match on \"has a timestamp\", so the rule covers every docker update.",
       "matchDatasources": ["docker"],
       "minimumReleaseAgeBehaviour": "timestamp-optional"
     },

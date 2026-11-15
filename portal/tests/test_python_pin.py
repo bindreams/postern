@@ -83,6 +83,36 @@ def test_renovate_dockerfile_manager_leaves_the_python_image_to_the_pin():
     )
 
 
+def _python_manager() -> dict:
+    (manager, ) = _regex_managers_matching("portal/Dockerfile")
+    return manager
+
+
+def _js_regex(pattern: str) -> re.Pattern[str]:
+    """A Renovate (JS) regex as a Python one: named groups `(?<n>` become `(?P<n>`."""
+    return re.compile(pattern.replace("(?<", "(?P<"))
+
+
+def test_renovate_only_offers_minors_published_in_the_variant_the_portal_pulls():
+    """A bare `3.16` tag (Debian) can exist before `3.16-alpine3.23-dev`; offering it opens a bump whose FROM is missing."""
+    (build_tag, ) = re.findall(
+        r"^FROM dhi\.io/python:\$\{PYTHON_MINOR\}(-\S+-dev) AS build$", _text("portal/Dockerfile"), re.MULTILINE
+    )
+    extract = _js_regex(_python_manager()["extractVersionTemplate"])
+    tag_to_version = lambda tag: (m.group("version") if (m := extract.search(tag)) else None)
+    assert tag_to_version(f"3.16{build_tag}") == "3.16"
+    for tag in ("3.16", "3.16.1", f"3.16.1{build_tag}", "3.16-alpine3.23", "3.16-debian13-dev", "3.16-alpine3.99-dev"):
+        assert tag_to_version(tag) is None, tag
+
+
+def test_renovate_python_bump_is_not_automerged():
+    """The lockfile and the apk set trail a new minor, so a person looks at every bump."""
+    assert any(
+        rule.get("matchManagers") == ["custom.regex"] and rule.get("matchDepNames") == ["python"]
+        and rule.get("automerge") is False for rule in _renovate()["packageRules"]
+    )
+
+
 def test_renovate_pyenv_manager_is_off():
     """It would bump `.python-version` on its own, in a PR the Dockerfiles do not follow."""
     assert _renovate().get("pyenv") == {"enabled": False}

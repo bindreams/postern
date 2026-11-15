@@ -103,16 +103,16 @@ Two layers protect Let's Encrypt's 5-issuances-per-7-days limit:
 ```
 NO_CERT  ──(adopt: existing on-disk cert with valid SANs)──▶  INSTALLED
 NO_CERT  ──(no on-disk cert; or SAN mismatch)──▶  ISSUING
-ISSUING  ──(lego success; record pending paths and the directory)──▶  ISSUED_PENDING_INSTALL
+ISSUING  ──(lego success and its output validated; record pending paths and the directory)──▶  ISSUED_PENDING_INSTALL
 ISSUED_PENDING_INSTALL  ──(symlink-flip success)──▶  INSTALLED
 INSTALLED  ──(ACME directory drift / SAN mismatch / .renew-cert; 24-hour guard clear)──▶  ISSUING   (`lego run --renew-force`)
-INSTALLED  ──(expiry)──▶  RENEWING   (`lego run --renew-days <CERT_RENEWAL_DAYS_BEFORE_EXPIRY>`; `--renew-force` when the ACME directory or email changed)
+INSTALLED  ──(expiry)──▶  RENEWING   (`lego run --renew-days <CERT_RENEWAL_DAYS_BEFORE_EXPIRY>`; `--renew-force` when the ACME directory or email changed, or no earlier attempt under this directory is on record)
 RENEWING   ──(success)──▶  ISSUED_PENDING_INSTALL
 *  ──(consecutive_failures >= 6)──▶  FAILED
 FAILED  ──(60-min hold-off)──▶  prior pre-FAILED state retried
 ```
 
-`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`, unless no cert is on disk, in which case it waits in `ISSUING`. A `postern cert renew` request made while the guard is active is dropped, and the provisioner logs it. A `RENEWING` run applies Postern's own threshold, so when an earlier run already issued a certificate and its tick crashed before the install, lego issues nothing new and the existing certificate is installed. State is persisted at `/etc/letsencrypt/state.json`.
+`FAILED` is non-terminal: after the 60-min hold-off the prior pre-FAILED state is retried, so a transient outage longer than ~64 minutes self-heals. Failures recorded under a different ACME directory than the configured one do not hold off the switch or count toward `FAILED`; with no cert installed the switch goes straight to `ISSUING`. While the 24-hour guard is active, `INSTALLED` stays `INSTALLED` (one log line per tick) instead of cycling through `ISSUING`, unless no cert is on disk, in which case it waits in `ISSUING`. A `postern cert renew` request made while the guard is active is dropped, and the provisioner logs it. A `RENEWING` run applies Postern's own threshold, so when an earlier run already issued a certificate and its tick crashed before the install, lego issues nothing new and the existing certificate is installed. Whatever lego returns is validated before it can be installed: the private key must be the certificate's, the SANs exactly `{<domain>, *.<domain>}`, and the certificate valid now and not already due under `CERT_RENEWAL_DAYS_BEFORE_EXPIRY`. A set that fails (for example a crash that left a new certificate beside the old key) is logged, counted as a failure and never installed, and lego's stored copy is deleted so the next run issues anew; the 24-hour guard still applies. A run that fails because the CA does not know the ACME account (`accountDoesNotExist`) discards the local account and does not start the 24-hour guard, so the next tick registers a new one at once. `CERT_RENEWAL_DAYS_BEFORE_EXPIRY` below 1 is rejected. State is persisted at `/etc/letsencrypt/state.json`.
 ````
 
 ### Threat-model notes

@@ -9,11 +9,11 @@ State machine:
 
     NO_CERT --(adopt: existing on-disk cert with valid SANs)--> INSTALLED
     NO_CERT --(no on-disk cert; or SAN mismatch)--> ISSUING
-    ISSUING --(lego success; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
+    ISSUING --(lego success and valid output; record pending_cert_paths and its directory)--> ISSUED_PENDING_INSTALL
     ISSUED_PENDING_INSTALL --(symlink-flip success)--> INSTALLED
     INSTALLED --(directory drift / SAN mismatch / .renew-cert; guard clear)--> ISSUING
     INSTALLED --(expiry)--> RENEWING
-    RENEWING --(success)--> ISSUED_PENDING_INSTALL
+    RENEWING --(success and valid output)--> ISSUED_PENDING_INSTALL
     *  --(consecutive_failures >= 6)--> FAILED
     FAILED --(60-min hold-off)--> prior pre-FAILED state retried
 
@@ -29,9 +29,14 @@ deferral from ISSUING/RENEWING returns to INSTALLED only when a cert is installe
 `acme_directory` moves only when an install completes, so a failed switch stays visible as drift and is retried.
 
 ISSUING and RENEWING both run `lego run`; they differ only in what moved the state machine there (expiry
-for RENEWING). ISSUING, and RENEWING after an ACME directory or email change, pass `--renew-force`; any other
-RENEWING passes Postern's own `--renew-days`, so lego declines only a certificate of its own that is newer than the
-live one, which an earlier run issued before its tick crashed.
+for RENEWING). ISSUING, and RENEWING after an ACME directory or email change or with no attempt on record under
+the configured directory, pass `--renew-force`; any other RENEWING passes Postern's own `--renew-days`, so lego
+declines only a certificate of its own that is newer than the live one, which an earlier run issued before its tick
+crashed.
+
+Whatever lego leaves is validated before ISSUED_PENDING_INSTALL (`postern_provisioner.cert._lego_output_problem`): key
+pair, exact SAN set, valid now, not already due. A rejected set is a failure, never installed, and lego's stored copy
+is deleted so the next run issues anew.
 """
 
 from __future__ import annotations

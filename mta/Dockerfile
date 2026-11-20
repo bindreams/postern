@@ -6,7 +6,7 @@
 # Keep equal to portal/Dockerfile, provisioner/Dockerfile and portal/.python-version; Renovate bumps them together, test_python_pin.py enforces it.
 ARG PYTHON_MINOR=3.14
 
-FROM dhi.io/alpine-base:3.23-dev AS build
+FROM dhi.io/alpine-base:3.24-dev AS build
 ARG PYTHON_MINOR
 # The runtime stage is the same -dev image; packages are installed here and copied across.
 # The opendkim user is created here so /etc/passwd, /etc/group, and the
@@ -34,7 +34,7 @@ RUN mkdir -p /var/lib/opendkim \
 	&& apk del --no-cache py3-pip
 
 # Runtime stage: same -dev image, runs as root (Postfix master needs it); capabilities come from cap_add in compose.yaml.
-FROM dhi.io/alpine-base:3.23-dev
+FROM dhi.io/alpine-base:3.24-dev
 ARG PYTHON_MINOR
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"

@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/postern-dns ./...
 # in .github/renovate.json tracks upgrades. From v5 the main package is the module root.
 RUN CGO_ENABLED=0 go install -trimpath -ldflags="-s -w" github.com/go-acme/lego/v5@v5.6.0
 
-FROM dhi.io/alpine-base:3.23-dev AS build
+FROM dhi.io/alpine-base:3.24-dev AS build
 ARG PYTHON_MINOR
 # All privileged setup happens in the -dev stage (the runtime stage at
 # dhi.io/alpine-base:3.23-dev shares the same image but the runtime user is
@@ -38,7 +38,7 @@ RUN mkdir -p /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& chown opendkim:opendkim /var/lib/opendkim /etc/letsencrypt /var/lib/postern-edge \
 	&& apk add --no-cache "python3~${PYTHON_MINOR}" py3-dnspython py3-cryptography opendkim-utils 'ca-certificates>=20261020-r0' tzdata
 
-FROM dhi.io/alpine-base:3.23-dev
+FROM dhi.io/alpine-base:3.24-dev
 ARG PYTHON_MINOR
 
 LABEL org.opencontainers.image.source="https://github.com/bindreams/postern"

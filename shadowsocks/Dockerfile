@@ -2,7 +2,7 @@
 
 # Download stages verify TLS against this bundle; the base image's trusts the
 # compromised eMudhra chain.
-FROM dhi.io/alpine-base:3.23-dev AS fetch
+FROM dhi.io/alpine-base:3.24-dev AS fetch
 RUN apk add --no-cache 'ca-certificates>=20261020-r0'
 
 FROM fetch AS download-ex-ray
